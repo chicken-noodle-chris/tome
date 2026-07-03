@@ -26,6 +26,7 @@ command.
 import argparse
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -40,6 +41,11 @@ Finding = tome_lint.Finding
 FRONTMATTER_RE = tome_lint.FRONTMATTER_RE
 
 SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+
+# Scaffolding sources for `tome init` — lives alongside scripts/ at the
+# plugin root, not inside any vault (a vault and the plugin are always
+# separate repos now).
+TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 
 # type -> the taxonomy tag paired with the project-name tag on new pages.
 # Everything not listed here gets "project" (matches the observed convention
@@ -221,8 +227,7 @@ The catalog of all pages in this wiki, organized by project. The LLM reads
 this first when answering queries to identify candidate pages.
 
 When this file exceeds ~300 lines or the wiki passes ~150 pages, shard into
-`wiki/indexes/<project>.md`. See the `scaling-playbook.md` reference in the
-`llm-wiki` skill for the migration procedure.
+`wiki/indexes/<project>.md`.
 
 ---
 """
@@ -591,6 +596,73 @@ def cmd_index_rebuild(vault_root, conventions, args):
 
 
 # --------------------------------------------------------------------------- #
+# init — scaffold a fresh vault (runs before a vault root can be resolved,
+# so it does not take vault_root/conventions like the other commands)
+# --------------------------------------------------------------------------- #
+
+LOG_HEADER = """# Wiki Log
+
+Append-only chronological record of operations on the wiki. Each entry \
+begins with `## [YYYY-MM-DD] <op> | <description>` so it's parseable with \
+`grep "^## \\[" log.md | tail -N`. See conventions.toml's `[log].ops` for \
+the operation vocabulary.
+
+---
+"""
+
+
+def cmd_init(args):
+    target = Path(args.path).resolve() if args.path else Path.cwd()
+    target.mkdir(parents=True, exist_ok=True)
+
+    to_create = [
+        target / "conventions.toml",
+        target / ".gitignore",
+        target / "CLAUDE.md",
+        target / "quartz.config.yaml",
+        target / "quartz.lock.json",
+        target / "wiki" / "SCHEMA.md",
+        target / "wiki" / "index.md",
+        target / "wiki" / "log.md",
+        target / "inbox",
+        target / "raw" / "assets",
+    ]
+    existing = [p for p in to_create if p.exists()]
+    if existing:
+        raise VaultError(
+            "refusing to init: target already has "
+            + ", ".join(str(p.relative_to(target)) for p in sorted(existing))
+        )
+
+    (target / "wiki").mkdir(parents=True, exist_ok=True)
+    (target / "inbox").mkdir(parents=True, exist_ok=True)
+    (target / "raw" / "assets").mkdir(parents=True, exist_ok=True)
+
+    shutil.copy2(TEMPLATES_DIR / "conventions.toml", target / "conventions.toml")
+    shutil.copy2(TEMPLATES_DIR / "SCHEMA.md", target / "wiki" / "SCHEMA.md")
+    shutil.copy2(TEMPLATES_DIR / "CLAUDE.md", target / "CLAUDE.md")
+    shutil.copy2(TEMPLATES_DIR / "vault.gitignore", target / ".gitignore")
+    shutil.copy2(TEMPLATES_DIR / "quartz.config.yaml", target / "quartz.config.yaml")
+    shutil.copy2(TEMPLATES_DIR / "quartz.lock.json", target / "quartz.lock.json")
+
+    conventions = load_conventions(target)
+    (target / "wiki" / "log.md").write_text(
+        LOG_HEADER + f"\n## [{today()}] init | Vault created via `tome init`\n",
+        encoding="utf-8", newline="\n")
+    rebuild_index(target, conventions, target / "wiki", [])
+
+    if not (target / ".git").is_dir():
+        subprocess.run(["git", "init"], cwd=str(target), check=True)
+
+    print(f"Initialized a new vault at {target}")
+    print("Next steps:")
+    print('  - author a first project page: tome new project <name> --title "T" --desc "..."')
+    print('  - bootstrap the browse view: python "$CLAUDE_PLUGIN_ROOT/scripts/setup_quartz.py"')
+    print('  - set up a remote, then: tome sync -m "Initial vault"')
+    return 0
+
+
+# --------------------------------------------------------------------------- #
 # sync / task
 # --------------------------------------------------------------------------- #
 
@@ -765,6 +837,10 @@ def build_parser():
     idx_sub.add_parser("rebuild", help="regenerate wiki/index.md",
                         epilog="e.g. tome index rebuild")
 
+    p = sub.add_parser("init", help="scaffold a fresh vault",
+                        epilog="e.g. tome init ~/Development/my-vault")
+    p.add_argument("path", nargs="?", help="target directory (default: cwd)")
+
     return parser
 
 
@@ -773,6 +849,9 @@ def main():
     args = parser.parse_args()
 
     try:
+        if args.command == "init":
+            return cmd_init(args)
+
         vault_root = resolve_vault_root(args.vault)
         conventions = load_conventions(vault_root)
 

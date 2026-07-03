@@ -1,0 +1,16 @@
+# Obsidian per-device UI state — rewrites constantly, device-specific, not worth
+# syncing or merging. The rest of .obsidian/ (plugins, hotkeys, theme) is tracked
+# so your editor setup travels across devices.
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+.obsidian/cache
+.obsidian/.trash/
+
+# Derived Quartz build tree — bootstrap it with setup_quartz.py, don't commit it.
+quartz/
+
+# Obsidian's own trash — junk, not vault content.
+.trash/
+
+# Machine-local Claude Code settings; launch.json is still committed.
+.claude/settings.local.json

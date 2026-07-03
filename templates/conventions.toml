@@ -1,0 +1,61 @@
+# conventions.toml — data-shaped vault rules read by tome_lint.py.
+#
+# Only *data* lives here (enums, caps, skip-lists). Algorithmic checks
+# (wikilink resolution, orphans, index↔page drift, plan-dir-for-status) stay
+# as named functions in the linter. This file mirrors wiki/SCHEMA.md; keep
+# the two in sync until SCHEMA is migrated to defer here.
+
+[frontmatter]
+required = ["type", "title", "tags", "created", "updated", "description"]
+
+[types]
+enum = [
+  "project", "plan", "idea", "decision",
+  "report", "source", "entity", "concept", "synthesis",
+]
+
+[tags]
+# Kept deliberately small.
+taxonomy = [
+  "project", "personal", "idea", "decision",
+  "reference", "open-question", "contested",
+]
+# When true, any top-level directory under wiki/ is also accepted as a valid
+# tag, so project-name tags don't read as taxonomy violations.
+allow_project_name_tags = true
+
+[plan_status]
+live = ["proposed", "active", "blocked"]
+terminal = ["done", "superseded", "abandoned"]
+
+[size]
+# In lines. Soft = warning, hard = error.
+soft_cap = 400
+hard_cap = 800
+
+[skip]
+# Links *to* these still resolve; links *from* them don't count toward
+# inbound totals (they're not scanned as content pages).
+files = ["SCHEMA.md", "index.md", "log.md", "README.md"]
+dirs = ["indexes"]
+
+[index]
+# Relative to wiki root.
+file = "index.md"
+
+[description]
+max_chars = 140
+
+[folders]
+# type -> directory under wiki/<project>/
+plan = "plans"
+idea = "ideas"
+decision = "decisions"
+report = "reports"
+source = "sources"
+concept = "notes"
+synthesis = "notes"
+entity = "notes"
+
+[log]
+ops = ["ingest", "query", "lint", "schema", "shard", "retrospect", "plan", "idea", "docs", "migrate", "author", "work-started", "done", "archive", "spike", "note", "project", "complete", "work-done", "init"]
