@@ -50,6 +50,6 @@ unclear — which task, how far to take it, an ambiguity in the plan — ask.
    (or `superseded`/`abandoned`) — this moves the plan to `plans/archive/` and regenerates
    the index itself. Then `tome task task edit <id> -s Done --check-ac ... --final-summary
    "..."` citing the shipping commit and re-pointing the task's `--ref` at the plan's new
-   `plans/archive/` path, then `tome task task complete <id>` — archive immediately, no
+   `plans/archive/` path, then `tome task task complete <id>` — close it out immediately, no
    deferred sweep. Move the plan's entry on the project hub to its archived list (that one
    is manual), then `tome log done "..."` and `tome sync -m "..."`.
