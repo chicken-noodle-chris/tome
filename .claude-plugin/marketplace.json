@@ -1,0 +1,22 @@
+{
+  "name": "tome",
+  "owner": {
+    "name": "Chris"
+  },
+  "metadata": {
+    "description": "Tome: a commonplace book for you and your agents.",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "tome",
+      "source": "./",
+      "description": "The tome CLI, skills (pickup-task, write-a-plan, retrospect, ingest, query), a vault-sync reminder hook, a Quartz browse-view bootstrap, and `tome init` to scaffold a fresh vault.",
+      "version": "1.0.0",
+      "author": {
+        "name": "Chris"
+      },
+      "license": "MIT"
+    }
+  ]
+}
