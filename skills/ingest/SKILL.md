@@ -10,7 +10,7 @@ Conventions live in `wiki/SCHEMA.md` and `conventions.toml`; `scripts/tome.py` (
 scaffolds pages and keeps the index in sync — lean on it rather than hand-authoring frontmatter.
 `tome` ships as a plugin at `$CLAUDE_PLUGIN_ROOT`, separate from the vault it operates on;
 `tome <cmd>` means `python "$CLAUDE_PLUGIN_ROOT/scripts/tome.py" <cmd>` (it resolves which
-vault to act on via `--vault` / `VAULT_ROOT` / walking up from cwd), and bare paths like
+vault to act on via `--vault` / walking up from cwd / `VAULT_ROOT`), and bare paths like
 `raw/` are relative to the vault root, not the plugin root.
 
 1. **Prime yourself.** Run `tome sync` to pull, then read `wiki/SCHEMA.md` if you haven't this

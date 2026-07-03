@@ -29,8 +29,8 @@ from-scratch rebuild or to pick up a QUARTZ_REF bump), and the content link,
 config, lockfile, and plugin install are only touched when out of date.
 
 The vault this bootstraps is resolved the same way tome.py resolves it:
---vault PATH, else $VAULT_ROOT, else walk up from cwd looking for
-conventions.toml. The script itself lives at the plugin root, which is
+--vault PATH, else walk up from cwd looking for conventions.toml, else
+$VAULT_ROOT. The script itself lives at the plugin root, which is
 never the vault root.
 
 Usage:
@@ -54,25 +54,25 @@ WINDOWS = sys.platform == "win32"
 
 
 def resolve_vault_root(explicit):
-    """--vault flag -> VAULT_ROOT env var -> walk up from cwd looking for
-    conventions.toml -> fail loud. Mirrors tome.py's resolution."""
-    candidates = []
-    if explicit:
-        candidates.append(("--vault", Path(explicit)))
-    elif os.environ.get("VAULT_ROOT"):
-        candidates.append(("VAULT_ROOT", Path(os.environ["VAULT_ROOT"])))
-    if candidates:
-        source, p = candidates[0]
-        p = p.resolve()
+    """--vault flag -> walk up from cwd looking for conventions.toml ->
+    VAULT_ROOT env var -> fail loud. Mirrors tome.py's resolution: the vault
+    you're standing in beats the global default."""
+    def _validated(source, raw):
+        p = Path(raw).resolve()
         if not (p / "conventions.toml").is_file():
             sys.exit(f"{source}={p} has no conventions.toml — not a vault root")
         return p
+
+    if explicit:
+        return _validated("--vault", explicit)
     cur = Path.cwd().resolve()
     for d in (cur, *cur.parents):
         if (d / "conventions.toml").is_file():
             return d
-    sys.exit(f"could not find conventions.toml by walking up from {cur} — "
-              "pass --vault PATH or set VAULT_ROOT")
+    if os.environ.get("VAULT_ROOT"):
+        return _validated("VAULT_ROOT", os.environ["VAULT_ROOT"])
+    sys.exit(f"no vault found: no conventions.toml walking up from {cur}, "
+              "and VAULT_ROOT is unset — pass --vault PATH or set VAULT_ROOT")
 
 
 def run(cmd, cwd=None):
@@ -146,8 +146,8 @@ def install_plugins(quartz_dir):
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                       formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--vault", help="explicit vault root (default: $VAULT_ROOT "
-                                         "or walk-up from cwd)")
+    parser.add_argument("--vault", help="explicit vault root (default: walk-up "
+                                         "from cwd, else $VAULT_ROOT)")
     args = parser.parse_args()
 
     root = resolve_vault_root(args.vault)

@@ -38,7 +38,7 @@ target isn't already a repo, and fails loudly rather than merging into a
 non-empty target.
 
 Next steps it'll print: author a first project page, bootstrap the browse
-view (`python scripts/setup_quartz.py` from the plugin), set up a remote, and
+view (init prints the exact command with the plugin's real path), set up a remote, and
 `tome sync`.
 
 ## Everyday commands
@@ -56,10 +56,10 @@ tome set-status <slug> <status>
 tome task <args...>       # passthrough to backlog.md
 ```
 
-Root resolution for the CLI: `--vault PATH`, else `$VAULT_ROOT`, else walk up
-from cwd looking for `conventions.toml` — so it always operates on the vault
-you're standing in (or point it elsewhere), regardless of where the plugin
-itself is installed from.
+Root resolution for the CLI: `--vault PATH`, else walk up from cwd looking
+for `conventions.toml`, else `$VAULT_ROOT` — the vault you're standing in
+always beats the global default, and `$VAULT_ROOT` covers sessions in
+non-vault directories.
 
 ## Browse view
 
@@ -67,9 +67,12 @@ itself is installed from.
 content. Bootstrap it once per vault:
 
 ```
-python "$CLAUDE_PLUGIN_ROOT/scripts/setup_quartz.py"
+python <path-to-this-repo>/scripts/setup_quartz.py
 cd quartz && npx quartz build --serve
 ```
+
+(`tome init` prints the first command with the real path filled in; agents
+reach it via `$CLAUDE_PLUGIN_ROOT`, terminal humans via `$TOME` — see below.)
 
 The first command clones [Quartz](https://github.com/jackyzha0/quartz)
 (pinned to a known-good commit), wires the vault's `wiki/` in as its content

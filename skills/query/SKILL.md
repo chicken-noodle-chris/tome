@@ -9,7 +9,7 @@ Optional input: the question, and optionally a project to scope it to.
 Conventions live in `wiki/SCHEMA.md`; `scripts/tome.py` (`tome help`) scaffolds any page this
 produces. `tome` ships as a plugin at `$CLAUDE_PLUGIN_ROOT`, separate from the vault it
 operates on; `tome <cmd>` means `python "$CLAUDE_PLUGIN_ROOT/scripts/tome.py" <cmd>` (it
-resolves which vault to act on via `--vault` / `VAULT_ROOT` / walking up from cwd), and
+resolves which vault to act on via `--vault` / walking up from cwd / `VAULT_ROOT`), and
 bare paths like `wiki/index.md` are relative to the vault root, not the plugin root.
 
 1. **Prime yourself.** Read `wiki/SCHEMA.md` if you haven't this session — some wikis declare

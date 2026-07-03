@@ -17,7 +17,7 @@ Conventions live in **`wiki/SCHEMA.md` — the authority**; `scripts/tome.py` (`
 enforces the mechanics. `tome` ships as a plugin at `$CLAUDE_PLUGIN_ROOT`, separate from
 the vault it operates on; `tome <cmd>` throughout means `python
 "$CLAUDE_PLUGIN_ROOT/scripts/tome.py" <cmd>` (it resolves which vault to act on via
-`--vault` / `VAULT_ROOT` / walking up from cwd). There is **one gate**: the user approves
+`--vault` / walking up from cwd / `VAULT_ROOT`). There is **one gate**: the user approves
 the proposed refinements before anything is written.
 
 1. **Prime, and set the window.** Run `tome sync` to pull, then read the vault's
@@ -27,7 +27,7 @@ the proposed refinements before anything is written.
    last ~30 days.
 
 2. **Gather the evidence across the window.** Pull from every source available, then read for *patterns*, not one-offs:
-   - **Edits** — the vault repo root, resolved the same way `tome` itself does (`$VAULT_ROOT`
+   - **Edits** — the vault repo root, resolved the same way `tome` itself does (walk-up from cwd, else `$VAULT_ROOT`
      if set, else walk up from cwd looking for `conventions.toml`). `git -C "<vault root>"
      log --since=<date> --stat` for what changed and `git -C "<vault root>" log
      --since=<date> -p -- wiki/ CLAUDE.md` for how. Churn, reversals, and the same fix made

@@ -11,17 +11,19 @@ import sys
 
 
 def find_vault_root():
-    """$VAULT_ROOT if set, else walk up from cwd looking for conventions.toml
-    (same resolution tome.py itself uses). None if neither finds a vault —
-    the plugin and the vault are always separate repos now, so there is no
+    """Walk up from cwd looking for conventions.toml, else $VAULT_ROOT (same
+    resolution tome.py itself uses: the vault the session is standing in
+    beats the global default, so a session inside vault B reminds about B,
+    not about the personal vault). None if neither finds a vault — the
+    plugin and the vault are always separate repos now, so there is no
     "the hook's own location is the vault" fallback to fall back to."""
-    env = os.environ.get("VAULT_ROOT")
-    if env:
-        return pathlib.Path(env)
     cur = pathlib.Path.cwd().resolve()
     for d in (cur, *cur.parents):
         if (d / "conventions.toml").is_file():
             return d
+    env = os.environ.get("VAULT_ROOT")
+    if env:
+        return pathlib.Path(env)
     return None
 
 

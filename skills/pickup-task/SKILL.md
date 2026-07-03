@@ -14,7 +14,7 @@ mark work *started* before you begin and *done* when it lands. Conventions live 
 rather than hand-executing status moves, links, or git. `tome` ships as a plugin at
 `$CLAUDE_PLUGIN_ROOT`, separate from the vault it operates on; `tome <cmd>` throughout
 means `python "$CLAUDE_PLUGIN_ROOT/scripts/tome.py" <cmd>` (it resolves which vault to
-act on via `--vault` / `VAULT_ROOT` / walking up from cwd), and bare paths like
+act on via `--vault` / walking up from cwd / `VAULT_ROOT`), and bare paths like
 `wiki/SCHEMA.md` are relative to the vault root, not the plugin root.
 
 Throughout, **the user is always happy to answer questions.** If intent or scope is

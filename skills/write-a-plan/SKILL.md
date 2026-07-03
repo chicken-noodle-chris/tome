@@ -15,7 +15,7 @@ Conventions (frontmatter, placement, body style, linking, status vocabulary) liv
 rather than hand-executing mechanics. `tome` ships as a plugin at `$CLAUDE_PLUGIN_ROOT`,
 separate from the vault it operates on; `tome <cmd>` throughout means `python
 "$CLAUDE_PLUGIN_ROOT/scripts/tome.py" <cmd>` (it resolves which vault to act on via
-`--vault` / `VAULT_ROOT` / walking up from cwd), and bare paths like `wiki/SCHEMA.md`
+`--vault` / walking up from cwd / `VAULT_ROOT`), and bare paths like `wiki/SCHEMA.md`
 are relative to the vault root, not the plugin root.
 
 1. **Understand the goal.** If the user didn't describe the task, interview them: ask

@@ -78,26 +78,29 @@ class VaultError(Exception):
 # --------------------------------------------------------------------------- #
 
 def resolve_vault_root(explicit):
-    """--vault flag -> VAULT_ROOT env var -> walk up from cwd looking for
-    conventions.toml -> fail loud. No hardcoded home paths."""
-    candidates = []
-    if explicit:
-        candidates.append(("--vault", Path(explicit)))
-    elif os.environ.get("VAULT_ROOT"):
-        candidates.append(("VAULT_ROOT", Path(os.environ["VAULT_ROOT"])))
-    if candidates:
-        source, p = candidates[0]
-        p = p.resolve()
+    """--vault flag -> walk up from cwd looking for conventions.toml ->
+    VAULT_ROOT env var -> fail loud. The vault you're standing in always
+    beats the global default: VAULT_ROOT exists so sessions in non-vault
+    directories still find their vault, not to shadow the vault at your
+    feet (a second `tome init`-ed vault would otherwise silently write to
+    the wrong repo). No hardcoded home paths."""
+    def _validated(source, raw):
+        p = Path(raw).resolve()
         if not (p / "conventions.toml").is_file():
             raise VaultError(f"{source}={p} has no conventions.toml — not a vault root")
         return p
+
+    if explicit:
+        return _validated("--vault", explicit)
     cur = Path.cwd().resolve()
     for d in (cur, *cur.parents):
         if (d / "conventions.toml").is_file():
             return d
+    if os.environ.get("VAULT_ROOT"):
+        return _validated("VAULT_ROOT", os.environ["VAULT_ROOT"])
     raise VaultError(
-        "could not find conventions.toml by walking up from "
-        f"{cur} — pass --vault PATH or set VAULT_ROOT"
+        "no vault found: no conventions.toml walking up from "
+        f"{cur}, and VAULT_ROOT is unset — pass --vault PATH or set VAULT_ROOT"
     )
 
 
@@ -654,10 +657,11 @@ def cmd_init(args):
     if not (target / ".git").is_dir():
         subprocess.run(["git", "init"], cwd=str(target), check=True)
 
+    setup_quartz = Path(__file__).resolve().parent / "setup_quartz.py"
     print(f"Initialized a new vault at {target}")
     print("Next steps:")
     print('  - author a first project page: tome new project <name> --title "T" --desc "..."')
-    print('  - bootstrap the browse view: python "$CLAUDE_PLUGIN_ROOT/scripts/setup_quartz.py"')
+    print(f'  - bootstrap the browse view: python "{setup_quartz}"')
     print('  - set up a remote, then: tome sync -m "Initial vault"')
     return 0
 
@@ -768,8 +772,8 @@ tome.py — mechanical vault operations (see wiki/SCHEMA.md for the "why")
       anything it would create already exists.
       e.g. tome init ~/Development/my-vault
 
-Root resolution: --vault PATH, else $VAULT_ROOT, else walk up from cwd
-looking for conventions.toml.
+Root resolution: --vault PATH, else walk up from cwd
+looking for conventions.toml, else $VAULT_ROOT.
 """
 
 
@@ -785,8 +789,8 @@ def cmd_help(vault_root, conventions, args):
 def build_parser():
     parser = argparse.ArgumentParser(prog="tome", add_help=True,
                                       description="Vault mechanical operations.")
-    parser.add_argument("--vault", help="explicit vault root (default: $VAULT_ROOT "
-                                         "or walk-up from cwd)")
+    parser.add_argument("--vault", help="explicit vault root (default: walk-up "
+                                         "from cwd, else $VAULT_ROOT)")
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("help", help="print the command overview")
