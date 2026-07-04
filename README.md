@@ -3,8 +3,9 @@
 A commonplace book for you and your agents — where your project lore lives.
 
 `tome` is the tooling: a small stdlib CLI, five Claude Code skills, a
-sync-reminder hook, and a Quartz browse-view bootstrap, all shipped as one
-Claude Code plugin. A **vault** is the content: your own private repo of
+SessionStart vault-context hook and a scoped Stop sync-reminder hook, and a
+Quartz browse-view bootstrap, all shipped as one Claude Code plugin. A
+**vault** is the content: your own private repo of
 `wiki/`, `backlog/`, `raw/`, and `inbox/`, following the conventions this
 plugin enforces. One copy of the tooling; as many vaults as you want.
 
@@ -103,7 +104,7 @@ tome/
 ├─ scripts/           thin shims (tome.py, tome_lint.py, wiki_search.py, setup_quartz.py) —
 │                     the plugin's actual invocation path via $CLAUDE_PLUGIN_ROOT
 ├─ skills/            pickup-task, write-a-plan, retrospect, ingest, query
-├─ hooks/             Stop hook: reminds you to sync a dirty vault
+├─ hooks/             SessionStart vault-context + Stop sync-reminder hooks
 └─ .claude-plugin/    plugin + marketplace manifest
 ```
 

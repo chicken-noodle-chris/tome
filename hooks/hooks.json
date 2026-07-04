@@ -1,5 +1,15 @@
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/tome_session_context.py\""
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [
