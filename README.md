@@ -105,6 +105,13 @@ tome/
 └─ .claude-plugin/    plugin + marketplace manifest
 ```
 
+## Development
+
+```
+pip install pytest
+python -m pytest
+```
+
 ## Out of scope (for now)
 
 - `pyproject.toml` / pipx packaging (see "Human CLI access" above).
