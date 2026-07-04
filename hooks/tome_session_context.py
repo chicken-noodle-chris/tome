@@ -12,10 +12,12 @@
    written in POSIX form: the env file is sourced by bash, where the colon
    in a raw `C:\\...` entry would split PATH.
 
-2. Inject a terse pointer to the knowledge vault, when one resolves, so
-   every session opens vault-aware without hand-wiring a pointer into the
-   user's global CLAUDE.md. Injects only the pointer, never the index body:
-   cost scales with vault size, and this line is paid in every session.
+2. Inject the read/write conventions for the vault, when one resolves, so
+   every session is vault-aware even without a skill invoked and without
+   hand-wiring this into the user's global CLAUDE.md (which now stays
+   vault-agnostic — this hook is the single source for the pointer). Injects
+   only the conventions, never the index body: cost scales with vault size,
+   and this line is paid in every session.
 
 Env export runs even with no vault (`tome init` needs it); context injection
 stays vault-gated and silent otherwise — awareness-only, can't block."""
@@ -80,18 +82,21 @@ def main():
         return
 
     if on_path:
-        invoke = "on PATH in Bash — run `tome help`"
+        invoke = "on PATH in Bash"
     elif plugin_root is not None:
-        invoke = (
-            f'run as: python "{plugin_root / "scripts" / "tome.py"}" <cmd>'
-        )
+        invoke = f'at python "{plugin_root / "scripts" / "tome.py"}"'
     else:
-        invoke = "run `tome help`"
+        invoke = "available"
 
     context = (
-        f"Knowledge vault at {vault}. Read wiki/index.md for what it knows "
-        f"and wiki/SCHEMA.md for conventions. The tome CLI ({invoke}) owns "
-        "writes; start and end vault work with tome sync."
+        f"Knowledge vault at {vault} — accumulated knowledge, notes, and "
+        "tasks across projects, not scoped to the current repo. Reading: "
+        "start at wiki/index.md, browse by project folder, follow "
+        "[[wikilinks]]; grep only as a fallback. Writing: the tome CLI "
+        f"({invoke}) owns writes — run `tome help` and follow it (`tome "
+        "task` for backlog items); edit page bodies with normal file "
+        "tools; conventions in wiki/SCHEMA.md. Start and end vault work "
+        "with `tome sync`."
     )
     print(json.dumps({
         "hookSpecificOutput": {
