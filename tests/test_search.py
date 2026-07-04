@@ -1,12 +1,7 @@
 """wiki_search.py smoke tests — light coverage only, it's reworked in
 search-and-rm; these just confirm the two basic paths don't quietly break."""
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-
-import wiki_search  # noqa: E402
+from tome_cli import search as wiki_search
 
 
 def _write_page(wiki_root, rel_path, *, title, body, tags=None):

@@ -1,7 +1,8 @@
-"""Shared fixtures for the tome.py / tome_lint.py test suite.
+"""Shared fixtures for the tome_cli test suite.
 
-Imports the modules under test by inserting scripts/ into sys.path — the
-same idiom tome.py itself uses at scripts/tome.py:36 to reach tome_lint.
+Imports the modules under test by inserting src/ into sys.path — the same
+layout the installed package resolves from, exercised here straight out of
+the checkout.
 """
 
 import sys
@@ -10,11 +11,11 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SCRIPTS_DIR = REPO_ROOT / "scripts"
-sys.path.insert(0, str(SCRIPTS_DIR))
+SRC_DIR = REPO_ROOT / "src"
+sys.path.insert(0, str(SRC_DIR))
 
-import tome  # noqa: E402
-import tome_lint  # noqa: E402
+from tome_cli import cli as tome  # noqa: E402
+from tome_cli import lint as tome_lint  # noqa: E402
 
 
 @pytest.fixture

@@ -1,6 +1,6 @@
 """generate_index — golden-string coverage over a hand-built page set."""
 
-import tome
+from tome_cli import cli as tome
 
 
 def _conventions(vault):

@@ -1,6 +1,6 @@
 """Lifecycle commands: new, describe, set-status, mv."""
 
-import tome
+from tome_cli import cli as tome
 
 
 def _new_project(run_tome, vault, name="proj", title="Proj"):

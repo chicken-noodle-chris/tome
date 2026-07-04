@@ -71,8 +71,9 @@ python <path-to-this-repo>/scripts/setup_quartz.py
 cd quartz && npx quartz build --serve
 ```
 
-(`tome init` prints the first command with the real path filled in; agents
-reach it via `$CLAUDE_PLUGIN_ROOT`, terminal humans via `$TOME` — see below.)
+(`tome init` prints the exact next command: `tome-setup-quartz` if you have
+the human CLI installed, otherwise the real script path. Agents reach it via
+`$CLAUDE_PLUGIN_ROOT`.)
 
 The first command clones [Quartz](https://github.com/jackyzha0/quartz)
 (pinned to a known-good commit), wires the vault's `wiki/` in as its content
@@ -82,26 +83,27 @@ safe to re-run any time. The second serves the site locally.
 ## Human CLI access (optional)
 
 Agents invoke `tome` via `$CLAUDE_PLUGIN_ROOT` automatically — nothing to set
-up. If you also want to run `tome` yourself from a terminal, clone this repo
-and point a persistent `TOME` env var at it, e.g. on Windows PowerShell:
+up. If you also want to run `tome` yourself from a terminal:
 
 ```
-$env:TOME = "$HOME\Development\tome"
-function tome { python "$env:TOME\scripts\tome.py" @args }
+uv tool install git+https://github.com/chicken-noodle-chris/tome.git
 ```
 
-(add both lines to your `$PROFILE` to persist across sessions). A packaged
-install (`uv tool install git+https://github.com/chicken-noodle-chris/tome.git`,
-with `pipx` as the works-too fallback) is future scope — not needed today.
+(`pipx install git+https://github.com/chicken-noodle-chris/tome.git` works
+too, if you prefer pipx.) This puts `tome` and `tome-setup-quartz` on PATH
+with the right interpreter baked in. Working from a local clone instead?
+`uv tool install ~/Development/tome` installs from the path directly — that's
+also how to pick up local changes before pushing.
 
 ## Repo layout
 
 ```
 tome/
-├─ scripts/           tome.py (CLI), tome_lint.py, wiki_search.py, setup_quartz.py
+├─ src/tome_cli/      the package: cli.py, lint.py, search.py, quartz_setup.py, templates/
+├─ scripts/           thin shims (tome.py, tome_lint.py, wiki_search.py, setup_quartz.py) —
+│                     the plugin's actual invocation path via $CLAUDE_PLUGIN_ROOT
 ├─ skills/            pickup-task, write-a-plan, retrospect, ingest, query
 ├─ hooks/             Stop hook: reminds you to sync a dirty vault
-├─ templates/         scaffolding sources for `tome init`
 └─ .claude-plugin/    plugin + marketplace manifest
 ```
 
@@ -112,9 +114,11 @@ pip install pytest
 python -m pytest
 ```
 
+To exercise the packaged install locally: `pip install .` (or `uv tool
+install --force .`), then `tome help`.
+
 ## Out of scope (for now)
 
-- `pyproject.toml` / pipx packaging (see "Human CLI access" above).
 - A multi-vault registry — the CLI's root-resolution seam supports it, but
   registration itself waits for a real need.
 - Non-Windows hook portability: hooks invoke `python`, which is correct on

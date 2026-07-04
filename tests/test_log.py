@@ -1,6 +1,6 @@
 """tome log — appends a formatted entry to wiki/log.md."""
 
-import tome
+from tome_cli import cli as tome
 
 
 def test_log_appends_formatted_entry(make_vault, run_tome):

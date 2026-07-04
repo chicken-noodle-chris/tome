@@ -2,7 +2,7 @@
 
 import pytest
 
-import tome
+from tome_cli import cli as tome
 
 
 def test_explicit_vault_wins(make_vault, tmp_path, monkeypatch):

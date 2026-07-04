@@ -1,6 +1,6 @@
 """tome task — passthrough to a pinned backlog.md release."""
 
-import tome
+from tome_cli import cli as tome
 
 
 def test_task_pins_backlog_version(make_vault, run_tome, monkeypatch):

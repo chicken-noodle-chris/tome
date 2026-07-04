@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tome-cli"
+version = "1.2.0"
+description = "Tome: a commonplace book for you and your agents — the vault CLI, lint, and search tooling."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "Chris" }]
+
+[project.urls]
+Repository = "https://github.com/chicken-noodle-chris/tome"
+
+[project.scripts]
+tome = "tome_cli.cli:main"
+tome-setup-quartz = "tome_cli.quartz_setup:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tome_cli"]

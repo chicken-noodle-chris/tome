@@ -1,7 +1,7 @@
 """tome_lint: one focused test per finding code, plus parse_frontmatter edges."""
 
-import tome
-import tome_lint
+from tome_cli import cli as tome
+from tome_cli import lint as tome_lint
 
 
 def _write_raw(vault, rel_path, text):
