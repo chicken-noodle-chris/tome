@@ -850,7 +850,7 @@ looking for conventions.toml, else $VAULT_ROOT.
 """
 
 
-def cmd_help(vault_root, conventions, args):
+def cmd_help(args):
     print(HELP_TEXT)
     return 0
 
@@ -930,12 +930,12 @@ def main():
     try:
         if args.command == "init":
             return cmd_init(args)
+        if args.command == "help":
+            return cmd_help(args)
 
         vault_root = resolve_vault_root(args.vault)
         conventions = load_conventions(vault_root)
 
-        if args.command == "help":
-            return cmd_help(vault_root, conventions, args)
         if args.command == "lint":
             return cmd_lint(vault_root, conventions, args)
         if args.command == "sync":
