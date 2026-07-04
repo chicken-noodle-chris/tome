@@ -42,6 +42,10 @@ dirs = ["indexes"]
 [index]
 # Relative to wiki root.
 file = "index.md"
+# Soft line-count cap before INDEX_OVERSIZE warns — a measurement, not a
+# sharding mechanism (nothing shards automatically; see tome-repo history
+# for why the shard-at-this-size promise was cut).
+soft_cap_lines = 400
 
 [description]
 max_chars = 140

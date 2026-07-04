@@ -61,7 +61,8 @@ def test_sync_dirty_without_message_fails(tmp_path, run_tome, capsys):
 
 def test_sync_dirty_with_message_commits_and_pushes(tmp_path, run_tome, capsys):
     vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
-    (vault / "wiki" / "scratch.md").write_text("scratch\n", encoding="utf-8")
+    with (vault / "wiki" / "log.md").open("a", encoding="utf-8") as fh:
+        fh.write("\nscratch note\n")
 
     code = run_tome("--vault", str(vault), "sync", "-m", "add scratch")
 
@@ -80,3 +81,43 @@ def test_sync_refuses_non_main_branch(tmp_path, run_tome, capsys):
 
     assert code == 1
     assert "not main" in capsys.readouterr().err
+
+
+def test_sync_dirty_with_broken_link_refuses_to_commit(tmp_path, run_tome, capsys, make_page):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    make_page(vault, "scratch/notes/broken.md", type="concept", tags=["project"],
+              body="\nSee [[does-not-exist]].\n")
+
+    code = run_tome("--vault", str(vault), "sync", "-m", "add broken page")
+
+    assert code == 1
+    assert "refusing to sync" in capsys.readouterr().err
+    status = _git(vault, "status", "--porcelain")
+    assert status.stdout.strip()  # nothing got committed
+
+
+def test_sync_dirty_with_broken_link_and_no_verify_commits(tmp_path, run_tome, capsys, make_page):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    make_page(vault, "scratch/notes/broken.md", type="concept", tags=["project"],
+              body="\nSee [[does-not-exist]].\n")
+
+    code = run_tome("--vault", str(vault), "sync", "-m", "add broken page", "--no-verify")
+
+    assert code == 0
+    assert "synced." in capsys.readouterr().out
+    status = _git(vault, "status", "--porcelain")
+    assert status.stdout.strip() == ""
+
+
+def test_sync_clean_but_broken_vault_still_pulls(tmp_path, run_tome, capsys, make_page):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    make_page(vault, "scratch/notes/broken.md", type="concept", tags=["project"],
+              body="\nSee [[does-not-exist]].\n")
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "add broken page directly")
+    _git(vault, "push")
+
+    code = run_tome("--vault", str(vault), "sync")
+
+    assert code == 0
+    assert "already in sync" in capsys.readouterr().out

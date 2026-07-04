@@ -1,7 +1,5 @@
 """Lifecycle commands: new, describe, set-status, mv."""
 
-import pytest
-
 import tome
 
 
@@ -246,11 +244,7 @@ def test_mv_refuses_project_hub(make_vault, run_tome, capsys):
     assert "project hub" in capsys.readouterr().err
 
 
-@pytest.mark.xfail(strict=True, reason="self-link rewrite, fixed in cli-hardening-batch")
 def test_mv_rewrites_pages_own_self_link(make_vault, run_tome, make_page):
-    """Known bug (scripts/tome.py:552): the rewrite loop skips the page being
-    renamed itself, so a self-referential [[old-slug]] in its own body is
-    left stale. Correct behavior would rewrite it too."""
     vault = make_vault()
     _new_project(run_tome, vault, "myproj")
     make_page(vault, "myproj/notes/selfy.md", type="concept", title="Selfy",

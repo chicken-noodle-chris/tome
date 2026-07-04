@@ -220,6 +220,36 @@ def test_desc_too_long(make_vault, make_page):
                for f in findings)
 
 
+def test_index_oversize_warns_past_soft_cap(make_vault, run_tome):
+    vault = make_vault()
+    run_tome("--vault", str(vault), "new", "project", "proj",
+             "--title", "Proj", "--desc", "d")
+    conventions = tome.load_conventions(vault)
+    conventions["index"]["soft_cap_lines"] = 5
+    index_path = vault / "wiki" / "index.md"
+
+    findings = tome.check_index_oversize(conventions, index_path)
+
+    assert any(f.code == "INDEX_OVERSIZE" for f in findings)
+    assert findings[0].severity == tome.WARNING
+
+
+def test_index_oversize_missing_key_defaults(make_vault, run_tome):
+    vault = make_vault()
+    run_tome("--vault", str(vault), "new", "project", "proj",
+             "--title", "Proj", "--desc", "d")
+    conventions = tome.load_conventions(vault)
+    del conventions["index"]["soft_cap_lines"]
+    index_path = vault / "wiki" / "index.md"
+    with index_path.open("a", encoding="utf-8", newline="\n") as fh:
+        fh.write("x\n" * 500)
+
+    findings = tome.check_index_oversize(conventions, index_path)
+
+    assert any(f.code == "INDEX_OVERSIZE" and "cap 400" in f.message
+               for f in findings)
+
+
 # --------------------------------------------------------------------------- #
 # parse_frontmatter edge cases
 # --------------------------------------------------------------------------- #

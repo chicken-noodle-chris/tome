@@ -37,10 +37,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import tome_lint  # noqa: E402 — same directory, see module docstring above
 
 ERROR = tome_lint.ERROR
+WARNING = tome_lint.WARNING
 Finding = tome_lint.Finding
 FRONTMATTER_RE = tome_lint.FRONTMATTER_RE
 
 SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+
+# `tome task` passthrough version, pinned like the repo's other dependencies
+# (Quartz is SHA-pinned, quartz.lock.json locks its plugins) rather than
+# floating on @latest. Bump deliberately: check `npm view backlog.md
+# version`, update this constant, run `tome task task list --plain` against
+# a real vault to confirm the new release still behaves, then commit.
+BACKLOG_VERSION = "1.47.1"
 
 # Scaffolding sources for `tome init` — lives alongside scripts/ at the
 # plugin root, not inside any vault (a vault and the plugin are always
@@ -229,9 +237,6 @@ automatically). Change a page's one-line summary with
 The catalog of all pages in this wiki, organized by project. The LLM reads
 this first when answering queries to identify candidate pages.
 
-When this file exceeds ~300 lines or the wiki passes ~150 pages, shard into
-`wiki/indexes/<project>.md`.
-
 ---
 """
 
@@ -382,12 +387,33 @@ def check_index_generated_drift(pages, conventions, wiki_root, index_path):
     return []
 
 
-def cmd_lint(vault_root, conventions, args):
+def check_index_oversize(conventions, index_path):
+    soft_cap = conventions.get("index", {}).get("soft_cap_lines", 400)
+    try:
+        line_count = index_path.read_text(encoding="utf-8").count("\n")
+    except OSError as e:
+        return [Finding(ERROR, "READ_ERROR", index_path.name, str(e))]
+    if line_count > soft_cap:
+        return [Finding(WARNING, "INDEX_OVERSIZE", index_path.name,
+                         f"{line_count} lines (soft cap {soft_cap}) — "
+                         "consider trimming or splitting projects")]
+    return []
+
+
+def run_all_lint_checks(vault_root, conventions):
+    """The full check set `cmd_lint` reports and `cmd_sync`'s commit gate
+    enforces — one body so the two commands can't drift apart."""
     wiki_root = vault_root / "wiki"
     index_path = wiki_root / conventions["index"]["file"]
     pages, findings = tome_lint.run(wiki_root, conventions, index_path)
     findings += check_description_cap(pages, conventions)
     findings += check_index_generated_drift(pages, conventions, wiki_root, index_path)
+    findings += check_index_oversize(conventions, index_path)
+    return pages, findings
+
+
+def cmd_lint(vault_root, conventions, args):
+    pages, findings = run_all_lint_checks(vault_root, conventions)
     print(tome_lint.render_text(pages, findings))
     gating = findings if args.strict else [f for f in findings if f.severity == ERROR]
     return 1 if gating else 0
@@ -548,6 +574,17 @@ def cmd_mv(vault_root, conventions, args):
     old_bare, new_bare = f"[[{args.slug}]]", f"[[{args.new_slug}]]"
     old_alias, new_alias = f"[[{args.slug}|", f"[[{args.new_slug}|"
     touched = []
+
+    # The renamed page's own body may self-link its old slug; the main loop
+    # below skips this page (its stale path no longer exists to read), so
+    # rewrite it separately against new_path first.
+    self_text = new_path.read_text(encoding="utf-8")
+    self_rewritten = replace_outside_code(self_text, old_bare, new_bare)
+    self_rewritten = replace_outside_code(self_rewritten, old_alias, new_alias)
+    if self_rewritten != self_text:
+        new_path.write_text(self_rewritten, encoding="utf-8", newline="\n")
+        touched.append(new_path.relative_to(wiki_root).as_posix())
+
     for p in pages:
         if p["path"] == page["path"]:
             continue
@@ -699,6 +736,16 @@ def cmd_sync(vault_root, conventions, args):
         raise VaultError("tree is dirty — a commit message is required: "
                           "`tome sync -m \"...\"`")
 
+    if not args.no_verify:
+        pages, findings = run_all_lint_checks(vault_root, conventions)
+        errors = [f for f in findings if f.severity == ERROR]
+        if errors:
+            print(tome_lint.render_text(pages, findings))
+            print("tome: refusing to sync — a dirty commit would publish a "
+                  "vault that fails its own lint. Fix the errors above, or "
+                  "pass --no-verify to commit anyway.", file=sys.stderr)
+            return 1
+
     add = run_git(vault_root, ["add", "-A"])
     if add.returncode != 0:
         print(add.stderr, file=sys.stderr)
@@ -718,7 +765,7 @@ def cmd_sync(vault_root, conventions, args):
 
 
 def cmd_task(vault_root, conventions, args):
-    cmd = ["npx", "--yes", "backlog.md@latest", *args.args]
+    cmd = ["npx", "--yes", f"backlog.md@{BACKLOG_VERSION}", *args.args]
     proc = subprocess.run(cmd, cwd=str(vault_root), shell=(sys.platform == "win32"))
     return proc.returncode
 
@@ -759,8 +806,9 @@ tome.py — mechanical vault operations (see wiki/SCHEMA.md for the "why")
   tome lint [--strict]
       Structural checks (broken links, orphans, frontmatter, index drift).
 
-  tome sync [-m "message"]
-      Pull (always). If dirty: commit (message required) + push. main-only.
+  tome sync [-m "message"] [--no-verify]
+      Pull (always). If dirty: lint-gates (errors abort, --no-verify skips),
+      then commit (message required) + push. main-only.
       e.g. tome sync -m "Add offline-mode idea"
 
   tome task <args...>
@@ -802,6 +850,8 @@ def build_parser():
     p = sub.add_parser("sync", help="pull, and commit+push if dirty",
                         epilog='e.g. tome sync -m "message"')
     p.add_argument("-m", "--message", help="commit message (required if dirty)")
+    p.add_argument("--no-verify", action="store_true",
+                   help="skip the lint gate on the commit path")
 
     p = sub.add_parser("task", help="passthrough to backlog.md",
                         epilog="e.g. tome task list --plain", add_help=False)
