@@ -8,10 +8,11 @@ Optional input: a source (a file, a URL, or something already in `raw/`) and opt
 
 Conventions live in `wiki/SCHEMA.md` and `conventions.toml`; `scripts/tome.py` (`tome help`)
 scaffolds pages and keeps the index in sync — lean on it rather than hand-authoring frontmatter.
-`tome` ships as a plugin at `$CLAUDE_PLUGIN_ROOT`, separate from the vault it operates on;
-`tome <cmd>` means `python "$CLAUDE_PLUGIN_ROOT/scripts/tome.py" <cmd>` (it resolves which
-vault to act on via `--vault` / walking up from cwd / `VAULT_ROOT`), and bare paths like
-`raw/` are relative to the vault root, not the plugin root.
+`tome` is on PATH in Bash (the plugin's SessionStart hook puts it there) — just run
+`tome <cmd>`; if it's ever not found, fall back to `python
+"$TOME_PLUGIN_ROOT/scripts/tome.py" <cmd>`. It resolves which vault to act on via `--vault`
+/ walking up from cwd / `VAULT_ROOT`, and bare paths like `raw/` are relative to the vault
+root, not the plugin root.
 
 1. **Prime yourself.** Run `tome sync` to pull, then read `wiki/SCHEMA.md` if you haven't this
    session — it overrides anything below. Confirm which project the source belongs to

@@ -14,10 +14,10 @@ Hold the line against two neighbours — if a finding belongs to them, hand it o
 - **retrospect** asks *what the way-we-work should learn*: it refines the conventions and the capture process itself, not the pages. "This link is broken" → lint. "We keep forgetting to record decisions, so SCHEMA should require it" → yours.
 
 Conventions live in **`wiki/SCHEMA.md` — the authority**; `scripts/tome.py` (`tome help`)
-enforces the mechanics. `tome` ships as a plugin at `$CLAUDE_PLUGIN_ROOT`, separate from
-the vault it operates on; `tome <cmd>` throughout means `python
-"$CLAUDE_PLUGIN_ROOT/scripts/tome.py" <cmd>` (it resolves which vault to act on via
-`--vault` / walking up from cwd / `VAULT_ROOT`). There is **one gate**: the user approves
+enforces the mechanics. `tome` is on PATH in Bash (the plugin's SessionStart hook puts it
+there) — just run `tome <cmd>`; if it's ever not found, fall back to `python
+"$TOME_PLUGIN_ROOT/scripts/tome.py" <cmd>`. It resolves which vault to act on via
+`--vault` / walking up from cwd / `VAULT_ROOT`. There is **one gate**: the user approves
 the proposed refinements before anything is written.
 
 1. **Prime, and set the window.** Run `tome sync` to pull, then read the vault's

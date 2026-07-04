@@ -11,10 +11,10 @@ This skill executes work that's already been planned. Three phases: **locate & s
 (step 7). The throughline: the vault's task/plan status reflects reality at every step —
 mark work *started* before you begin and *done* when it lands. Conventions live in
 `wiki/SCHEMA.md`; `scripts/tome.py` (`tome help`) enforces the mechanics — lean on it
-rather than hand-executing status moves, links, or git. `tome` ships as a plugin at
-`$CLAUDE_PLUGIN_ROOT`, separate from the vault it operates on; `tome <cmd>` throughout
-means `python "$CLAUDE_PLUGIN_ROOT/scripts/tome.py" <cmd>` (it resolves which vault to
-act on via `--vault` / walking up from cwd / `VAULT_ROOT`), and bare paths like
+rather than hand-executing status moves, links, or git. `tome` is on PATH in Bash (the
+plugin's SessionStart hook puts it there) — just run `tome <cmd>`; if it's ever not found,
+fall back to `python "$TOME_PLUGIN_ROOT/scripts/tome.py" <cmd>`. It resolves which vault to
+act on via `--vault` / walking up from cwd / `VAULT_ROOT`, and bare paths like
 `wiki/SCHEMA.md` are relative to the vault root, not the plugin root.
 
 Throughout, **the user is always happy to answer questions.** If intent or scope is

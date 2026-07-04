@@ -83,8 +83,12 @@ safe to re-run any time. The second serves the site locally.
 
 ## Human CLI access (optional)
 
-Agents invoke `tome` via `$CLAUDE_PLUGIN_ROOT` automatically — nothing to set
-up. If you also want to run `tome` yourself from a terminal:
+Agents get `tome` on PATH automatically — the plugin's SessionStart hook
+prepends `scripts/` to the session PATH (via `$CLAUDE_ENV_FILE`) and exports
+`$TOME_PYTHON`, so every Bash command an agent runs can call `tome <cmd>`
+directly, no path wrangling and nothing to re-point when the plugin updates.
+That covers agents in Bash; if you also want to run `tome` yourself from a
+terminal:
 
 ```
 uv tool install git+https://github.com/chicken-noodle-chris/tome.git

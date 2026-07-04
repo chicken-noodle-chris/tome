@@ -12,10 +12,10 @@ place* until the user is happy; don't stop to ask "what do I do next?" between s
 
 Conventions (frontmatter, placement, body style, linking, status vocabulary) live in
 `wiki/SCHEMA.md` and are enforced by `scripts/tome.py` — run `tome help` and lean on it
-rather than hand-executing mechanics. `tome` ships as a plugin at `$CLAUDE_PLUGIN_ROOT`,
-separate from the vault it operates on; `tome <cmd>` throughout means `python
-"$CLAUDE_PLUGIN_ROOT/scripts/tome.py" <cmd>` (it resolves which vault to act on via
-`--vault` / walking up from cwd / `VAULT_ROOT`), and bare paths like `wiki/SCHEMA.md`
+rather than hand-executing mechanics. `tome` is on PATH in Bash (the plugin's SessionStart
+hook puts it there) — just run `tome <cmd>`; if it's ever not found, fall back to `python
+"$TOME_PLUGIN_ROOT/scripts/tome.py" <cmd>`. It resolves which vault to act on via
+`--vault` / walking up from cwd / `VAULT_ROOT`, and bare paths like `wiki/SCHEMA.md`
 are relative to the vault root, not the plugin root.
 
 1. **Understand the goal.** If the user didn't describe the task, interview them: ask

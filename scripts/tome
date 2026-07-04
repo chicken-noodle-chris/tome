@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# `tome` entry point for agents: the SessionStart hook prepends this scripts/
+# dir to PATH via $CLAUDE_ENV_FILE and exports TOME_PYTHON (its own
+# interpreter — known good, sidesteps the python-vs-python3 guess and
+# Windows' Store-stub python3). The probe loop below only runs when the env
+# file mechanism was unavailable.
+dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -n "$TOME_PYTHON" ] && [ -x "$TOME_PYTHON" ]; then
+  exec "$TOME_PYTHON" "$dir/tome.py" "$@"
+fi
+for py in python3 python; do
+  if command -v "$py" >/dev/null 2>&1; then
+    exec "$py" "$dir/tome.py" "$@"
+  fi
+done
+echo "tome: no Python interpreter found on PATH" >&2
+exit 127

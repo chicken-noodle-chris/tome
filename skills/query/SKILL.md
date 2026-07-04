@@ -7,10 +7,11 @@ when_to_run: When the user asks what the wiki knows about something, or a questi
 Optional input: the question, and optionally a project to scope it to.
 
 Conventions live in `wiki/SCHEMA.md`; `scripts/tome.py` (`tome help`) scaffolds any page this
-produces. `tome` ships as a plugin at `$CLAUDE_PLUGIN_ROOT`, separate from the vault it
-operates on; `tome <cmd>` means `python "$CLAUDE_PLUGIN_ROOT/scripts/tome.py" <cmd>` (it
-resolves which vault to act on via `--vault` / walking up from cwd / `VAULT_ROOT`), and
-bare paths like `wiki/index.md` are relative to the vault root, not the plugin root.
+produces. `tome` is on PATH in Bash (the plugin's SessionStart hook puts it there) — just
+run `tome <cmd>`; if it's ever not found, fall back to `python
+"$TOME_PLUGIN_ROOT/scripts/tome.py" <cmd>`. It resolves which vault to act on via `--vault`
+/ walking up from cwd / `VAULT_ROOT`, and bare paths like `wiki/index.md` are relative to
+the vault root, not the plugin root.
 
 1. **Prime yourself.** Read `wiki/SCHEMA.md` if you haven't this session — some wikis declare
    query-specific conventions that override the default flow below.
@@ -20,7 +21,7 @@ bare paths like `wiki/index.md` are relative to the vault root, not the plugin r
    selective; reading dozens of pages to answer one question means the index isn't doing its job.
 
 3. **Fall back to search only if the index doesn't surface good candidates.** `python
-   "$CLAUDE_PLUGIN_ROOT/scripts/wiki_search.py" "query terms" --top 10 --wiki wiki` (BM25 over
+   "$TOME_PLUGIN_ROOT/scripts/wiki_search.py" "query terms" --top 10 --wiki wiki` (BM25 over
    frontmatter + body; `--type`, `--tag`, `--since` filters; `--backlinks <slug>` for inbound-link
    lookups). Fallback, not the default — index-first is cheaper and more interpretable when it works.
 
