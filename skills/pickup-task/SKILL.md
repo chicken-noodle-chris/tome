@@ -30,9 +30,8 @@ unclear — which task, how far to take it, an ambiguity in the plan — ask.
    follow its `[[wikilinks]]`. Find the matching task with `tome task task <id> --plain`
    (a plan may have none — normal).
 
-3. **Confirm scope before starting.** Tell the user what you found — the plan, the task,
-   what executing it entails — and confirm they want you to proceed. Surface anything in
-   the plan that looks stale or underspecified.
+3. **Do you have any concerns?** If you do, stop and discuss with the user. If you feel
+   like you have enough information to complete the task, say so and continue.
 
 4. **Mark the work started.** `tome set-status <slug> active`, `tome task task edit <id>
    -s "In Progress" -a @me`, `tome log work-started "..."`.
@@ -42,9 +41,9 @@ unclear — which task, how far to take it, an ambiguity in the plan — ask.
    doesn't resolve, ask rather than guess. Verify per the plan's verification section and
    report results honestly.
 
-6. **Present the work, then commit it on approval.** Show the user what changed and the
+6. **Commit, then present the work.** Commit by default. Show the user what changed and the
    verification results. The code repo is separate from the vault and follows its own
-   commit conventions — check its `CLAUDE.md`. Commit/push only after the user approves.
+   commit conventions — check its `CLAUDE.md`. Push only after the user approves.
 
 7. **Close out the tracking.** Once the work has landed: `tome set-status <slug> done`
    (or `superseded`/`abandoned`) — this moves the plan to `plans/archive/` and regenerates
