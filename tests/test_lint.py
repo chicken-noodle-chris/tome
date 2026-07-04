@@ -234,6 +234,61 @@ def test_index_oversize_warns_past_soft_cap(make_vault, run_tome):
     assert findings[0].severity == tome.WARNING
 
 
+def test_unparsed_frontmatter_nested_map(make_vault, make_page):
+    vault = make_vault()
+    make_page(vault, "proj/proj.md", type="project", title="Proj")
+    make_page(vault, "proj/notes/nested.md", type="concept", title="Nested",
+              extra_fm=["meta:", "  key: value"])
+
+    pages, findings = _lint(vault)
+
+    assert "UNPARSED_FRONTMATTER" in _codes_for(findings, "proj/notes/nested.md")
+
+
+def test_unparsed_frontmatter_multiline_scalar(make_vault, make_page):
+    vault = make_vault()
+    make_page(vault, "proj/proj.md", type="project", title="Proj")
+    make_page(vault, "proj/notes/multiline.md", type="concept", title="Multiline",
+              extra_fm=["notes: |", "  Some", "  Text"])
+
+    pages, findings = _lint(vault)
+
+    assert "UNPARSED_FRONTMATTER" in _codes_for(findings, "proj/notes/multiline.md")
+
+
+def test_unparsed_frontmatter_tab_indented_list_item(make_vault, make_page):
+    vault = make_vault()
+    make_page(vault, "proj/proj.md", type="project", title="Proj")
+    make_page(vault, "proj/notes/tabbed.md", type="concept", title="Tabbed",
+              extra_fm=["aliases:", "\t- one"])
+
+    pages, findings = _lint(vault)
+
+    assert "UNPARSED_FRONTMATTER" in _codes_for(findings, "proj/notes/tabbed.md")
+
+
+def test_unparsed_frontmatter_comment_line(make_vault, make_page):
+    vault = make_vault()
+    make_page(vault, "proj/proj.md", type="project", title="Proj")
+    make_page(vault, "proj/notes/commented.md", type="concept", title="Commented",
+              extra_fm=["# a comment"])
+
+    pages, findings = _lint(vault)
+
+    assert "UNPARSED_FRONTMATTER" in _codes_for(findings, "proj/notes/commented.md")
+
+
+def test_subset_forms_all_parse_clean(make_vault, make_page):
+    vault = make_vault()
+    make_page(vault, "proj/proj.md", type="project", title="Proj")
+    make_page(vault, "proj/notes/clean.md", type="concept", title="Clean",
+              extra_fm=["aliases: [a, b]", "authors:", "  - Alice", "  - Bob"])
+
+    pages, findings = _lint(vault)
+
+    assert "UNPARSED_FRONTMATTER" not in _codes_for(findings, "proj/notes/clean.md")
+
+
 def test_index_oversize_missing_key_defaults(make_vault, run_tome):
     vault = make_vault()
     run_tome("--vault", str(vault), "new", "project", "proj",
@@ -275,6 +330,13 @@ def test_parse_frontmatter_quoted_values():
     assert meta["title"] == "Hello World"
 
 
+def test_parse_frontmatter_quoted_value_keeps_colon_and_comma():
+    meta, body, malformed = tome_lint.parse_frontmatter(
+        '---\ntitle: "Ratio: 3, 2, 1"\n---\nbody\n')
+    assert malformed is False
+    assert meta["title"] == "Ratio: 3, 2, 1"
+
+
 def test_parse_frontmatter_empty_value():
     meta, body, malformed = tome_lint.parse_frontmatter(
         '---\ndescription:\n---\nbody\n')
@@ -294,3 +356,32 @@ def test_parse_frontmatter_no_frontmatter_at_all():
     assert malformed is False
     assert meta == {}
     assert body == "just a plain body\nno frontmatter\n"
+
+
+# --------------------------------------------------------------------------- #
+# write_page round-trip guard
+# --------------------------------------------------------------------------- #
+
+def test_write_page_rejects_frontmatter_that_cannot_round_trip(tmp_path):
+    path = tmp_path / "bad.md"
+    # A bare "---" line would prematurely close the frontmatter block when
+    # write_page appends its own closing fence, silently swallowing
+    # "other: bad" into the body — write_page must refuse this outright.
+    bad_fm_lines = ["title: test", "---", "other: bad"]
+
+    try:
+        tome.write_page(path, bad_fm_lines, "\nbody\n")
+        assert False, "expected VaultError"
+    except tome.VaultError:
+        pass
+    assert not path.exists()
+
+
+def test_write_page_accepts_valid_frontmatter(tmp_path):
+    path = tmp_path / "good.md"
+    fm_lines = ['title: "Good"', "tags: [a, b]"]
+
+    tome.write_page(path, fm_lines, "\nbody\n")
+
+    assert path.is_file()
+    assert '"Good"' in path.read_text(encoding="utf-8")

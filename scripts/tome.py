@@ -123,6 +123,9 @@ def load_conventions(vault_root):
 # need to mutate specific keys while leaving everything else — body,
 # formatting, comments a human added — untouched, so this operates on the raw
 # frontmatter *lines* rather than round-tripping through a dict serializer.
+# fm_get/fm_set are line-surgery editors, not parsers — they still must only
+# ever produce lines within the subset documented above
+# tome_lint.parse_frontmatter, since write_page() below enforces exactly that.
 # --------------------------------------------------------------------------- #
 
 def read_page(path):
@@ -136,6 +139,16 @@ def read_page(path):
 
 
 def write_page(path, fm_lines, body):
+    """Refuse to write a frontmatter line outside the subset documented above
+    tome_lint.parse_frontmatter — cheap insurance that fm_get/fm_set and the
+    parser can't silently drift apart. (Checking parse_frontmatter's own
+    `malformed` flag on the reconstructed text wouldn't catch this: write_page
+    always appends the closing `---` fence itself, so that flag can never
+    come back True here — a stray fm_line like a bare "---" would instead get
+    silently swallowed into the body across the parser's lazy fence match.)"""
+    for line in fm_lines:
+        if line.strip() and not tome_lint.is_subset_frontmatter_line(line):
+            raise VaultError(f"{path}: frontmatter line outside the supported subset: {line!r}")
     text = "---\n" + "\n".join(fm_lines) + "\n---\n" + body
     path.write_text(text, encoding="utf-8", newline="\n")
 

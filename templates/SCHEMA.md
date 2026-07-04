@@ -20,6 +20,12 @@ Reads stay native file tools; there is no read/query surface here. Start and
 end vault work with `tome sync`. `tome lint` must pass error-free as the
 last step of any wiki-touching task.
 
+Frontmatter is a hand-rolled subset, not full YAML: `key: value`, inline
+lists (`key: [a, b, c]`), and block lists (`key:` then `  - value` lines) —
+no nested maps, multi-line scalars, or comments. Pages are normally
+scaffolded by `tome new`; this only matters for hand-edits, and `tome lint`
+flags anything outside it.
+
 ## Repo layout
 
 Wiki root: `wiki/`; raw sources: `raw/`; assets: `raw/assets/`. A personal,

@@ -81,9 +81,34 @@ def strip_code(text):
     return text
 
 
+# The frontmatter subset this parser supports — the single contract every
+# script in this repo (tome_lint, wiki_search, tome.py's fm_get/fm_set) is
+# built against. A block is `---` fenced; inside it, every non-blank line
+# must be one of:
+#   - `key: value`      (value optionally single- or double-quoted)
+#   - `key: [a, b, c]`  (inline list)
+#   - `key:`            (bare, opens a block list)
+#   - `  - value`       (block-list item: exactly two spaces, dash, space)
+# Nothing else — no nested maps, no multi-line scalars, no comments. Keys
+# match `[a-zA-Z_]+`. This is a deliberate hand-rolled subset (stdlib-only,
+# no PyYAML), not full YAML; check_frontmatter_syntax() below turns any line
+# outside this subset into a loud UNPARSED_FRONTMATTER error instead of the
+# silent drop this parser would otherwise do.
+FM_KV_RE = re.compile(r"^[a-zA-Z_]+:\s*.*$")
+
+
+def is_subset_frontmatter_line(raw):
+    """True if `raw` matches one of the subset forms documented above:
+    `key: value` (covers plain scalars, quoted scalars, inline lists, and
+    bare `key:`), or a `  - value` block-list item."""
+    return bool(FM_KV_RE.match(raw)) or raw.startswith("  - ")
+
+
 def parse_frontmatter(text):
     """Return (metadata, body, malformed). malformed=True if a frontmatter block
-    was opened with --- but could not be parsed."""
+    was opened with --- but could not be parsed. Lines outside the documented
+    subset above are silently skipped here (kept lenient on purpose);
+    check_frontmatter_syntax() is what flags them loudly."""
     if not text.startswith("---"):
         return {}, text, False
     m = FRONTMATTER_RE.match(text)
@@ -140,11 +165,13 @@ def collect_pages(wiki_root, skip_files, skip_dirs):
             pages.append(page)
             continue
         meta, body, malformed = parse_frontmatter(text)
+        fm_match = FRONTMATTER_RE.match(text) if text.startswith("---") else None
         page.update(
             meta=meta,
             line_count=text.count("\n") + 1,
             links=extract_links(body),
             malformed_fm=malformed,
+            fm_lines=fm_match.group(1).split("\n") if fm_match else [],
         )
         pages.append(page)
     return pages
@@ -218,6 +245,25 @@ def check_frontmatter(pages, required):
         if missing:
             out.append(Finding(ERROR, "MISSING_FRONTMATTER", p["rel_path"],
                                f"missing: {', '.join(missing)}"))
+    return out
+
+
+def check_frontmatter_syntax(pages):
+    """parse_frontmatter() silently drops any line outside the documented
+    subset (nested maps, multi-line scalars, tab-indented list items,
+    comments) rather than erroring. Re-scan the raw lines and flag those
+    loudly instead — a page malformed enough to fail check_frontmatter
+    already reports that; skip it here to avoid double-reporting."""
+    out = []
+    for p in pages:
+        if "read_error" in p or p["malformed_fm"]:
+            continue
+        for raw in p.get("fm_lines", []):
+            if not raw.strip():
+                continue
+            if not is_subset_frontmatter_line(raw):
+                out.append(Finding(ERROR, "UNPARSED_FRONTMATTER", p["rel_path"],
+                                   f"line outside the supported subset: {raw!r}"))
     return out
 
 
@@ -337,6 +383,7 @@ def run(wiki_root, conventions, index_path):
     findings += check_duplicate_slugs(pages)
     findings += check_links_and_orphans(pages, resolvable)
     findings += check_frontmatter(pages, conventions["frontmatter"]["required"])
+    findings += check_frontmatter_syntax(pages)
     findings += check_size(pages, conventions["size"]["soft_cap"], conventions["size"]["hard_cap"])
     findings += check_type_and_tags(pages, set(conventions["types"]["enum"]), tag_vocab)
     findings += check_plan_dirs(pages, set(conventions["plan_status"]["live"]),

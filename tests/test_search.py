@@ -54,3 +54,43 @@ def test_backlinks_finds_inbound_link(tmp_path):
 
     assert len(inbound) == 1
     assert inbound[0]["slug"] == "linker"
+
+
+def test_load_skip_lists_falls_back_when_no_conventions_file(tmp_path):
+    wiki_root = tmp_path / "wiki"
+    wiki_root.mkdir()
+
+    skip_files, skip_dirs = wiki_search.load_skip_lists(wiki_root)
+
+    assert skip_files == wiki_search.DEFAULT_SKIP_FILES
+    assert skip_dirs == wiki_search.DEFAULT_SKIP_DIRS
+
+
+def test_load_skip_lists_reads_conventions_file(tmp_path):
+    wiki_root = tmp_path / "wiki"
+    wiki_root.mkdir()
+    (tmp_path / "conventions.toml").write_text(
+        '[skip]\nfiles = ["SCHEMA.md", "index.md", "log.md", "README.md"]\n'
+        'dirs = ["indexes"]\n',
+        encoding="utf-8",
+    )
+
+    skip_files, skip_dirs = wiki_search.load_skip_lists(wiki_root)
+
+    assert skip_files == {"SCHEMA.md", "index.md", "log.md", "README.md"}
+    assert skip_dirs == {"indexes"}
+
+
+def test_collect_pages_honors_conventions_skip_list(tmp_path):
+    wiki_root = tmp_path / "wiki"
+    wiki_root.mkdir()
+    (tmp_path / "conventions.toml").write_text(
+        '[skip]\nfiles = ["README.md"]\ndirs = ["indexes"]\n', encoding="utf-8")
+    _write_page(wiki_root, "README.md", title="Readme", body="Not a content page.")
+    _write_page(wiki_root, "proj/notes/real.md", title="Real", body="Real content.")
+
+    pages = wiki_search.collect_pages(wiki_root)
+
+    slugs = {p["slug"] for p in pages}
+    assert "real" in slugs
+    assert "README" not in slugs

@@ -16,7 +16,6 @@ Options:
     --since YYYY-MM-DD      Only pages updated on or after this date
     --backlinks <slug>      Find pages that link to <slug>; ignores the query
     --top-linked N          Show the N most-linked-to pages (hubs); ignores the query
-    --cache <path>          Persist the BM25 index to disk for faster reruns
 
 Examples:
     python wiki_search.py "diffusion training stability" --top 5
@@ -30,43 +29,34 @@ import json
 import math
 import re
 import sys
+import tomllib
 from collections import Counter, defaultdict
 from datetime import date, datetime
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import tome_lint  # noqa: E402 — same directory, see tome.py:36 for the idiom
 
 WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|[^\]]+)?\]\]")
-FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 TOKEN_RE = re.compile(r"[a-z0-9]+")
 
+# Skip-list fallback for when conventions.toml can't be found (e.g. running
+# against a bare directory of markdown with no vault around it).
+DEFAULT_SKIP_FILES = {"SCHEMA.md", "index.md", "log.md", "README.md"}
+DEFAULT_SKIP_DIRS = {"indexes"}
 
-def parse_frontmatter(text: str) -> tuple[dict, str]:
-    """Lightweight YAML-ish frontmatter parser. Returns (metadata, body)."""
-    m = FRONTMATTER_RE.match(text)
-    if not m:
-        return {}, text
-    fm_text = m.group(1)
-    body = text[m.end():]
-    meta = {}
-    current_key = None
-    for line in fm_text.split("\n"):
-        if not line.strip():
-            continue
-        # Inline list: tags: [a, b, c]
-        kv = re.match(r"^([a-zA-Z_]+):\s*(.*)$", line)
-        if kv:
-            key, value = kv.group(1), kv.group(2).strip()
-            if value.startswith("[") and value.endswith("]"):
-                items = [x.strip().strip('"').strip("'") for x in value[1:-1].split(",") if x.strip()]
-                meta[key] = items
-            elif value:
-                meta[key] = value.strip('"').strip("'")
-            else:
-                meta[key] = []
-                current_key = key
-        elif line.startswith("  - ") and current_key:
-            meta[current_key].append(line[4:].strip().strip('"').strip("'"))
-    return meta, body
+
+def load_skip_lists(wiki_root: Path) -> tuple[set, set]:
+    """conventions.toml lives at <vault>/conventions.toml, one level above
+    wiki/. Falls back to the hardcoded defaults when it's absent, so this
+    script still runs standalone against a bare directory of markdown."""
+    conventions_path = wiki_root.resolve().parent / "conventions.toml"
+    if not conventions_path.is_file():
+        return set(DEFAULT_SKIP_FILES), set(DEFAULT_SKIP_DIRS)
+    with open(conventions_path, "rb") as fh:
+        conventions = tomllib.load(fh)
+    skip = conventions.get("skip", {})
+    return set(skip.get("files", DEFAULT_SKIP_FILES)), set(skip.get("dirs", DEFAULT_SKIP_DIRS))
 
 
 def tokenize(text: str) -> list[str]:
@@ -81,21 +71,26 @@ def extract_wikilinks(body: str) -> list[str]:
     return [m.group(1).strip() for m in WIKILINK_RE.finditer(body)]
 
 
-def collect_pages(wiki_root: Path) -> list[dict]:
-    """Walk the wiki and return [{path, slug, meta, body, tokens, links}]."""
+def collect_pages(wiki_root: Path, skip_files: set = None, skip_dirs: set = None) -> list[dict]:
+    """Walk the wiki and return [{path, slug, meta, body, tokens, links}].
+    Skip lists default to conventions.toml's [skip] table (see
+    load_skip_lists) when not passed explicitly."""
+    if skip_files is None or skip_dirs is None:
+        conv_files, conv_dirs = load_skip_lists(wiki_root)
+        skip_files = conv_files if skip_files is None else skip_files
+        skip_dirs = conv_dirs if skip_dirs is None else skip_dirs
     pages = []
     for md_path in wiki_root.rglob("*.md"):
-        # Skip the schema, index, log, and template files
         rel = md_path.relative_to(wiki_root)
-        if rel.parts[0] in {"SCHEMA.md", "index.md", "log.md"} or rel.name.startswith("."):
+        if rel.parts[0] in skip_files or rel.parts[0] in skip_dirs:
             continue
-        if rel.parts[0] in {"indexes", "graph"}:
+        if rel.name.startswith("."):
             continue
         try:
             text = md_path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
-        meta, body = parse_frontmatter(text)
+        meta, body, _malformed = tome_lint.parse_frontmatter(text)
         pages.append({
             "path": str(md_path),
             "rel_path": str(rel),
@@ -239,7 +234,6 @@ def main():
     parser.add_argument("--since", help="Only pages updated on or after YYYY-MM-DD.")
     parser.add_argument("--backlinks", help="Find pages linking to this slug.")
     parser.add_argument("--top-linked", type=int, help="Show the N most-linked-to pages.")
-    parser.add_argument("--cache", type=Path, help="(reserved) Cache path for BM25 index.")
     args = parser.parse_args()
 
     if not args.wiki.exists():
