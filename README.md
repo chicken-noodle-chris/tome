@@ -54,6 +54,8 @@ tome new <type> <slug> --project <name> --title "T" --desc "..."
 tome lint [--strict]
 tome sync [-m "message"]
 tome set-status <slug> <status>
+tome search "<query>" [--top N]   # BM25 fallback search; also --backlinks, --top-linked
+tome rm <slug> [--force]          # delete a page; refuses hubs/linked pages by default
 tome inbox "<note>" [--title "T"]   # schema-free capture; retrospect triages it later
 tome task <args...>       # passthrough to backlog.md
 tome doctor               # environment + vault health check, ok/warn/FAIL per line

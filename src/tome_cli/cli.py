@@ -35,6 +35,7 @@ from datetime import date
 from pathlib import Path
 
 from tome_cli import lint as tome_lint
+from tome_cli import search as tome_search
 
 ERROR = tome_lint.ERROR
 WARNING = tome_lint.WARNING
@@ -623,6 +624,72 @@ def cmd_mv(vault_root, conventions, args):
     return 0
 
 
+def cmd_rm(vault_root, conventions, args):
+    wiki_root, pages = collect(vault_root, conventions)
+    page = find_page(pages, args.slug)
+    if page["meta"].get("type") == "project":
+        raise VaultError(
+            f"'{args.slug}' is a project hub — deleting it would orphan every "
+            f"page under wiki/{args.slug}/ and break the hub convention. "
+            f"Hub deletions aren't supported."
+        )
+
+    inbound = [p for p in pages
+               if p["path"] != page["path"] and "read_error" not in p
+               and args.slug in p.get("links", [])]
+
+    if inbound and not args.force:
+        print(f"'{args.slug}' has inbound links from {len(inbound)} page(s) — "
+              f"refusing to delete:", file=sys.stderr)
+        for p in inbound:
+            print(f"  {p['rel_path']}", file=sys.stderr)
+            for line in p["path"].read_text(encoding="utf-8").splitlines():
+                if f"[[{args.slug}]]" in line or f"[[{args.slug}|" in line:
+                    print(f"    {line.strip()}", file=sys.stderr)
+        print("Fix those links first (a deleted target can't be auto-rewritten "
+              "to anything), or pass --force to delete anyway.", file=sys.stderr)
+        return 1
+
+    rel_path = page["rel_path"]
+    page["path"].unlink()
+
+    _, pages = collect(vault_root, conventions)
+    rebuild_index(vault_root, conventions, wiki_root, pages)
+
+    print(f"Removed {rel_path}")
+    if inbound:
+        print(f"WARNING: {len(inbound)} page(s) still link to [[{args.slug}]] — "
+              f"now broken:", file=sys.stderr)
+        for p in inbound:
+            print(f"  {p['rel_path']}", file=sys.stderr)
+    if (vault_root / "backlog").is_dir():
+        print("Note: a backlog/ task may still reference this page — check "
+              "`tome task task list --plain`.")
+    print("Reminder: update the project hub by hand if it linked this page.")
+    print('Next: tome log <op> "..." then tome sync -m "..."')
+    return 0
+
+
+def cmd_search(vault_root, conventions, args):
+    wiki_root = vault_root / "wiki"
+    skip_files = set(conventions["skip"]["files"])
+    skip_dirs = set(conventions["skip"]["dirs"])
+    pages = tome_search.collect_pages(wiki_root, skip_files, skip_dirs)
+    if not pages:
+        print(f"No wiki pages found under {wiki_root.relative_to(vault_root)}", file=sys.stderr)
+        return 0
+    if args.backlinks:
+        tome_search.cmd_backlinks(args, pages)
+    elif args.top_linked:
+        tome_search.cmd_top_linked(args, pages)
+    elif args.query:
+        tome_search.cmd_search(args, pages)
+    else:
+        print("Provide query terms, or --backlinks/--top-linked.", file=sys.stderr)
+        return 1
+    return 0
+
+
 def cmd_log(vault_root, conventions, args):
     ops = conventions.get("log", {}).get("ops")
     if ops and args.op not in ops:
@@ -1097,6 +1164,18 @@ tome.py — mechanical vault operations (see wiki/SCHEMA.md for the "why")
       Rename a page; rewrites every inbound [[wikilink]] across the wiki.
       e.g. tome mv vault-cli vaultctl
 
+  tome rm <slug> [--force]
+      Delete a page. Refuses project hubs always; refuses pages with inbound
+      links unless --force (prints the linkers either way). Regenerates the
+      index.
+      e.g. tome rm scratch-page --force
+
+  tome search "<query>" [--top N] [--type T] [--tag T ...] [--since YYYY-MM-DD]
+      BM25 search over wiki pages (fallback when index-first navigation
+      doesn't surface the right pages). Also: --backlinks <slug>,
+      --top-linked N.
+      e.g. tome search "quartz spike" --top 5
+
   tome log <op> "<message>" [--body "..."]
       Append a formatted entry to wiki/log.md.
       e.g. tome log work-started "Began TASK-26"
@@ -1193,6 +1272,22 @@ def build_parser():
     p.add_argument("slug")
     p.add_argument("new_slug")
 
+    p = sub.add_parser("rm", help="delete a page, refusing hubs/linked pages by default",
+                        epilog="e.g. tome rm scratch-page --force")
+    p.add_argument("slug")
+    p.add_argument("--force", action="store_true",
+                   help="delete even with inbound links, reporting the breakage")
+
+    p = sub.add_parser("search", help="BM25 search over wiki pages",
+                        epilog='e.g. tome search "quartz spike" --top 5')
+    p.add_argument("query", nargs="?", default="", help="query terms")
+    p.add_argument("--top", type=int, default=10)
+    p.add_argument("--type", help="filter by frontmatter type")
+    p.add_argument("--tag", action="append", default=[], help="filter by tag (repeatable)")
+    p.add_argument("--since", help="only pages updated on or after YYYY-MM-DD")
+    p.add_argument("--backlinks", help="find pages linking to this slug; ignores the query")
+    p.add_argument("--top-linked", type=int, help="show the N most-linked-to pages; ignores the query")
+
     p = sub.add_parser("log", help="append a wiki/log.md entry",
                         epilog='e.g. tome log work-started "..."')
     p.add_argument("op")
@@ -1248,6 +1343,10 @@ def main():
             return cmd_set_status(vault_root, conventions, args)
         if args.command == "mv":
             return cmd_mv(vault_root, conventions, args)
+        if args.command == "rm":
+            return cmd_rm(vault_root, conventions, args)
+        if args.command == "search":
+            return cmd_search(vault_root, conventions, args)
         if args.command == "log":
             return cmd_log(vault_root, conventions, args)
         if args.command == "inbox":

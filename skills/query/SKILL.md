@@ -20,10 +20,10 @@ the vault root, not the plugin root.
    `wiki/indexes/` if sharded). Build a short candidate list from the one-line summaries — be
    selective; reading dozens of pages to answer one question means the index isn't doing its job.
 
-3. **Fall back to search only if the index doesn't surface good candidates.** `python
-   "$TOME_PLUGIN_ROOT/scripts/wiki_search.py" "query terms" --top 10 --wiki wiki` (BM25 over
-   frontmatter + body; `--type`, `--tag`, `--since` filters; `--backlinks <slug>` for inbound-link
-   lookups). Fallback, not the default — index-first is cheaper and more interpretable when it works.
+3. **Fall back to search only if the index doesn't surface good candidates.** `tome search
+   "query terms" --top 10` (BM25 over frontmatter + body; `--type`, `--tag`, `--since` filters;
+   `--backlinks <slug>` for inbound-link lookups). Fallback, not the default — index-first is
+   cheaper and more interpretable when it works.
 
 4. **Read the candidates in full.** Note `[[wikilinks]]` to other pages as you go — pre-curated
    leads — but don't recursively chase every link. If a page cites a source page and the answer
