@@ -5,14 +5,14 @@
   },
   "metadata": {
     "description": "Tome: a commonplace book for you and your agents.",
-    "version": "1.2.5"
+    "version": "1.2.6"
   },
   "plugins": [
     {
       "name": "tome",
       "source": "./",
       "description": "The tome CLI, skills (pickup-task, write-a-plan, retrospect, ingest, query), a SessionStart vault-context hook, a scoped Stop sync reminder, a Quartz browse-view bootstrap, and `tome init` to scaffold a fresh vault.",
-      "version": "1.2.5",
+      "version": "1.2.6",
       "author": {
         "name": "Chris"
       },

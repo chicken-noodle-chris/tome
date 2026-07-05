@@ -55,6 +55,7 @@ tome lint [--strict]
 tome sync [-m "message"]
 tome set-status <slug> <status>
 tome task <args...>       # passthrough to backlog.md
+tome doctor               # environment + vault health check, ok/warn/FAIL per line
 ```
 
 Root resolution for the CLI: `--vault PATH`, else walk up from cwd looking

@@ -796,6 +796,233 @@ def cmd_task(vault_root, conventions, args):
 
 
 # --------------------------------------------------------------------------- #
+# doctor — the "it is broken" front door. Every check is isolated: it must
+# report a Check, never raise, so the report always runs to completion even
+# when every leg of the environment is broken. Reuses the same helpers real
+# commands use (resolve_vault_root, load_conventions, run_all_lint_checks,
+# run_git) so its verdicts match reality rather than a parallel diagnosis.
+# --------------------------------------------------------------------------- #
+
+class Check:
+    """One diagnostic line. status is one of DOC_OK/DOC_WARN/DOC_FAIL/DOC_INFO;
+    remedy is a one-clause fix, shown only when status isn't DOC_OK."""
+
+    def __init__(self, name, status, detail, remedy=""):
+        self.name = name
+        self.status = status
+        self.detail = detail
+        self.remedy = remedy
+
+
+DOC_OK = "ok"
+DOC_WARN = "warn"
+DOC_FAIL = "FAIL"
+DOC_INFO = "info"
+
+REQUIRED_CONVENTION_SECTIONS = (
+    "frontmatter", "types", "tags", "plan_status", "size", "skip", "index", "folders",
+)
+
+
+def _safe_check(name, fn, *fn_args):
+    """Run one check, catching anything it wasn't written to handle — a
+    check that cannot run reports FAIL with the reason instead of crashing
+    the whole report."""
+    try:
+        return fn(*fn_args)
+    except Exception as e:
+        return Check(name, DOC_FAIL, f"check crashed: {e}", "investigate and re-run")
+
+
+def _safe_pair(name, fn, *fn_args):
+    """Like _safe_check, for checks that also hand back state (vault_root,
+    conventions) for later checks to depend on."""
+    try:
+        return fn(*fn_args)
+    except Exception as e:
+        return Check(name, DOC_FAIL, f"check crashed: {e}", "investigate and re-run"), None
+
+
+def check_python():
+    v = sys.version_info
+    detail = f"{v.major}.{v.minor}.{v.micro} ({sys.executable})"
+    if (v.major, v.minor) >= (3, 11):
+        return Check("python", DOC_OK, detail)
+    return Check("python", DOC_FAIL, detail, "upgrade to Python >= 3.11 (tomllib)")
+
+
+def check_git_binary():
+    path = shutil.which("git")
+    if not path:
+        return Check("git", DOC_WARN, "not on PATH", "install git (sync and init need it)")
+    proc = subprocess.run(["git", "--version"], capture_output=True, text=True)
+    version = proc.stdout.strip() if proc.returncode == 0 else "unknown version"
+    return Check("git", DOC_OK, f"{version} ({path})")
+
+
+def check_node():
+    names = ["node", "npm", "npx"]
+    missing = [n for n in names if not shutil.which(n)]
+    if missing:
+        return Check("node/npm/npx", DOC_WARN, f"missing: {', '.join(missing)}",
+                      "install Node.js (Quartz browse view and backlog.md need it)")
+    versions = []
+    for n in names:
+        proc = subprocess.run([n, "--version"], capture_output=True, text=True,
+                               shell=(sys.platform == "win32"))
+        versions.append(f"{n} {proc.stdout.strip() if proc.returncode == 0 else 'unknown'}")
+    return Check("node/npm/npx", DOC_OK, ", ".join(versions))
+
+
+def check_vault_resolution(explicit):
+    """Reuses resolve_vault_root itself for the pass/fail decision; only
+    re-derives which source matched (for the report line), it doesn't
+    re-decide priority."""
+    try:
+        root = resolve_vault_root(explicit)
+    except VaultError as e:
+        if not explicit and os.environ.get("VAULT_ROOT"):
+            return Check("vault resolution", DOC_FAIL, str(e), "fix or unset VAULT_ROOT"), None
+        return Check("vault resolution", DOC_INFO, "no vault found — run `tome init`"), None
+
+    if explicit:
+        source = "--vault"
+    else:
+        cur = Path.cwd().resolve()
+        walked = any((d / "conventions.toml").is_file() for d in (cur, *cur.parents))
+        source = "walk-up" if walked else "VAULT_ROOT"
+    return Check("vault resolution", DOC_OK, f"{root} (via {source})"), root
+
+
+def check_conventions(vault_root):
+    try:
+        conventions = load_conventions(vault_root)
+    except Exception as e:
+        return Check("conventions.toml", DOC_FAIL, f"failed to parse: {e}",
+                      "fix conventions.toml syntax"), None
+    missing = [s for s in REQUIRED_CONVENTION_SECTIONS if s not in conventions]
+    if missing:
+        return Check("conventions.toml", DOC_FAIL,
+                      f"missing section(s): {', '.join(missing)}",
+                      "add the missing section(s) to conventions.toml"), conventions
+    return Check("conventions.toml", DOC_OK, "parses; all required sections present"), conventions
+
+
+def check_vault_shape(vault_root):
+    wiki = vault_root / "wiki"
+    required = [wiki, wiki / "index.md", wiki / "SCHEMA.md", wiki / "log.md"]
+    missing = [p.relative_to(vault_root).as_posix() for p in required if not p.exists()]
+    if missing:
+        return Check("vault shape", DOC_FAIL, f"missing: {', '.join(missing)}",
+                      "restore the missing vault file(s)")
+    return Check("vault shape", DOC_OK, "wiki/, index.md, SCHEMA.md, log.md present")
+
+
+def check_lint(vault_root, conventions):
+    _, findings = run_all_lint_checks(vault_root, conventions)
+    errors = [f for f in findings if f.severity == ERROR]
+    warnings = [f for f in findings if f.severity == WARNING]
+    detail = f"{len(errors)} error(s), {len(warnings)} warning(s)"
+    if errors:
+        return Check("lint", DOC_FAIL, detail, "run `tome lint` for details")
+    if warnings:
+        return Check("lint", DOC_WARN, detail, "run `tome lint` for details")
+    return Check("lint", DOC_OK, detail)
+
+
+def check_git_state(vault_root):
+    if not shutil.which("git"):
+        return Check("git state", DOC_WARN, "git not on PATH — cannot inspect", "install git")
+
+    branch = run_git(vault_root, ["rev-parse", "--abbrev-ref", "HEAD"])
+    if branch.returncode != 0:
+        return Check("git state", DOC_FAIL, branch.stderr.strip() or "not a git repository",
+                      "run `git init` in the vault")
+    branch_name = branch.stdout.strip()
+
+    remote = run_git(vault_root, ["remote"])
+    has_remote = bool(remote.stdout.strip())
+
+    status = run_git(vault_root, ["status", "--porcelain"])
+    dirty = bool(status.stdout.strip())
+
+    detail = (f"branch={branch_name}, "
+              f"{'remote configured' if has_remote else 'no remote'}, "
+              f"{'dirty' if dirty else 'clean'}")
+
+    remedies = []
+    if branch_name != "main":
+        remedies.append("switch to main before syncing")
+    if not has_remote:
+        remedies.append("configure a remote before syncing")
+    status_level = DOC_WARN if remedies else DOC_OK
+    return Check("git state", status_level, detail, "; ".join(remedies))
+
+
+def check_quartz(vault_root):
+    quartz_dir = vault_root / "quartz"
+    bootstrapped = (quartz_dir / ".git").exists() and (quartz_dir / "node_modules").exists()
+    if bootstrapped:
+        return Check("quartz", DOC_OK, "bootstrapped")
+    return Check("quartz", DOC_INFO, "not bootstrapped — run tome-setup-quartz")
+
+
+def render_check_line(c):
+    line = f"{c.status:<4} {c.name}: {c.detail}"
+    if c.status != DOC_OK and c.remedy:
+        line += f" — {c.remedy}"
+    return line
+
+
+def cmd_doctor(args):
+    checks = [
+        _safe_check("python", check_python),
+        _safe_check("git", check_git_binary),
+        _safe_check("node/npm/npx", check_node),
+    ]
+
+    vault_check, vault_root = _safe_pair("vault resolution", check_vault_resolution, args.vault)
+    checks.append(vault_check)
+
+    conventions = None
+    if vault_root is not None:
+        conv_check, conventions = _safe_pair("conventions.toml", check_conventions, vault_root)
+        checks.append(conv_check)
+    else:
+        checks.append(Check("conventions.toml", DOC_INFO, "no vault found — skipped"))
+
+    if vault_root is not None:
+        checks.append(_safe_check("vault shape", check_vault_shape, vault_root))
+    else:
+        checks.append(Check("vault shape", DOC_INFO, "no vault found — skipped"))
+
+    if vault_root is not None and conventions is not None:
+        checks.append(_safe_check("lint", check_lint, vault_root, conventions))
+    else:
+        checks.append(Check("lint", DOC_INFO, "no vault or conventions — skipped"))
+
+    if vault_root is not None:
+        checks.append(_safe_check("git state", check_git_state, vault_root))
+    else:
+        checks.append(Check("git state", DOC_INFO, "no vault found — skipped"))
+
+    if vault_root is not None:
+        checks.append(_safe_check("quartz", check_quartz, vault_root))
+    else:
+        checks.append(Check("quartz", DOC_INFO, "no vault found — skipped"))
+
+    for c in checks:
+        print(render_check_line(c))
+
+    n_ok = sum(1 for c in checks if c.status == DOC_OK)
+    n_warn = sum(1 for c in checks if c.status == DOC_WARN)
+    n_fail = sum(1 for c in checks if c.status == DOC_FAIL)
+    n_info = sum(1 for c in checks if c.status == DOC_INFO)
+    print(f"\n{n_ok} ok, {n_warn} warn, {n_fail} FAIL, {n_info} info")
+    return 1 if n_fail else 0
+
+
+# --------------------------------------------------------------------------- #
 # help
 # --------------------------------------------------------------------------- #
 
@@ -844,6 +1071,12 @@ tome.py — mechanical vault operations (see wiki/SCHEMA.md for the "why")
       Scaffold a fresh, empty vault at path (default: cwd). Fail-loud if
       anything it would create already exists.
       e.g. tome init ~/Development/my-vault
+
+  tome doctor
+      Diagnose python/git/node, vault resolution, conventions, vault shape,
+      lint, git state, and quartz. ok/warn/FAIL per line; exit 1 on any FAIL.
+      Runs to completion even with no vault or a broken one.
+      e.g. tome doctor
 
 Root resolution: --vault PATH, else walk up from cwd
 looking for conventions.toml, else $VAULT_ROOT.
@@ -920,6 +1153,9 @@ def build_parser():
                         epilog="e.g. tome init ~/Development/my-vault")
     p.add_argument("path", nargs="?", help="target directory (default: cwd)")
 
+    sub.add_parser("doctor", help="diagnose the environment and vault",
+                    epilog="e.g. tome doctor")
+
     return parser
 
 
@@ -932,6 +1168,8 @@ def main():
             return cmd_init(args)
         if args.command == "help":
             return cmd_help(args)
+        if args.command == "doctor":
+            return cmd_doctor(args)
 
         vault_root = resolve_vault_root(args.vault)
         conventions = load_conventions(vault_root)
