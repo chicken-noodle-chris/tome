@@ -47,12 +47,15 @@ Each project is `wiki/<name>/` with subfolders (`plans/`, `ideas/`,
 
 ## Capture → compile flow
 
-Capture is cheap: drop a note in `inbox/`, or a raw external file in `raw/`.
-Triage routes each item into the wiki as a proper page, then deletes the
-inbox item. The `ingest` skill compiles an external source into a synthesized,
-cited page — only for a source you point it at, never auto-scanning `inbox/`.
-Plans, ideas, and decisions are authored directly, never through ingest —
-there's no external source to cite.
+Capture is cheap: `tome inbox "<note>"` drops a note in `inbox/` (or the
+`capture` skill does it for you, mid-session), or a raw external file goes in
+`raw/`. Triage routes each item into the wiki as a proper page, then deletes
+the inbox item — `retrospect` owns that triage, as one of its regular
+evidence sources; nothing else drains the inbox. The `ingest` skill compiles
+an external source into a synthesized, cited page — only for a source you
+point it at, never auto-scanning `inbox/`. Plans, ideas, and decisions are
+authored directly, never through ingest — there's no external source to
+cite.
 
 ## Surprises and taste
 

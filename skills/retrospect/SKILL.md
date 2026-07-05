@@ -33,18 +33,24 @@ the proposed refinements before anything is written.
      --since=<date> -p -- wiki/ CLAUDE.md` for how. Churn, reversals, and the same fix made
      by hand twice are the signal.
    - **Activity** — the `wiki/log.md` entries since the window start: the arc of recent work.
+   - **Inbox** — `ls inbox/` (with each file's age) for everything the `capture` skill has
+     dropped since the last triage. Retrospect is the inbox's owner: nothing else drains it.
    - **Feedback** — your project memory store (its `MEMORY.md` index plus the `feedback`- and `project`-type files): the corrections and preferences you've already been told. Richest source.
    - **Sessions** — if your harness exposes session-history tools (e.g. `list_sessions`, `search_session_transcripts`), mine recent transcripts for corrections the user gave in conversation that never reached SCHEMA or a memory.
 
-3. **Derive the refinements.** Sort what recurs into three kinds; discard one-offs (corrected once is noise, twice is a pattern):
+3. **Derive the refinements.** Sort what recurs into four kinds; discard one-offs (corrected once is noise, twice is a pattern):
    - **Promote a recurring correction into `wiki/SCHEMA.md`** — the user keeps steering the same way and SCHEMA is silent on it. Draft the convention.
    - **Capture missed knowledge** — something durable surfaced in the work but was never filed. Propose the page (or memory) and where it lands.
    - **Add or prune a convention** — a rule observed practice now contradicts, or one nothing has used. Propose the edit or the deletion.
+   - **Route each inbox item** — for every file gathered in step 2, propose which page it becomes or extends (new page, or a surgical edit to an existing one), or propose deletion if it's gone stale. Every inbox item needs a proposal here, even a trivial one — none get silently skipped.
    Anything that's really lint or gap-finding: route it there, don't fix it here.
 
-4. **Present the proposals — the one gate.** Show each refinement as a concrete change: the exact SCHEMA wording, the page to create, the line to cut — grouped by kind, each with the evidence that earns it. Recommend; don't dump every candidate. Iterate in place until the user approves, and drop what they reject.
+4. **Present the proposals — the one gate.** Show each refinement as a concrete change: the exact SCHEMA wording, the page to create, the line to cut, the inbox item's destination — grouped by kind, each with the evidence that earns it. Recommend; don't dump every candidate. Iterate in place until the user approves, and drop what they reject.
 
-5. **Apply, log, and sync.** Make the approved edits. `tome log retrospect "<summary>"`
-   naming the window reviewed and what changed — **this entry is the state store**; the
-   next run reads its date. `tome sync -m "..."` — no separate commit approval needed;
-   step 4's approval already covered the content.
+5. **Apply, log, and sync.** Make the approved edits. For approved inbox routings: create or
+   extend the destination page (`tome new` / a surgical edit, same discipline as `ingest`
+   step 7), then delete the inbox file once its content has landed — an inbox item is only
+   removed after its routing lands, never before. `tome log retrospect "<summary>"` naming
+   the window reviewed and what changed — **this entry is the state store**; the next run
+   reads its date. `tome sync -m "..."` — no separate commit approval needed; step 4's
+   approval already covered the content.

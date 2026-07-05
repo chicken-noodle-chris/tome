@@ -650,6 +650,55 @@ def cmd_index_rebuild(vault_root, conventions, args):
 
 
 # --------------------------------------------------------------------------- #
+# inbox — cheap, schema-free capture (never scanned by lint: it walks wiki/
+# only, and inbox/ is a vault-root sibling of wiki/, not nested under it)
+# --------------------------------------------------------------------------- #
+
+INBOX_SLUG_MAX_CHARS = 40
+INBOX_WORD_RE = re.compile(r"[a-z0-9]+")
+
+
+def slugify_words(text, max_chars=INBOX_SLUG_MAX_CHARS):
+    """Kebab-case slug built word-by-word from text (lowercased) up to
+    max_chars, stopping at a word boundary rather than cutting mid-word.
+    Non-ASCII/punctuation-only words are simply dropped, never crash; a
+    single word longer than max_chars is hard-truncated so it still
+    contributes something instead of falling through to the fallback."""
+    words = INBOX_WORD_RE.findall(text.lower())
+    slug = ""
+    for word in words:
+        candidate = f"{slug}-{word}" if slug else word
+        if len(candidate) > max_chars:
+            if not slug:
+                slug = word[:max_chars]
+            break
+        slug = candidate
+    return slug or "capture"
+
+
+def cmd_inbox(vault_root, conventions, args):
+    inbox_dir = vault_root / "inbox"
+    inbox_dir.mkdir(parents=True, exist_ok=True)
+
+    slug = slugify_words(args.title if args.title else args.note)
+    date_str = today()
+    base_name = f"{date_str}-{slug}"
+    path = inbox_dir / f"{base_name}.md"
+    n = 2
+    while path.exists():
+        path = inbox_dir / f"{base_name}-{n}.md"
+        n += 1
+
+    note = args.note.rstrip("\n")
+    body = f"# {date_str} capture\n\n{note}\n"
+    path.write_text(body, encoding="utf-8", newline="\n")
+
+    print(f"Captured to {path.relative_to(vault_root)}")
+    print("Routed into the wiki at the next retrospect triage.")
+    return 0
+
+
+# --------------------------------------------------------------------------- #
 # init — scaffold a fresh vault (runs before a vault root can be resolved,
 # so it does not take vault_root/conventions like the other commands)
 # --------------------------------------------------------------------------- #
@@ -1052,6 +1101,12 @@ tome.py — mechanical vault operations (see wiki/SCHEMA.md for the "why")
       Append a formatted entry to wiki/log.md.
       e.g. tome log work-started "Began TASK-26"
 
+  tome inbox "<note>" [--title "T"]
+      Drop a schema-free capture note in inbox/YYYY-MM-DD-<slug>.md (slug
+      from --title or the note's first few words). Multi-line notes allowed.
+      Never scanned by lint; triaged into the wiki by retrospect.
+      e.g. tome inbox "Remember: X does Y because Z"
+
   tome index rebuild
       Regenerate wiki/index.md from page frontmatter.
 
@@ -1144,6 +1199,11 @@ def build_parser():
     p.add_argument("message")
     p.add_argument("--body")
 
+    p = sub.add_parser("inbox", help="drop a schema-free capture note in inbox/",
+                        epilog='e.g. tome inbox "Remember: X does Y because Z"')
+    p.add_argument("note")
+    p.add_argument("--title", help="override the note's derived slug basis")
+
     idx = sub.add_parser("index", help="index operations")
     idx_sub = idx.add_subparsers(dest="index_command", required=True)
     idx_sub.add_parser("rebuild", help="regenerate wiki/index.md",
@@ -1190,6 +1250,8 @@ def main():
             return cmd_mv(vault_root, conventions, args)
         if args.command == "log":
             return cmd_log(vault_root, conventions, args)
+        if args.command == "inbox":
+            return cmd_inbox(vault_root, conventions, args)
         if args.command == "index" and args.index_command == "rebuild":
             return cmd_index_rebuild(vault_root, conventions, args)
         parser.error(f"unknown command {args.command}")

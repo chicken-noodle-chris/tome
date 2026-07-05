@@ -2,7 +2,7 @@
 
 A commonplace book for you and your agents — where your project lore lives.
 
-`tome` is the tooling: a small stdlib CLI, five Claude Code skills, a
+`tome` is the tooling: a small stdlib CLI, six Claude Code skills, a
 SessionStart vault-context hook and a scoped Stop sync-reminder hook, and a
 Quartz browse-view bootstrap, all shipped as one Claude Code plugin. A
 **vault** is the content: your own private repo of
@@ -45,7 +45,7 @@ view (init prints the exact command with the plugin's real path), set up a remot
 ## Everyday commands
 
 Skills (triggered by asking, not slash commands): `pickup-task`,
-`write-a-plan`, `retrospect`, `ingest`, `query`.
+`write-a-plan`, `retrospect`, `ingest`, `query`, `capture`.
 
 CLI (`tome help` for the full list with examples):
 
@@ -54,6 +54,7 @@ tome new <type> <slug> --project <name> --title "T" --desc "..."
 tome lint [--strict]
 tome sync [-m "message"]
 tome set-status <slug> <status>
+tome inbox "<note>" [--title "T"]   # schema-free capture; retrospect triages it later
 tome task <args...>       # passthrough to backlog.md
 tome doctor               # environment + vault health check, ok/warn/FAIL per line
 ```
@@ -108,7 +109,7 @@ tome/
 ├─ src/tome_cli/      the package: cli.py, lint.py, search.py, quartz_setup.py, templates/
 ├─ scripts/           thin shims (tome.py, tome_lint.py, wiki_search.py, setup_quartz.py) —
 │                     the plugin's actual invocation path via $CLAUDE_PLUGIN_ROOT
-├─ skills/            pickup-task, write-a-plan, retrospect, ingest, query
+├─ skills/            pickup-task, write-a-plan, retrospect, ingest, query, capture
 ├─ hooks/             SessionStart vault-context + Stop sync-reminder hooks
 └─ .claude-plugin/    plugin + marketplace manifest
 ```
