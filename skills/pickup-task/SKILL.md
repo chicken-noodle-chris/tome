@@ -7,8 +7,8 @@ when_to_run: When the user asks to start, pick up, or execute a task or plan fro
 Optional input: which task or plan to pick up (a task ID, a plan name, or a description).
 
 This skill executes work that's already been planned. Three phases: **locate & start**
-(steps 1–4), **do the work** and ship it (steps 5–6), and **close out** the tracking
-(step 7). The throughline: the vault's task/plan status reflects reality at every step —
+(steps 1–3), **do the work** and ship it (steps 4–5), and **close out** the tracking
+(step 6). The throughline: the vault's task/plan status reflects reality at every step —
 mark work *started* before you begin and *done* when it lands. Conventions live in
 `wiki/SCHEMA.md`; `scripts/tome.py` (`tome help`) enforces the mechanics — lean on it
 rather than hand-executing status moves, links, or git. `tome` is on PATH in Bash (the
@@ -26,29 +26,27 @@ unclear — which task, how far to take it, an ambiguity in the plan — ask.
 
 2. **Locate the task and its plan.** If the user named one, find it; otherwise check the
    board (`tome task task list --plain`) and the project's live plans (`plans/`, not
-   `plans/archive/`) and confirm which one they mean. Read the **plan page** in full and
-   follow its `[[wikilinks]]`. Find the matching task with `tome task task <id> --plain`
-   (a plan may have none — normal).
+   `plans/archive/`) and confirm which one they mean.
 
-3. **Do you have any concerns?** If you do, stop and discuss with the user. If you feel
-   like you have enough information to complete the task, say so and continue.
+3. **Mark the work started.** `tome start <task-id-or-slug>` — accepts either, resolving
+   the other half if linked (a plan without a task, or a task without a plan, is normal).
+   Sets the plan `active`, moves the task to In Progress (`-a @me`), logs `work-started`,
+   syncs, then prints the task text and the full plan body as your working context — read
+   it in full, follow its `[[wikilinks]]`, and if you have concerns stop and discuss with
+   the user before continuing.
 
-4. **Mark the work started.** `tome set-status <slug> active`, `tome task task edit <id>
-   -s "In Progress" -a @me`, `tome log work-started "..."`.
-
-5. **Do the task work.** Execute the plan in the relevant code repo (not the vault),
+4. **Do the task work.** Execute the plan in the relevant code repo (not the vault),
    following that repo's `CLAUDE.md`. Stick to the plan's scope; if you hit a fork it
    doesn't resolve, ask rather than guess. Verify per the plan's verification section and
    report results honestly.
 
-6. **Commit, then present the work.** Commit by default. Show the user what changed and the
+5. **Commit, then present the work.** Commit by default. Show the user what changed and the
    verification results. The code repo is separate from the vault and follows its own
    commit conventions — check its `CLAUDE.md`. Push only after the user approves.
 
-7. **Close out the tracking.** Once the work has landed: `tome set-status <slug> done`
-   (or `superseded`/`abandoned`) — this moves the plan to `plans/archive/` and regenerates
-   the index itself. Then `tome task task edit <id> -s Done --check-ac ... --final-summary
-   "..."` citing the shipping commit and re-pointing the task's `--ref` at the plan's new
-   `plans/archive/` path, then `tome task task complete <id>` — close it out immediately, no
-   deferred sweep. Move the plan's entry on the project hub to its archived list (that one
-   is manual), then `tome log done "..."` and `tome sync -m "..."`.
+6. **Close out the tracking.** Once the work has landed: `tome done <slug> --summary "..."`
+   citing the shipping commit (`--as superseded`/`--as abandoned` instead of the default
+   `done`, if that's how it landed). This archives the plan (moves it to `plans/archive/`,
+   regenerates its project hub and the index), checks the task's acceptance criteria,
+   closes and completes it with the summary, re-points its `--ref` at the archived path,
+   logs `done`, and syncs — one command, no deferred sweep.

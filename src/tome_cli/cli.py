@@ -641,6 +641,32 @@ def cmd_describe(vault_root, conventions, args):
     return 0
 
 
+def apply_status(conventions, page, new_status):
+    """Mutate a plan/decision page's frontmatter (status + updated) and, for
+    a plan, move it between its status dir and `archive/` if live/terminal-
+    ness changed. Pure file mutation — callers re-collect pages and handle
+    the index/hub regen and sync themselves. Returns the page's post-move
+    path (unchanged if it didn't move)."""
+    fm_lines, body = read_page(page["path"])
+    fm_set(fm_lines, "status", new_status)
+    fm_set(fm_lines, "updated", today())
+    write_page(page["path"], fm_lines, body)
+
+    new_path = page["path"]
+    if page["meta"].get("type") == "plan":
+        terminal = set(conventions["plan_status"]["terminal"])
+        currently_archived = "archive" in page["path"].parent.parts
+        should_be_archived = new_status in terminal
+        if should_be_archived and not currently_archived:
+            new_path = page["path"].parent / "archive" / page["path"].name
+        elif not should_be_archived and currently_archived:
+            new_path = page["path"].parent.parent / page["path"].name
+        if new_path != page["path"]:
+            new_path.parent.mkdir(parents=True, exist_ok=True)
+            page["path"].rename(new_path)
+    return new_path
+
+
 def cmd_set_status(vault_root, conventions, args):
     wiki_root, pages = collect(vault_root, conventions)
     page = find_page(pages, args.slug)
@@ -659,23 +685,7 @@ def cmd_set_status(vault_root, conventions, args):
     else:
         raise VaultError(f"type '{ptype}' does not carry a status")
 
-    fm_lines, body = read_page(page["path"])
-    fm_set(fm_lines, "status", args.status)
-    fm_set(fm_lines, "updated", today())
-    write_page(page["path"], fm_lines, body)
-
-    new_path = page["path"]
-    if ptype == "plan":
-        terminal = set(conventions["plan_status"]["terminal"])
-        currently_archived = "archive" in page["path"].parent.parts
-        should_be_archived = args.status in terminal
-        if should_be_archived and not currently_archived:
-            new_path = page["path"].parent / "archive" / page["path"].name
-        elif not should_be_archived and currently_archived:
-            new_path = page["path"].parent.parent / page["path"].name
-        if new_path != page["path"]:
-            new_path.parent.mkdir(parents=True, exist_ok=True)
-            page["path"].rename(new_path)
+    new_path = apply_status(conventions, page, args.status)
 
     _, pages = collect(vault_root, conventions)
     index_path = rebuild_index(vault_root, conventions, wiki_root, pages)
@@ -1162,12 +1172,10 @@ def find_task_for_page(vault_root, page_rel_path):
     return None
 
 
-def resolve_entity_cluster(vault_root, conventions, wiki_root, pages, entity):
-    """Resolve one `tome sync <entity>` argument — a page slug or a backlog
-    task id — to its closed file cluster: the page, its linked task file (if
-    any), the page's project hub (if any), index.md, and log.md. Detection is
-    a fixed cluster derived from real links, never a heuristic scan; an
-    unresolvable slug/task id fails loud via find_page/VaultError."""
+def resolve_entity(vault_root, pages, entity):
+    """Resolve one `tome start`/`tome sync <entity>` argument — a page slug
+    or a backlog task id — to (page-or-None, task_path-or-None). At least
+    one side always resolves; an unknown slug/task id fails loud."""
     m = TASK_ID_RE.match(entity)
     page = None
     task_path = None
@@ -1184,6 +1192,15 @@ def resolve_entity_cluster(vault_root, conventions, wiki_root, pages, entity):
     else:
         page = find_page(pages, entity)
         task_path = find_task_for_page(vault_root, page["rel_path"])
+    return page, task_path
+
+
+def resolve_entity_cluster(vault_root, conventions, wiki_root, pages, entity):
+    """Resolve one `tome sync <entity>` argument to its closed file cluster:
+    the page, its linked task file (if any), the page's project hub (if
+    any), index.md, and log.md. Detection is a fixed cluster derived from
+    real links, never a heuristic scan."""
+    page, task_path = resolve_entity(vault_root, pages, entity)
 
     cluster = []
     if page is not None:
@@ -1214,10 +1231,196 @@ def cmd_sync(vault_root, conventions, args):
     return sync_core(vault_root, conventions, args.message, args.no_verify, pathspec=None)
 
 
+def run_backlog(vault_root, argv, capture=False):
+    """Shell out to the pinned backlog.md CLI from the vault root. Used both
+    by the raw `tome task` passthrough and by `start`/`done`'s bundled task
+    edits — task files are backlog.md-owned, so tome never hand-writes them,
+    only drives them through this same entry point."""
+    cmd = ["npx", "--yes", f"backlog.md@{BACKLOG_VERSION}", *argv]
+    if capture:
+        return subprocess.run(cmd, cwd=str(vault_root), shell=(sys.platform == "win32"),
+                               capture_output=True, text=True)
+    return subprocess.run(cmd, cwd=str(vault_root), shell=(sys.platform == "win32"))
+
+
 def cmd_task(vault_root, conventions, args):
-    cmd = ["npx", "--yes", f"backlog.md@{BACKLOG_VERSION}", *args.args]
-    proc = subprocess.run(cmd, cwd=str(vault_root), shell=(sys.platform == "win32"))
-    return proc.returncode
+    return run_backlog(vault_root, args.args).returncode
+
+
+def task_id_from_path(task_path):
+    fm_lines, _ = read_page(task_path)
+    task_id = fm_get(fm_lines, "id") or ""
+    if task_id.upper().startswith("TASK-"):
+        task_id = task_id[len("TASK-"):]
+    return task_id
+
+
+def task_references(fm_lines):
+    """Parse a backlog task's `references:` block-list from its raw
+    frontmatter lines. Task files are real YAML (backlog.md-owned), not the
+    vault's hand-rolled subset — read only, never written directly here."""
+    refs = []
+    in_block = False
+    for line in fm_lines:
+        if re.match(r"^references:\s*$", line):
+            in_block = True
+            continue
+        if in_block:
+            m = re.match(r"^\s*-\s*(.+?)\s*$", line)
+            if m:
+                refs.append(m.group(1).strip("'\""))
+                continue
+            break
+    return refs
+
+
+AC_LINE_RE = re.compile(r"^- \[.\] #(\d+)", re.MULTILINE)
+
+
+def count_task_acs(task_body):
+    """Count acceptance criteria in a backlog task's body (between its
+    AC:BEGIN/AC:END markers), regardless of checked state — `tome done`
+    checks all of them by default."""
+    m = re.search(r"<!-- AC:BEGIN -->(.*?)<!-- AC:END -->", task_body, re.DOTALL)
+    if not m:
+        return 0
+    return len(AC_LINE_RE.findall(m.group(1)))
+
+
+# --------------------------------------------------------------------------- #
+# start / done — the pickup-task skill's bundled start/close rituals. Each
+# is a fixed program (set status, drive the linked task, log, sync); the
+# agent's judgment stays entirely on either side of these two commands.
+# --------------------------------------------------------------------------- #
+
+def cmd_start(vault_root, conventions, args):
+    wiki_root, pages = collect(vault_root, conventions)
+    page, task_path = resolve_entity(vault_root, pages, args.entity)
+    if page is None and task_path is None:
+        raise VaultError(f"'{args.entity}' did not resolve to a page or a backlog task")
+    if page is not None and page["meta"].get("type") != "plan":
+        raise VaultError(f"'{page['slug']}' is a {page['meta'].get('type')}, not a plan — "
+                          f"tome start only sets plan status")
+
+    touched = []
+    plan_path = None
+    if page is not None:
+        live = set(conventions["plan_status"]["live"])
+        if "active" not in live:
+            raise VaultError("'active' is not in this vault's plan_status.live vocabulary")
+        plan_path = apply_status(conventions, page, "active")
+        _, pages = collect(vault_root, conventions)
+        index_path = rebuild_index(vault_root, conventions, wiki_root, pages)
+        touched += [plan_path, index_path]
+        project = Path(page["rel_path"]).parts[0]
+        hub_path = regenerate_hub(conventions, wiki_root, pages, project)
+        if hub_path is not None:
+            touched.append(hub_path)
+        print(f"Set [[{page['slug']}]] status -> active")
+
+    task_id = None
+    if task_path is not None:
+        task_id = task_id_from_path(task_path)
+        proc = run_backlog(vault_root, ["task", "edit", task_id, "-s", "In Progress", "-a", "@me"],
+                            capture=True)
+        if proc.returncode != 0:
+            raise VaultError(f"backlog task edit failed: {(proc.stderr or proc.stdout).strip()}")
+        touched.append(task_path)
+        print(f"Moved TASK-{task_id} -> In Progress (@me)")
+
+    subject = page["slug"] if page is not None else f"task-{task_id}"
+    log_path = vault_root / "wiki" / "log.md"
+    with log_path.open("a", encoding="utf-8", newline="\n") as fh:
+        fh.write(f"\n## [{today()}] work-started | {subject}\n")
+    touched.append(log_path)
+    print(f"Logged work-started: {subject}")
+
+    if not args.no_sync:
+        rel = [str(Path(p).resolve().relative_to(vault_root)) for p in touched]
+        result = sync_core(vault_root, conventions, f"start: {args.entity} ({subject})",
+                            False, pathspec=rel)
+        if result:
+            return result
+
+    if task_id is not None:
+        run_backlog(vault_root, ["task", task_id, "--plain"])
+    if plan_path is not None:
+        print()
+        print(plan_path.read_text(encoding="utf-8"))
+    return 0
+
+
+def cmd_done(vault_root, conventions, args):
+    wiki_root, pages = collect(vault_root, conventions)
+    page = find_page(pages, args.slug)
+    if page["meta"].get("type") != "plan":
+        raise VaultError(f"'{args.slug}' is a {page['meta'].get('type')}, not a plan — "
+                          f"tome done only closes out plans")
+
+    target_status = args.as_status or "done"
+    terminal = set(conventions["plan_status"]["terminal"])
+    if target_status not in terminal:
+        raise VaultError(f"'{target_status}' is not a terminal plan status ({sorted(terminal)})")
+
+    task_path = find_task_for_page(vault_root, page["rel_path"])
+    old_rel = f"wiki/{page['rel_path']}".replace("\\", "/")
+
+    new_path = apply_status(conventions, page, target_status)
+    _, pages = collect(vault_root, conventions)
+    index_path = rebuild_index(vault_root, conventions, wiki_root, pages)
+    touched = [new_path, index_path]
+    project = Path(page["rel_path"]).parts[0]
+    hub_path = regenerate_hub(conventions, wiki_root, pages, project)
+    if hub_path is not None:
+        touched.append(hub_path)
+    print(f"Set [[{args.slug}]] status -> {target_status} "
+          f"(moved to {new_path.relative_to(vault_root)})")
+
+    if task_path is not None:
+        task_id = task_id_from_path(task_path)
+        task_fm_lines, task_body = read_page(task_path)
+        refs = task_references(task_fm_lines)
+        new_rel = f"wiki/{new_path.relative_to(wiki_root).as_posix()}"
+        new_refs = [new_rel if r == old_rel else r for r in refs] or [new_rel]
+
+        edit_argv = ["task", "edit", task_id, "-s", "Done"]
+        if not args.no_check_ac:
+            for i in range(1, count_task_acs(task_body) + 1):
+                edit_argv += ["--check-ac", str(i)]
+        if args.summary:
+            edit_argv += ["--final-summary", args.summary]
+        for r in new_refs:
+            edit_argv += ["--ref", r]
+        proc = run_backlog(vault_root, edit_argv, capture=True)
+        if proc.returncode != 0:
+            raise VaultError(f"backlog task edit failed: {(proc.stderr or proc.stdout).strip()}")
+        touched.append(task_path)
+        print(f"Closed TASK-{task_id}: Done, ref -> {new_rel}")
+
+        complete = run_backlog(vault_root, ["task", "complete", task_id], capture=True)
+        if complete.returncode != 0:
+            raise VaultError(f"backlog task complete failed: "
+                              f"{(complete.stderr or complete.stdout).strip()}")
+        # `task complete` moves the file tasks/ -> completed/ (same name); the
+        # sync below needs both paths in its pathspec — the old one to stage
+        # the deletion, the new one (untracked) to stage the addition.
+        completed_path = vault_root / "backlog" / "completed" / task_path.name
+        touched.append(completed_path)
+        print(f"Completed TASK-{task_id}")
+
+    log_path = vault_root / "wiki" / "log.md"
+    suffix = f": {args.summary}" if args.summary else ""
+    with log_path.open("a", encoding="utf-8", newline="\n") as fh:
+        fh.write(f"\n## [{today()}] done | {args.slug}{suffix}\n")
+    touched.append(log_path)
+    print(f"Logged done: {args.slug}")
+
+    if not args.no_sync:
+        rel = [str(Path(p).resolve().relative_to(vault_root)) for p in touched]
+        result = sync_core(vault_root, conventions, f"done: {args.slug}", False, pathspec=rel)
+        if result:
+            return result
+    return 0
 
 
 # --------------------------------------------------------------------------- #
@@ -1519,6 +1722,20 @@ if you omit -m.
       Passthrough to `npx --yes backlog.md@latest <args...>` from the vault root.
       e.g. tome task list --plain
 
+  tome start <plan-slug-or-task-id>
+      Bundle the work-started ritual: set the linked plan active, move the
+      linked task to In Progress (-a @me), log work-started, sync (unless
+      --no-sync), then print the task and full plan body as working context.
+      e.g. tome start task-47
+
+  tome done <plan-slug> [--summary "..."] [--as STATUS] [--no-check-ac] [--no-sync]
+      Bundle the close-out ritual: set the plan's terminal status (default
+      done; archives it, regenerates hub + index), close the linked task
+      (Done, every AC checked unless --no-check-ac, --final-summary if
+      --summary given, --ref re-pointed at the archived path, then
+      completed), log done, sync (unless --no-sync).
+      e.g. tome done workflow-compression --summary "Shipped pieces 1-3."
+
   tome init [path]
       Scaffold a fresh, empty vault at path (default: cwd). Fail-loud if
       anything it would create already exists.
@@ -1585,6 +1802,24 @@ def build_parser():
     p = sub.add_parser("task", help="passthrough to backlog.md",
                         epilog="e.g. tome task list --plain", add_help=False)
     p.add_argument("args", nargs=argparse.REMAINDER)
+
+    p = sub.add_parser("start", help="bundle the work-started ritual",
+                        epilog="e.g. tome start task-47")
+    p.add_argument("entity", help="a plan slug or a backlog task id")
+    p.add_argument("--no-sync", action="store_true",
+                   help="skip the sync that runs by default after this command")
+
+    p = sub.add_parser("done", help="bundle the close-out ritual",
+                        epilog='e.g. tome done workflow-compression --summary "..."')
+    p.add_argument("slug", help="the plan's slug")
+    p.add_argument("--summary", help="the task's final summary")
+    p.add_argument("--as", dest="as_status", metavar="STATUS",
+                   help="terminal status to set instead of 'done' "
+                        "(e.g. superseded, abandoned)")
+    p.add_argument("--no-check-ac", action="store_true",
+                   help="don't check every acceptance criterion on the linked task")
+    p.add_argument("--no-sync", action="store_true",
+                   help="skip the sync that runs by default after this command")
 
     p = sub.add_parser("new", help="scaffold a page",
                         epilog='e.g. tome new idea x --project vaulty --title "T" --desc "..."')
@@ -1679,6 +1914,10 @@ def main():
             return cmd_sync(vault_root, conventions, args)
         if args.command == "task":
             return cmd_task(vault_root, conventions, args)
+        if args.command == "start":
+            return cmd_start(vault_root, conventions, args)
+        if args.command == "done":
+            return cmd_done(vault_root, conventions, args)
         if args.command == "new":
             return cmd_new(vault_root, conventions, args)
         if args.command == "describe":
