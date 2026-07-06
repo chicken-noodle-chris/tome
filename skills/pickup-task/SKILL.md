@@ -20,9 +20,8 @@ act on via `--vault` / walking up from cwd / `VAULT_ROOT`, and bare paths like
 Throughout, **the user is always happy to answer questions.** If intent or scope is
 unclear — which task, how far to take it, an ambiguity in the plan — ask.
 
-1. **Prime yourself on the vault.** Run `tome sync` to pull, then read the vault's
-   `CLAUDE.md`, `wiki/SCHEMA.md`, and `wiki/index.md` (skip any already read this
-   session).
+1. **Prime yourself on the vault.** Run `tome sync` to pull, then `tome prime --full`
+   (skip if already primed this session) — prints SCHEMA.md and the index in one shot.
 
 2. **Locate the task and its plan.** If the user named one, find it; otherwise check the
    board (`tome task task list --plain`) and the project's live plans (`plans/`, not

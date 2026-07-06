@@ -15,9 +15,10 @@
 2. Inject the read/write conventions for the vault, when one resolves, so
    every session is vault-aware even without a skill invoked and without
    hand-wiring this into the user's global CLAUDE.md (which now stays
-   vault-agnostic — this hook is the single source for the pointer). Injects
-   only the conventions, never the index body: cost scales with vault size,
-   and this line is paid in every session.
+   vault-agnostic — this hook is the single source for the pointer). The
+   context text itself lives in tome_cli.cli.prime_terse_text — this hook
+   just imports and prints it, so it's byte-identical to `tome prime`'s
+   terse tier and there's exactly one spot to edit.
 
 Env export runs even with no vault (`tome init` needs it); context injection
 stays vault-gated and silent otherwise — awareness-only, can't block."""
@@ -73,35 +74,27 @@ def main():
     plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT")
     plugin_root = pathlib.Path(plugin_root) if plugin_root else None
     try:
-        on_path = export_env(plugin_root)
+        export_env(plugin_root)
     except Exception:
-        on_path = False
+        pass
 
     vault = find_vault_root()
     if vault is None or not vault.exists():
         return
 
-    if on_path:
-        invoke = "on PATH in Bash"
-    elif plugin_root is not None:
-        invoke = f'at python "{plugin_root / "scripts" / "tome.py"}"'
-    else:
-        invoke = "available"
+    # Import path is this file's own location (hooks/ and src/ are always
+    # siblings under the plugin root), independent of whether
+    # $CLAUDE_PLUGIN_ROOT happens to be set — export_env above is the only
+    # thing that actually needs that env var (it must match what agents'
+    # Bash sees).
+    repo_root = pathlib.Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(repo_root / "src"))
+    from tome_cli.cli import prime_terse_text
 
-    context = (
-        f"Knowledge vault at {vault} — accumulated knowledge, notes, and "
-        "tasks across projects, not scoped to the current repo. Reading: "
-        "start at wiki/index.md, browse by project folder, follow "
-        "[[wikilinks]]; grep only as a fallback. Writing: the tome CLI "
-        f"({invoke}) owns writes — run `tome help` and follow it (`tome "
-        "task` for backlog items); edit page bodies with normal file "
-        "tools; conventions in wiki/SCHEMA.md. Start and end vault work "
-        "with `tome sync`."
-    )
     print(json.dumps({
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
-            "additionalContext": context,
+            "additionalContext": prime_terse_text(vault),
         }
     }))
 

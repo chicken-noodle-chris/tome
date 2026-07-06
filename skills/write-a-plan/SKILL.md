@@ -22,9 +22,8 @@ are relative to the vault root, not the plugin root.
    what the plan should accomplish, then any clarifying questions on intent and scope.
    Explore the relevant code as needed so the plan is concrete and grounded.
 
-2. **Prime yourself on the vault.** Run `tome sync` to pull, then read the vault's
-   `CLAUDE.md`, `wiki/SCHEMA.md`, and `wiki/index.md` (skip any already read this
-   session).
+2. **Prime yourself on the vault.** Run `tome sync` to pull, then `tome prime --full`
+   (skip if already primed this session).
 
 3. **Design and author the plan page.** `tome new plan <slug> --project <name> --title
    "T" --desc "..."` to scaffold (the project folder must already exist — `tome new

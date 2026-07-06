@@ -78,6 +78,20 @@ def test_session_context_outside_vault_with_vault_root_emits_pointer(tmp_path):
     assert str(vault) in out["hookSpecificOutput"]["additionalContext"]
 
 
+def test_session_context_matches_prime_terse_text(tmp_path):
+    """The hook's injected context must be byte-identical to `tome prime`'s
+    terse tier — one source of truth, no drift between the two."""
+    sys.path.insert(0, str(REPO_ROOT / "src"))
+    from tome_cli.cli import prime_terse_text
+
+    vault = _make_vault(tmp_path)
+
+    result = _run_hook(SESSION_CONTEXT_HOOK, cwd=vault)
+
+    context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert context == prime_terse_text(vault)
+
+
 def test_session_context_no_vault_anywhere_is_silent(tmp_path):
     outside = tmp_path / "elsewhere"
     outside.mkdir()

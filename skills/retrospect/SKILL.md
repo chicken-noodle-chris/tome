@@ -20,9 +20,9 @@ there) — just run `tome <cmd>`; if it's ever not found, fall back to `python
 `--vault` / walking up from cwd / `VAULT_ROOT`. There is **one gate**: the user approves
 the proposed refinements before anything is written.
 
-1. **Prime, and set the window.** Run `tome sync` to pull, then read the vault's
-   `CLAUDE.md`, `wiki/SCHEMA.md`, and `wiki/index.md` (skip any already read this
-   session). Find the last retrospect log line with `grep -n "^## \[.*\] retrospect "
+1. **Prime, and set the window.** Run `tome sync` to pull, then `tome prime --full`
+   (skip if already primed this session). Find the last retrospect log line with
+   `grep -n "^## \[.*\] retrospect "
    wiki/log.md | tail -1` — its date is the window start; none found → default to the
    last ~30 days.
 

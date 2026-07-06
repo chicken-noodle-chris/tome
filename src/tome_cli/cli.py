@@ -877,6 +877,89 @@ def cmd_search(vault_root, conventions, args):
     return 0
 
 
+# --------------------------------------------------------------------------- #
+# prime — two tiers of session orientation. The terse tier (prime_terse_text)
+# is the single source for both `tome prime` and the SessionStart hook (which
+# imports it directly) — one spot to edit, no drift between the two. The full
+# tier is the write protocol that used to be a read fan-out spelled out in
+# every skill's opening steps.
+# --------------------------------------------------------------------------- #
+
+LOG_TAIL_ENTRIES = 15
+
+
+def prime_terse_text(vault_root):
+    """The orientation pointer: what the vault is and how to read/write it.
+    Kept under ~50 tokens — this is paid in every single session via the
+    SessionStart hook, so its cost is constant, not one-time."""
+    return (
+        f"Knowledge vault at {vault_root} — accumulated knowledge, notes, and "
+        "tasks across projects, not scoped to the current repo. Reading: "
+        "start at wiki/index.md, browse by project folder, follow "
+        "[[wikilinks]]; grep only as a fallback. Writing: the tome CLI "
+        "(`tome help`) owns writes — run `tome help` and follow it (`tome "
+        "task` for backlog items); edit page bodies with normal file "
+        "tools; conventions in wiki/SCHEMA.md. Start and end vault work "
+        "with `tome sync`."
+    )
+
+
+def log_tail(log_text, n=LOG_TAIL_ENTRIES):
+    """The last n `## [date] op | message` entries, whole — never truncated
+    mid-entry the way a bare line-count tail would risk."""
+    entries = [e for e in re.split(r"(?=^## \[)", log_text, flags=re.MULTILINE)
+               if e.startswith("## [")]
+    return "".join(entries[-n:]).rstrip("\n")
+
+
+def prime_full_text(vault_root, conventions, project):
+    """The write protocol: SCHEMA.md and the index always; with a project,
+    also that project's hub, every one of its live plan bodies, and a recent
+    log.md tail — replacing the read fan-out every skill used to open with."""
+    wiki_root = vault_root / "wiki"
+    sections = [
+        ((wiki_root / "SCHEMA.md").relative_to(vault_root).as_posix(),
+         (wiki_root / "SCHEMA.md").read_text(encoding="utf-8")),
+        ((wiki_root / conventions["index"]["file"]).relative_to(vault_root).as_posix(),
+         (wiki_root / conventions["index"]["file"]).read_text(encoding="utf-8")),
+    ]
+
+    if project:
+        if project not in list_projects(wiki_root, conventions):
+            raise VaultError(f"no such project: wiki/{project}/ does not exist")
+        _, pages = collect(vault_root, conventions)
+        hub_path = hub_path_for(wiki_root, project)
+        if hub_path.exists():
+            sections.append((hub_path.relative_to(vault_root).as_posix(),
+                              hub_path.read_text(encoding="utf-8")))
+
+        live_statuses = set(conventions["plan_status"]["live"])
+        live_plans = sorted(
+            (p for p in pages if p["meta"].get("type") == "plan"
+             and Path(p["rel_path"]).parts[0] == project
+             and p["meta"].get("status") in live_statuses),
+            key=lambda p: p["slug"])
+        for p in live_plans:
+            sections.append((f"wiki/{p['rel_path']}".replace("\\", "/"),
+                              p["path"].read_text(encoding="utf-8")))
+
+        log_path = wiki_root / "log.md"
+        sections.append((f"{log_path.relative_to(vault_root).as_posix()} (last {LOG_TAIL_ENTRIES})",
+                          log_tail(log_path.read_text(encoding="utf-8"))))
+
+    return "\n\n".join(f"# {label}\n\n{text}" for label, text in sections)
+
+
+def cmd_prime(vault_root, conventions, args):
+    if args.project and not args.full:
+        raise VaultError("a project only applies with --full (the terse tier is vault-level)")
+    print(prime_terse_text(vault_root))
+    if args.full:
+        print()
+        print(prime_full_text(vault_root, conventions, args.project))
+    return 0
+
+
 def cmd_log(vault_root, conventions, args):
     ops = conventions.get("log", {}).get("ops")
     if ops and args.op not in ops:
@@ -1693,6 +1776,14 @@ if you omit -m.
       --top-linked N.
       e.g. tome search "quartz spike" --top 5
 
+  tome prime [project] [--full]
+      Print session orientation. Bare: the terse vault pointer (same text
+      the SessionStart hook injects). --full also prints SCHEMA.md and the
+      index; with a project, also its hub, every live plan's full body, and
+      a recent log.md tail — the write protocol, replacing the read
+      fan-out a skill used to open with.
+      e.g. tome prime tome --full
+
   tome log <op> "<message>" [--body "..."] [--sync]
       Append a formatted entry to wiki/log.md.
       e.g. tome log work-started "Began TASK-26"
@@ -1865,6 +1956,13 @@ def build_parser():
     p.add_argument("--backlinks", help="find pages linking to this slug; ignores the query")
     p.add_argument("--top-linked", type=int, help="show the N most-linked-to pages; ignores the query")
 
+    p = sub.add_parser("prime", help="print session-orientation context",
+                        epilog="e.g. tome prime tome --full")
+    p.add_argument("project", nargs="?", help="a project to prime the full-tier context for")
+    p.add_argument("--full", action="store_true",
+                   help="also print SCHEMA.md, the index, and (with a project) its hub, "
+                        "live plan bodies, and a recent log tail")
+
     p = sub.add_parser("log", help="append a wiki/log.md entry",
                         epilog='e.g. tome log work-started "..."')
     p.add_argument("op")
@@ -1930,6 +2028,8 @@ def main():
             return cmd_rm(vault_root, conventions, args)
         if args.command == "search":
             return cmd_search(vault_root, conventions, args)
+        if args.command == "prime":
+            return cmd_prime(vault_root, conventions, args)
         if args.command == "log":
             return cmd_log(vault_root, conventions, args)
         if args.command == "inbox":
