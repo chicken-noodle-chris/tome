@@ -5,8 +5,8 @@ tome_cli.lint — structural integrity check for this knowledge vault.
 The deterministic counterpart to the agent's wiki discipline: SCHEMA.md is
 enforced today only by an agent choosing to follow it, and that drifts. This
 script catches the decay mechanically — broken wikilinks, orphan pages,
-frontmatter gaps, oversized pages, index<->page drift, and plans whose status
-disagrees with their directory.
+frontmatter gaps, oversized pages, index<->page drift, plans whose status
+disagrees with their directory, and ideas misplaced relative to their type.
 
 Pure and deterministic: no LLM, no semantic judgement, never edits. Every
 data-shaped rule (required fields, the type enum, the tag taxonomy, the plan
@@ -328,6 +328,32 @@ def check_plan_dirs(pages, live, terminal):
     return out
 
 
+def check_idea_placement(pages, folders):
+    """Ideas have no status field to check placement against (unlike plans),
+    but the inverse is still mechanically checkable: a page declared
+    type:idea should live under its project's idea folder (archived or
+    not), and a page living there should be type:idea. Advisory only
+    (warning) — there's no ground truth beyond the declared type itself, so
+    this can't gate a sync the way PLAN_DIR does."""
+    idea_folder = folders.get("idea", "ideas")
+    out = []
+    for p in pages:
+        if "read_error" in p or p["malformed_fm"]:
+            continue
+        parts = p["rel_path"].split("/")
+        if len(parts) < 2:
+            continue
+        in_idea_folder = parts[1] == idea_folder
+        is_idea = p["meta"].get("type") == "idea"
+        if is_idea and not in_idea_folder:
+            out.append(Finding(WARNING, "IDEA_DIR", p["rel_path"],
+                                f"type 'idea' but not under {idea_folder}/"))
+        elif in_idea_folder and not is_idea:
+            out.append(Finding(WARNING, "IDEA_DIR", p["rel_path"],
+                                f"lives under {idea_folder}/ but type is not 'idea'"))
+    return out
+
+
 def check_index_drift(pages, index_path, resolvable):
     """The index is the master catalog: every content page must appear as a
     wikilink in it (catalog completeness), and every wikilink in the index must
@@ -388,6 +414,7 @@ def run(wiki_root, conventions, index_path):
     findings += check_type_and_tags(pages, set(conventions["types"]["enum"]), tag_vocab)
     findings += check_plan_dirs(pages, set(conventions["plan_status"]["live"]),
                                 set(conventions["plan_status"]["terminal"]))
+    findings += check_idea_placement(pages, conventions["folders"])
     findings += check_index_drift(pages, index_path, resolvable)
     return pages, findings
 

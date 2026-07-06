@@ -885,6 +885,48 @@ def cmd_rm(vault_root, conventions, args):
     return 0
 
 
+def cmd_archive(vault_root, conventions, args):
+    """archive/--restore for status-less types (ideas, reports, sources,
+    notes): moves the file to/from a sibling archive/ folder. Plans and
+    decisions have their own status-driven lifecycle (`set-status`) — no
+    slug change means no inbound `[[link]]` needs rewriting either way."""
+    wiki_root, pages = collect(vault_root, conventions)
+    page = find_page(pages, args.slug)
+    ptype = page["meta"].get("type")
+    if ptype in ("plan", "decision"):
+        raise VaultError(f"'{args.slug}' is a {ptype} — archive it with "
+                          f"`tome set-status {args.slug} <terminal-status>` instead")
+    if ptype == "project":
+        raise VaultError(f"'{args.slug}' is a project hub — archiving it isn't supported")
+
+    currently_archived = "archive" in page["path"].parent.parts
+    if args.restore:
+        if not currently_archived:
+            raise VaultError(f"'{args.slug}' is not archived")
+        new_path = page["path"].parent.parent / page["path"].name
+    else:
+        if currently_archived:
+            raise VaultError(f"'{args.slug}' is already archived")
+        new_path = page["path"].parent / "archive" / page["path"].name
+
+    new_path.parent.mkdir(parents=True, exist_ok=True)
+    page["path"].rename(new_path)
+    fm_lines, body = read_page(new_path)
+    fm_set(fm_lines, "updated", today())
+    write_page(new_path, fm_lines, body)
+
+    _, pages = collect(vault_root, conventions)
+    index_path = rebuild_index(vault_root, conventions, wiki_root, pages)
+    touched = [new_path, index_path]
+
+    verb = "Restored" if args.restore else "Archived"
+    print(f"{verb} [[{args.slug}]] ({new_path.relative_to(vault_root)})")
+    result = maybe_sync(vault_root, conventions, args, touched, f"archive: {args.slug}")
+    if result is not None:
+        return result
+    return 0
+
+
 def cmd_search(vault_root, conventions, args):
     wiki_root = vault_root / "wiki"
     skip_files = set(conventions["skip"]["files"])
@@ -1804,6 +1846,12 @@ if you omit -m.
       index.
       e.g. tome rm scratch-page --force
 
+  tome archive <slug> [--restore] [--sync]
+      Move a status-less page (idea, report, source, note — not plan/decision,
+      which use `set-status`) to/from a sibling archive/ folder. Regenerates
+      the index; no link rewriting needed (slug is unchanged).
+      e.g. tome archive my-idea
+
   tome search "<query>" [--top N] [--type T] [--tag T ...] [--since YYYY-MM-DD]
       BM25 search over wiki pages (fallback when index-first navigation
       doesn't surface the right pages). Also: --backlinks <slug>,
@@ -1986,6 +2034,13 @@ def build_parser():
                    help="delete even with inbound links, reporting the breakage")
     add_sync_flag(p)
 
+    p = sub.add_parser("archive", help="archive/restore a status-less page (e.g. an idea)",
+                        epilog="e.g. tome archive my-idea")
+    p.add_argument("slug")
+    p.add_argument("--restore", action="store_true",
+                   help="restore from archive/ instead of archiving")
+    add_sync_flag(p)
+
     p = sub.add_parser("search", help="BM25 search over wiki pages",
                         epilog='e.g. tome search "quartz spike" --top 5')
     p.add_argument("query", nargs="?", default="", help="query terms")
@@ -2066,6 +2121,8 @@ def main():
             return cmd_mv(vault_root, conventions, args)
         if args.command == "rm":
             return cmd_rm(vault_root, conventions, args)
+        if args.command == "archive":
+            return cmd_archive(vault_root, conventions, args)
         if args.command == "search":
             return cmd_search(vault_root, conventions, args)
         if args.command == "prime":

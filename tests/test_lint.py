@@ -161,6 +161,49 @@ def test_plan_dir_live_status_inside_archive(make_vault, make_page):
     assert "PLAN_DIR" in _codes_for(findings, "proj/plans/archive/p1.md")
 
 
+def test_idea_dir_type_idea_outside_ideas_folder(make_vault, make_page):
+    vault = make_vault()
+    make_page(vault, "proj/proj.md", type="project", title="Proj")
+    make_page(vault, "proj/notes/stray-idea.md", type="idea", title="Stray")
+
+    pages, findings = _lint(vault)
+
+    assert "IDEA_DIR" in _codes_for(findings, "proj/notes/stray-idea.md")
+
+
+def test_idea_dir_non_idea_inside_ideas_folder(make_vault, make_page):
+    vault = make_vault()
+    make_page(vault, "proj/proj.md", type="project", title="Proj")
+    make_page(vault, "proj/ideas/not-an-idea.md", type="concept", title="Not an idea")
+
+    pages, findings = _lint(vault)
+
+    assert "IDEA_DIR" in _codes_for(findings, "proj/ideas/not-an-idea.md")
+
+
+def test_idea_dir_silent_when_placement_matches(make_vault, make_page):
+    vault = make_vault()
+    make_page(vault, "proj/proj.md", type="project", title="Proj")
+    make_page(vault, "proj/ideas/ok-idea.md", type="idea", title="OK")
+    make_page(vault, "proj/ideas/archive/archived-idea.md", type="idea", title="Archived")
+
+    pages, findings = _lint(vault)
+
+    assert "IDEA_DIR" not in _codes_for(findings, "proj/ideas/ok-idea.md")
+    assert "IDEA_DIR" not in _codes_for(findings, "proj/ideas/archive/archived-idea.md")
+
+
+def test_idea_dir_is_warning_not_error(make_vault, make_page):
+    vault = make_vault()
+    make_page(vault, "proj/proj.md", type="project", title="Proj")
+    make_page(vault, "proj/notes/stray-idea.md", type="idea", title="Stray")
+
+    pages, findings = _lint(vault)
+
+    finding = next(f for f in findings if f.code == "IDEA_DIR")
+    assert finding.severity == tome_lint.WARNING
+
+
 def test_index_missing(make_vault, run_tome):
     vault = make_vault()
     run_tome("--vault", str(vault), "new", "project", "proj",

@@ -69,6 +69,10 @@ cite.
   files between `plans/` and `plans/archive/` automatically.
 - **A plan without a Backlog.md task is normal** — a task is optional,
   created only when you want active work visible on the kanban board.
+- **Status-less types (ideas, reports, sources, notes) archive by directory,
+  not status** — `tome archive <slug>` / `--restore` moves the file to/from
+  a sibling `archive/` folder; plans and decisions keep using `set-status`.
+  No slug change either way, so no `[[link]]` ever needs rewriting.
 - **Reports are dated snapshots**, never edited to stay current — a later
   assessment is a new report page, not an edit to the old one.
 - **The index is generated** — never hand-edit `wiki/index.md`; set a page's
