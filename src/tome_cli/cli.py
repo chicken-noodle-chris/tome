@@ -267,16 +267,23 @@ def index_line(p, alias=None):
     return f"- {link} — {page_description(p)}"
 
 
-def generate_index(pages, conventions, wiki_root):
-    live_statuses = set(conventions["plan_status"]["live"])
-    terminal_statuses = set(conventions["plan_status"]["terminal"])
-
+def list_projects(wiki_root, conventions):
+    """Every wiki/<name>/ top-level dir except the cross-cutting ones and
+    whatever conventions.toml skips — shared by index generation, hub-plan
+    generation, and their lint checks so the three can't drift apart."""
     top_dirs = sorted(
         d.name for d in wiki_root.iterdir()
         if d.is_dir() and not d.name.startswith(".")
         and d.name not in set(conventions["skip"]["dirs"])
     )
-    projects = [d for d in top_dirs if d not in CROSS_CUTTING_DIRS]
+    return [d for d in top_dirs if d not in CROSS_CUTTING_DIRS]
+
+
+def generate_index(pages, conventions, wiki_root):
+    live_statuses = set(conventions["plan_status"]["live"])
+    terminal_statuses = set(conventions["plan_status"]["terminal"])
+
+    projects = list_projects(wiki_root, conventions)
 
     by_project = {proj: [] for proj in projects}
     cross_ideas = []
@@ -374,6 +381,80 @@ def rebuild_index(vault_root, conventions, wiki_root=None, pages=None):
 
 
 # --------------------------------------------------------------------------- #
+# Generated hub plan lists — a project hub's live/archived plan bullets are a
+# pure function of plan frontmatter, same situation the index was in before
+# it became generated. Opt-in per hub via <!-- tome:plans --> markers: a hub
+# without them is untouched (hand-authored bullets stay hand-authored).
+# Prose outside the markers is never touched.
+# --------------------------------------------------------------------------- #
+
+HUB_MARKER_START = "<!-- tome:plans -->"
+HUB_MARKER_END = "<!-- /tome:plans -->"
+HUB_MARKERS_RE = re.compile(
+    re.escape(HUB_MARKER_START) + r".*?" + re.escape(HUB_MARKER_END), re.DOTALL)
+
+
+def generate_hub_plans_block(pages, conventions, project):
+    """Live plans (proposed/active/blocked) then archived (done/superseded/
+    abandoned), newest-`updated`-first, each entry `[[slug]] — description`."""
+    live_statuses = set(conventions["plan_status"]["live"])
+    terminal_statuses = set(conventions["plan_status"]["terminal"])
+    project_plans = [p for p in pages
+                      if p["meta"].get("type") == "plan"
+                      and Path(p["rel_path"]).parts[0] == project]
+
+    def newest_first(p):
+        return (p["meta"].get("updated") or "", p["slug"])
+
+    live = sorted((p for p in project_plans if p["meta"].get("status") in live_statuses),
+                  key=newest_first, reverse=True)
+    archived = sorted((p for p in project_plans if p["meta"].get("status") in terminal_statuses),
+                       key=newest_first, reverse=True)
+
+    lines = []
+    if live:
+        lines.append("**Plans — live:**")
+        lines.extend(index_line(p) for p in live)
+        lines.append("")
+    if archived:
+        lines.append("**Plans — archived:**")
+        lines.extend(index_line(p) for p in archived)
+        lines.append("")
+    return "\n".join(lines).rstrip("\n")
+
+
+def hub_path_for(wiki_root, project):
+    return wiki_root / project / f"{project}.md"
+
+
+def regenerate_hub(conventions, wiki_root, pages, project):
+    """No-op when the hub doesn't exist, or exists but hasn't opted in with
+    markers — returns None either way so callers can tell "nothing to do"
+    apart from "regenerated, unchanged"."""
+    hub_path = hub_path_for(wiki_root, project)
+    if not hub_path.exists():
+        return None
+    text = hub_path.read_text(encoding="utf-8")
+    if HUB_MARKER_START not in text or HUB_MARKER_END not in text:
+        return None
+    block = generate_hub_plans_block(pages, conventions, project)
+    replacement = f"{HUB_MARKER_START}\n{block}\n{HUB_MARKER_END}"
+    new_text = HUB_MARKERS_RE.sub(lambda m: replacement, text, count=1)
+    if new_text != text:
+        hub_path.write_text(new_text, encoding="utf-8", newline="\n")
+    return hub_path
+
+
+def regenerate_all_hubs(conventions, wiki_root, pages):
+    touched = []
+    for project in list_projects(wiki_root, conventions):
+        hub_path = regenerate_hub(conventions, wiki_root, pages, project)
+        if hub_path is not None:
+            touched.append(hub_path)
+    return touched
+
+
+# --------------------------------------------------------------------------- #
 # vault lint (tome_lint.run() + two checks that need the generated index)
 # --------------------------------------------------------------------------- #
 
@@ -416,6 +497,30 @@ def check_index_oversize(conventions, index_path):
     return []
 
 
+def check_hub_plans_drift(pages, conventions, wiki_root):
+    out = []
+    for project in list_projects(wiki_root, conventions):
+        hub_path = hub_path_for(wiki_root, project)
+        if not hub_path.exists():
+            continue
+        try:
+            text = hub_path.read_text(encoding="utf-8")
+        except OSError as e:
+            out.append(Finding(ERROR, "READ_ERROR", hub_path.name, str(e)))
+            continue
+        if HUB_MARKER_START not in text or HUB_MARKER_END not in text:
+            continue  # hasn't opted in — nothing to check
+        expected = f"{HUB_MARKER_START}\n{generate_hub_plans_block(pages, conventions, project)}\n{HUB_MARKER_END}"
+        m = HUB_MARKERS_RE.search(text)
+        actual = m.group(0) if m else None
+        if actual != expected:
+            rel = hub_path.relative_to(wiki_root).as_posix()
+            out.append(Finding(ERROR, "HUB_DRIFT", rel,
+                                "hub's generated plan list does not match a fresh "
+                                "rebuild — run `python scripts/tome.py index rebuild`"))
+    return out
+
+
 def run_all_lint_checks(vault_root, conventions):
     """The full check set `cmd_lint` reports and `cmd_sync`'s commit gate
     enforces — one body so the two commands can't drift apart."""
@@ -425,6 +530,7 @@ def run_all_lint_checks(vault_root, conventions):
     findings += check_description_cap(pages, conventions)
     findings += check_index_generated_drift(pages, conventions, wiki_root, index_path)
     findings += check_index_oversize(conventions, index_path)
+    findings += check_hub_plans_drift(pages, conventions, wiki_root)
     return pages, findings
 
 
@@ -482,14 +588,25 @@ def cmd_new(vault_root, conventions, args):
         fm_lines.append("status: proposed")
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    write_page(path, fm_lines, f"\n# {title}\n\nTBD.\n")
+    if args.type == "project":
+        body = (f"\n# {title}\n\n{args.desc}\n\n"
+                f"## Plans\n\n{HUB_MARKER_START}\n{HUB_MARKER_END}\n")
+    else:
+        body = f"\n# {title}\n\nTBD.\n"
+    write_page(path, fm_lines, body)
 
     _, pages = collect(vault_root, conventions)
     index_path = rebuild_index(vault_root, conventions, wiki_root, pages)
 
     slug = project if args.type == "project" else args.slug
+    touched = [path, index_path]
+    if args.type in ("plan", "project"):
+        hub_path = regenerate_hub(conventions, wiki_root, pages, project)
+        if hub_path is not None and hub_path not in touched:
+            touched.append(hub_path)
+
     print(f"Created {path.relative_to(vault_root)}")
-    result = maybe_sync(vault_root, conventions, args, [path, index_path], f"new: {slug}")
+    result = maybe_sync(vault_root, conventions, args, touched, f"new: {slug}")
     if result is not None:
         return result
     print("Next: edit the body, link it from the project hub, then:")
@@ -511,8 +628,14 @@ def cmd_describe(vault_root, conventions, args):
 
     _, pages = collect(vault_root, conventions)
     index_path = rebuild_index(vault_root, conventions, wiki_root, pages)
+    touched = [page["path"], index_path]
+    if page["meta"].get("type") == "plan":
+        project = Path(page["rel_path"]).parts[0]
+        hub_path = regenerate_hub(conventions, wiki_root, pages, project)
+        if hub_path is not None:
+            touched.append(hub_path)
     print(f"Updated description for [[{args.slug}]]")
-    result = maybe_sync(vault_root, conventions, args, [page["path"], index_path], f"describe: {args.slug}")
+    result = maybe_sync(vault_root, conventions, args, touched, f"describe: {args.slug}")
     if result is not None:
         return result
     return 0
@@ -556,9 +679,15 @@ def cmd_set_status(vault_root, conventions, args):
 
     _, pages = collect(vault_root, conventions)
     index_path = rebuild_index(vault_root, conventions, wiki_root, pages)
+    touched = [new_path, index_path]
+    if ptype == "plan":
+        project = Path(page["rel_path"]).parts[0]
+        hub_path = regenerate_hub(conventions, wiki_root, pages, project)
+        if hub_path is not None:
+            touched.append(hub_path)
     print(f"Set [[{args.slug}]] status -> {args.status}"
           + (f" (moved to {new_path.relative_to(vault_root)})" if new_path != page["path"] else ""))
-    result = maybe_sync(vault_root, conventions, args, [new_path, index_path],
+    result = maybe_sync(vault_root, conventions, args, touched,
                          f"set-status: {args.slug} -> {args.status}")
     if result is not None:
         return result
@@ -634,6 +763,11 @@ def cmd_mv(vault_root, conventions, args):
             print(f"  {t}")
     touched_paths = [new_path, index_path] + [wiki_root / t for t in touched
                                                if (wiki_root / t) != new_path]
+    if page["meta"].get("type") == "plan":
+        project = Path(page["rel_path"]).parts[0]
+        hub_path = regenerate_hub(conventions, wiki_root, pages, project)
+        if hub_path is not None and hub_path not in touched_paths:
+            touched_paths.append(hub_path)
     result = maybe_sync(vault_root, conventions, args, touched_paths,
                          f"mv: {args.slug} -> {args.new_slug}")
     if result is not None:
@@ -655,6 +789,19 @@ def cmd_rm(vault_root, conventions, args):
                if p["path"] != page["path"] and "read_error" not in p
                and args.slug in p.get("links", [])]
 
+    if page["meta"].get("type") == "plan":
+        # A marker-managed hub's own listing of this plan isn't a real
+        # blocker: rm regenerates that hub right after deleting, so the
+        # link disappears as part of this same operation. Only prose
+        # outside the markers (a hand-authored mention) should still count.
+        hub_path = hub_path_for(wiki_root, Path(page["rel_path"]).parts[0])
+        if hub_path.exists():
+            hub_text = hub_path.read_text(encoding="utf-8")
+            if HUB_MARKER_START in hub_text and HUB_MARKER_END in hub_text:
+                outside = HUB_MARKERS_RE.sub("", hub_text)
+                if f"[[{args.slug}]]" not in outside and f"[[{args.slug}|" not in outside:
+                    inbound = [p for p in inbound if p["path"] != hub_path]
+
     if inbound and not args.force:
         print(f"'{args.slug}' has inbound links from {len(inbound)} page(s) — "
               f"refusing to delete:", file=sys.stderr)
@@ -669,10 +816,18 @@ def cmd_rm(vault_root, conventions, args):
 
     rel_path = page["rel_path"]
     removed_path = page["path"]
+    removed_type = page["meta"].get("type")
+    removed_project = Path(rel_path).parts[0]
     removed_path.unlink()
 
     _, pages = collect(vault_root, conventions)
     index_path = rebuild_index(vault_root, conventions, wiki_root, pages)
+    touched = [removed_path, index_path]
+    regenerated_hub = None
+    if removed_type == "plan":
+        regenerated_hub = regenerate_hub(conventions, wiki_root, pages, removed_project)
+        if regenerated_hub is not None:
+            touched.append(regenerated_hub)
 
     print(f"Removed {rel_path}")
     if inbound:
@@ -683,8 +838,9 @@ def cmd_rm(vault_root, conventions, args):
     if (vault_root / "backlog").is_dir():
         print("Note: a backlog/ task may still reference this page — check "
               "`tome task task list --plain`.")
-    print("Reminder: update the project hub by hand if it linked this page.")
-    result = maybe_sync(vault_root, conventions, args, [removed_path, index_path], f"rm: {args.slug}")
+    if regenerated_hub is None:
+        print("Reminder: update the project hub by hand if it linked this page.")
+    result = maybe_sync(vault_root, conventions, args, touched, f"rm: {args.slug}")
     if result is not None:
         return result
     print('Next: tome log <op> "..." then tome sync -m "..."')
@@ -736,8 +892,12 @@ def cmd_log(vault_root, conventions, args):
 
 
 def cmd_index_rebuild(vault_root, conventions, args):
-    index_path = rebuild_index(vault_root, conventions)
+    wiki_root, pages = collect(vault_root, conventions)
+    index_path = rebuild_index(vault_root, conventions, wiki_root, pages)
     print(f"Rebuilt {index_path.relative_to(vault_root)}")
+    hubs = regenerate_all_hubs(conventions, wiki_root, pages)
+    for hub_path in hubs:
+        print(f"Regenerated {hub_path.relative_to(vault_root)}")
     return 0
 
 

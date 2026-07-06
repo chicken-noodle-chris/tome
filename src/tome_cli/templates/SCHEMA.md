@@ -73,6 +73,11 @@ cite.
   assessment is a new report page, not an edit to the old one.
 - **The index is generated** — never hand-edit `wiki/index.md`; set a page's
   summary with `tome describe`.
+- **A project hub's plan lists are generated too, once it opts in** — wrap a
+  section with `<!-- tome:plans --> <!-- /tome:plans -->` and `tome` keeps
+  live/archived `[[slug]] — description` bullets current there; prose
+  outside the markers is never touched. `tome new project` scaffolds a hub
+  with the markers already in place.
 - **Task project tagging**: every Backlog.md task carries a `project:<name>`
   label, set on create, since the backlog is one shared board.
 - **Fail loud**: if a source is ambiguous, a placement is unclear, or a
