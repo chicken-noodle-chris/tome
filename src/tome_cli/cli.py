@@ -43,6 +43,7 @@ Finding = tome_lint.Finding
 FRONTMATTER_RE = tome_lint.FRONTMATTER_RE
 
 SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+TASK_ID_RE = re.compile(r"^(?:task-)?(\d+)$", re.IGNORECASE)
 
 # `tome task` passthrough version, pinned like the repo's other dependencies
 # (Quartz is SHA-pinned, quartz.lock.json locks its plugins) rather than
@@ -484,10 +485,13 @@ def cmd_new(vault_root, conventions, args):
     write_page(path, fm_lines, f"\n# {title}\n\nTBD.\n")
 
     _, pages = collect(vault_root, conventions)
-    rebuild_index(vault_root, conventions, wiki_root, pages)
+    index_path = rebuild_index(vault_root, conventions, wiki_root, pages)
 
     slug = project if args.type == "project" else args.slug
     print(f"Created {path.relative_to(vault_root)}")
+    result = maybe_sync(vault_root, conventions, args, [path, index_path], f"new: {slug}")
+    if result is not None:
+        return result
     print("Next: edit the body, link it from the project hub, then:")
     print(f'  python scripts/tome.py log author "authored {slug}"')
     print('  python scripts/tome.py sync -m "..."')
@@ -506,8 +510,11 @@ def cmd_describe(vault_root, conventions, args):
     write_page(page["path"], fm_lines, body)
 
     _, pages = collect(vault_root, conventions)
-    rebuild_index(vault_root, conventions, wiki_root, pages)
+    index_path = rebuild_index(vault_root, conventions, wiki_root, pages)
     print(f"Updated description for [[{args.slug}]]")
+    result = maybe_sync(vault_root, conventions, args, [page["path"], index_path], f"describe: {args.slug}")
+    if result is not None:
+        return result
     return 0
 
 
@@ -548,9 +555,13 @@ def cmd_set_status(vault_root, conventions, args):
             page["path"].rename(new_path)
 
     _, pages = collect(vault_root, conventions)
-    rebuild_index(vault_root, conventions, wiki_root, pages)
+    index_path = rebuild_index(vault_root, conventions, wiki_root, pages)
     print(f"Set [[{args.slug}]] status -> {args.status}"
           + (f" (moved to {new_path.relative_to(vault_root)})" if new_path != page["path"] else ""))
+    result = maybe_sync(vault_root, conventions, args, [new_path, index_path],
+                         f"set-status: {args.slug} -> {args.status}")
+    if result is not None:
+        return result
     return 0
 
 
@@ -615,12 +626,18 @@ def cmd_mv(vault_root, conventions, args):
             touched.append(p["rel_path"])
 
     _, pages = collect(vault_root, conventions)
-    rebuild_index(vault_root, conventions, wiki_root, pages)
+    index_path = rebuild_index(vault_root, conventions, wiki_root, pages)
     print(f"Renamed {args.slug} -> {args.new_slug} ({new_path.relative_to(vault_root)})")
     if touched:
         print("Rewrote inbound links in:")
         for t in touched:
             print(f"  {t}")
+    touched_paths = [new_path, index_path] + [wiki_root / t for t in touched
+                                               if (wiki_root / t) != new_path]
+    result = maybe_sync(vault_root, conventions, args, touched_paths,
+                         f"mv: {args.slug} -> {args.new_slug}")
+    if result is not None:
+        return result
     return 0
 
 
@@ -651,10 +668,11 @@ def cmd_rm(vault_root, conventions, args):
         return 1
 
     rel_path = page["rel_path"]
-    page["path"].unlink()
+    removed_path = page["path"]
+    removed_path.unlink()
 
     _, pages = collect(vault_root, conventions)
-    rebuild_index(vault_root, conventions, wiki_root, pages)
+    index_path = rebuild_index(vault_root, conventions, wiki_root, pages)
 
     print(f"Removed {rel_path}")
     if inbound:
@@ -666,6 +684,9 @@ def cmd_rm(vault_root, conventions, args):
         print("Note: a backlog/ task may still reference this page — check "
               "`tome task task list --plain`.")
     print("Reminder: update the project hub by hand if it linked this page.")
+    result = maybe_sync(vault_root, conventions, args, [removed_path, index_path], f"rm: {args.slug}")
+    if result is not None:
+        return result
     print('Next: tome log <op> "..." then tome sync -m "..."')
     return 0
 
@@ -707,6 +728,10 @@ def cmd_log(vault_root, conventions, args):
     with log_path.open("a", encoding="utf-8", newline="\n") as fh:
         fh.write(entry)
     print(f"Appended log entry: {args.op} | {args.message}")
+    result = maybe_sync(vault_root, conventions, args, [log_path], f"log: {args.op}",
+                         message_attr="sync_message")
+    if result is not None:
+        return result
     return 0
 
 
@@ -761,6 +786,9 @@ def cmd_inbox(vault_root, conventions, args):
     path.write_text(body, encoding="utf-8", newline="\n")
 
     print(f"Captured to {path.relative_to(vault_root)}")
+    result = maybe_sync(vault_root, conventions, args, [path], f"inbox: {slug}")
+    if result is not None:
+        return result
     print("Routed into the wiki at the next retrospect triage.")
     return 0
 
@@ -853,7 +881,14 @@ def run_git(vault_root, args):
                            capture_output=True, text=True)
 
 
-def cmd_sync(vault_root, conventions, args):
+def sync_core(vault_root, conventions, message, no_verify, pathspec=None):
+    """The shared pull/lint-gate/commit/push core behind `tome sync` and
+    every write command's `--sync`. With pathspec=None, stages the whole
+    tree (bare `tome sync`'s deliberate whole-tree sweep — the only place a
+    ride-along commit should be possible). With a pathspec (relative-to-
+    vault-root path strings), stages and commits only those paths, so one
+    command's auto-sync can't sweep in another agent's half-finished hand
+    edits; whatever else is dirty afterwards is reported, never swallowed."""
     branch = run_git(vault_root, ["rev-parse", "--abbrev-ref", "HEAD"])
     if branch.returncode != 0:
         print(branch.stderr, file=sys.stderr)
@@ -873,11 +908,17 @@ def cmd_sync(vault_root, conventions, args):
         print("already in sync")
         return 0
 
-    if not args.message:
+    if pathspec is not None:
+        scoped = run_git(vault_root, ["status", "--porcelain", "--", *pathspec])
+        if not scoped.stdout.strip():
+            print("already in sync (nothing dirty in scope)")
+            return 0
+
+    if not message:
         raise VaultError("tree is dirty — a commit message is required: "
                           "`tome sync -m \"...\"`")
 
-    if not args.no_verify:
+    if not no_verify:
         pages, findings = run_all_lint_checks(vault_root, conventions)
         errors = [f for f in findings if f.severity == ERROR]
         if errors:
@@ -887,11 +928,12 @@ def cmd_sync(vault_root, conventions, args):
                   "pass --no-verify to commit anyway.", file=sys.stderr)
             return 1
 
-    add = run_git(vault_root, ["add", "-A"])
+    add_args = ["add", "-A"] if pathspec is None else ["add", "-A", "--", *pathspec]
+    add = run_git(vault_root, add_args)
     if add.returncode != 0:
         print(add.stderr, file=sys.stderr)
         return 1
-    commit = run_git(vault_root, ["commit", "-m", args.message])
+    commit = run_git(vault_root, ["commit", "-m", message])
     print(commit.stdout, end="")
     if commit.returncode != 0:
         print(commit.stderr, file=sys.stderr)
@@ -902,7 +944,114 @@ def cmd_sync(vault_root, conventions, args):
         print(push.stderr, file=sys.stderr)
         return 1
     print("synced.")
+
+    if pathspec is not None:
+        leftover = run_git(vault_root, ["status", "--porcelain"])
+        leftover_lines = [l for l in leftover.stdout.splitlines() if l.strip()]
+        if leftover_lines:
+            print(f"left uncommitted: {len(leftover_lines)} file(s) from elsewhere:")
+            for line in leftover_lines:
+                print(f"  {line}")
     return 0
+
+
+def maybe_sync(vault_root, conventions, args, touched_paths, auto_message, message_attr="message"):
+    """Called at the tail of every write command. Returns None (caller keeps
+    going, e.g. to print its normal hints) when --sync wasn't passed; else
+    runs the scoped sync_core over touched_paths and returns its exit code."""
+    if not getattr(args, "sync", False):
+        return None
+    message = getattr(args, message_attr, None) or auto_message
+    rel = [str(Path(p).resolve().relative_to(vault_root)) for p in touched_paths]
+    return sync_core(vault_root, conventions, message, False, pathspec=rel)
+
+
+def find_task_file(vault_root, task_num):
+    """Locate backlog/tasks/*.md whose `id:` frontmatter is TASK-<task_num>.
+    Filenames encode the title too (`task-47 - Some-Title.md`), so this reads
+    frontmatter rather than guessing the full filename."""
+    tasks_dir = vault_root / "backlog" / "tasks"
+    if not tasks_dir.is_dir():
+        return None
+    target_id = f"TASK-{task_num}"
+    for p in tasks_dir.glob("*.md"):
+        try:
+            fm_lines, _ = read_page(p)
+        except VaultError:
+            continue
+        if fm_get(fm_lines, "id") == target_id:
+            return p
+    return None
+
+
+def find_task_for_page(vault_root, page_rel_path):
+    """Locate the backlog task (if any) whose `references:` list contains
+    this page's current path — the reverse direction of find_task_file's
+    task->plan lookup. A plan without a task is normal; returns None."""
+    tasks_dir = vault_root / "backlog" / "tasks"
+    if not tasks_dir.is_dir():
+        return None
+    wiki_rel = f"wiki/{page_rel_path}".replace("\\", "/")
+    for p in tasks_dir.glob("*.md"):
+        try:
+            fm_lines, _ = read_page(p)
+        except VaultError:
+            continue
+        if wiki_rel in "\n".join(fm_lines):
+            return p
+    return None
+
+
+def resolve_entity_cluster(vault_root, conventions, wiki_root, pages, entity):
+    """Resolve one `tome sync <entity>` argument — a page slug or a backlog
+    task id — to its closed file cluster: the page, its linked task file (if
+    any), the page's project hub (if any), index.md, and log.md. Detection is
+    a fixed cluster derived from real links, never a heuristic scan; an
+    unresolvable slug/task id fails loud via find_page/VaultError."""
+    m = TASK_ID_RE.match(entity)
+    page = None
+    task_path = None
+    if m:
+        task_path = find_task_file(vault_root, m.group(1))
+        if task_path is None:
+            raise VaultError(f"no backlog task with id 'task-{m.group(1)}'")
+        fm_lines, _ = read_page(task_path)
+        ref_m = re.search(r"wiki/([^\s'\"]+\.md)", "\n".join(fm_lines))
+        if ref_m:
+            ref_rel = ref_m.group(1)
+            page = next((p for p in pages
+                         if p["rel_path"].replace("\\", "/") == ref_rel), None)
+    else:
+        page = find_page(pages, entity)
+        task_path = find_task_for_page(vault_root, page["rel_path"])
+
+    cluster = []
+    if page is not None:
+        cluster.append(page["path"])
+        project = Path(page["rel_path"]).parts[0]
+        hub_path = wiki_root / project / f"{project}.md"
+        if hub_path.exists():
+            cluster.append(hub_path)
+    if task_path is not None:
+        cluster.append(task_path)
+    cluster.append(wiki_root / conventions["index"]["file"])
+    cluster.append(wiki_root / "log.md")
+    return cluster
+
+
+def cmd_sync(vault_root, conventions, args):
+    if args.entities:
+        wiki_root, pages = collect(vault_root, conventions)
+        cluster, seen = [], set()
+        for entity in args.entities:
+            for p in resolve_entity_cluster(vault_root, conventions, wiki_root, pages, entity):
+                if str(p) not in seen:
+                    seen.add(str(p))
+                    cluster.append(p)
+        pathspec = [str(p.relative_to(vault_root)) for p in cluster]
+        message = args.message or f"sync: {', '.join(args.entities)}"
+        return sync_core(vault_root, conventions, message, args.no_verify, pathspec=pathspec)
+    return sync_core(vault_root, conventions, args.message, args.no_verify, pathspec=None)
 
 
 def cmd_task(vault_root, conventions, args):
@@ -1145,26 +1294,31 @@ def cmd_doctor(args):
 HELP_TEXT = """\
 tome.py — mechanical vault operations (see wiki/SCHEMA.md for the "why")
 
-  tome new <type> <slug> --project <name> --title "T" --desc "..."
+Write commands (new, describe, set-status, mv, rm, log, inbox) all take
+--sync [-m "message"]: commit+push right after, scoped to just the files
+that command touched (never the whole tree) — a message is auto-generated
+if you omit -m.
+
+  tome new <type> <slug> --project <name> --title "T" --desc "..." [--sync]
       Scaffold a page. type: project|plan|idea|decision|report|source|
       concept|synthesis. For type=project, omit --project (slug IS the
       project). Regenerates the index.
       e.g. tome new idea offline-mode --project vaulty --title "Offline mode" --desc "Cache reads for flights."
 
-  tome describe <slug> "<one-liner>"
+  tome describe <slug> "<one-liner>" [--sync]
       Replace a page's index summary (<=140 chars). Regenerates the index.
       e.g. tome describe vault-cli "Stdlib CLI owning vault mechanics."
 
-  tome set-status <slug> <status>
+  tome set-status <slug> <status> [--sync]
       Plans: proposed|active|blocked|done|superseded|abandoned (moves
       plans/ <-> plans/archive/ automatically). Decisions: proposed|current.
       e.g. tome set-status vault-cli active
 
-  tome mv <slug> <new-slug>
+  tome mv <slug> <new-slug> [--sync]
       Rename a page; rewrites every inbound [[wikilink]] across the wiki.
       e.g. tome mv vault-cli vaultctl
 
-  tome rm <slug> [--force]
+  tome rm <slug> [--force] [--sync]
       Delete a page. Refuses project hubs always; refuses pages with inbound
       links unless --force (prints the linkers either way). Regenerates the
       index.
@@ -1176,11 +1330,11 @@ tome.py — mechanical vault operations (see wiki/SCHEMA.md for the "why")
       --top-linked N.
       e.g. tome search "quartz spike" --top 5
 
-  tome log <op> "<message>" [--body "..."]
+  tome log <op> "<message>" [--body "..."] [--sync]
       Append a formatted entry to wiki/log.md.
       e.g. tome log work-started "Began TASK-26"
 
-  tome inbox "<note>" [--title "T"]
+  tome inbox "<note>" [--title "T"] [--sync]
       Drop a schema-free capture note in inbox/YYYY-MM-DD-<slug>.md (slug
       from --title or the note's first few words). Multi-line notes allowed.
       Never scanned by lint; triaged into the wiki by retrospect.
@@ -1192,10 +1346,14 @@ tome.py — mechanical vault operations (see wiki/SCHEMA.md for the "why")
   tome lint [--strict]
       Structural checks (broken links, orphans, frontmatter, index drift).
 
-  tome sync [-m "message"] [--no-verify]
+  tome sync [<slug-or-task-id>...] [-m "message"] [--no-verify]
       Pull (always). If dirty: lint-gates (errors abort, --no-verify skips),
-      then commit (message required) + push. main-only.
+      then commit (message required, unless entities given) + push.
+      main-only. With entities: scopes the commit to each one's resolved
+      cluster (page, linked task, hub, index, log) instead of the whole
+      tree, printing anything else left dirty.
       e.g. tome sync -m "Add offline-mode idea"
+      e.g. tome sync workflow-compression task-47
 
   tome task <args...>
       Passthrough to `npx --yes backlog.md@latest <args...>` from the vault root.
@@ -1226,6 +1384,20 @@ def cmd_help(args):
 # argparse wiring
 # --------------------------------------------------------------------------- #
 
+def add_sync_flag(p, dest="message"):
+    """--sync [-m ...] on a write command: commit+push (scoped to just that
+    command's touched files) right after it runs. dest differs only for
+    `log`, whose positional `message` argument already owns that name."""
+    p.add_argument("--sync", action="store_true",
+                   help="commit+push this command's touched files after it runs")
+    if dest == "message":
+        p.add_argument("-m", "--message",
+                        help="commit message for --sync (auto-generated if omitted)")
+    else:
+        p.add_argument("-m", "--sync-message", dest=dest,
+                        help="commit message for --sync (auto-generated if omitted)")
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog="tome", add_help=True,
                                       description="Vault mechanical operations.")
@@ -1240,8 +1412,13 @@ def build_parser():
     p.add_argument("--strict", action="store_true")
 
     p = sub.add_parser("sync", help="pull, and commit+push if dirty",
-                        epilog='e.g. tome sync -m "message"')
-    p.add_argument("-m", "--message", help="commit message (required if dirty)")
+                        epilog='e.g. tome sync -m "message", or tome sync workflow-compression task-47')
+    p.add_argument("entities", nargs="*",
+                   help="optional slug(s)/task id(s) to scope the commit to "
+                        "(page + linked task + hub + index + log only)")
+    p.add_argument("-m", "--message", help="commit message (auto-generated "
+                                            "if entities given and omitted; "
+                                            "required otherwise if dirty)")
     p.add_argument("--no-verify", action="store_true",
                    help="skip the lint gate on the commit path")
 
@@ -1256,27 +1433,32 @@ def build_parser():
     p.add_argument("--project")
     p.add_argument("--title", required=True)
     p.add_argument("--desc", required=True)
+    add_sync_flag(p)
 
     p = sub.add_parser("describe", help="replace a page's index summary",
                         epilog='e.g. tome describe vault-cli "..."')
     p.add_argument("slug")
     p.add_argument("text")
+    add_sync_flag(p)
 
     p = sub.add_parser("set-status", help="change a plan/decision's status",
                         epilog="e.g. tome set-status vault-cli active")
     p.add_argument("slug")
     p.add_argument("status")
+    add_sync_flag(p)
 
     p = sub.add_parser("mv", help="rename a page, rewriting inbound links",
                         epilog="e.g. tome mv old-slug new-slug")
     p.add_argument("slug")
     p.add_argument("new_slug")
+    add_sync_flag(p)
 
     p = sub.add_parser("rm", help="delete a page, refusing hubs/linked pages by default",
                         epilog="e.g. tome rm scratch-page --force")
     p.add_argument("slug")
     p.add_argument("--force", action="store_true",
                    help="delete even with inbound links, reporting the breakage")
+    add_sync_flag(p)
 
     p = sub.add_parser("search", help="BM25 search over wiki pages",
                         epilog='e.g. tome search "quartz spike" --top 5')
@@ -1293,11 +1475,13 @@ def build_parser():
     p.add_argument("op")
     p.add_argument("message")
     p.add_argument("--body")
+    add_sync_flag(p, dest="sync_message")
 
     p = sub.add_parser("inbox", help="drop a schema-free capture note in inbox/",
                         epilog='e.g. tome inbox "Remember: X does Y because Z"')
     p.add_argument("note")
     p.add_argument("--title", help="override the note's derived slug basis")
+    add_sync_flag(p)
 
     idx = sub.add_parser("index", help="index operations")
     idx_sub = idx.add_subparsers(dest="index_command", required=True)
