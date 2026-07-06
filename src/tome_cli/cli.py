@@ -546,6 +546,14 @@ def cmd_lint(vault_root, conventions, args):
 # --------------------------------------------------------------------------- #
 
 def cmd_new(vault_root, conventions, args):
+    with_task = getattr(args, "with_task", None)
+    priority = getattr(args, "priority", None)
+    acs = getattr(args, "ac", None)
+    if with_task and args.type != "plan":
+        raise VaultError("--with-task only applies to `tome new plan`")
+    if (priority or acs) and not with_task:
+        raise VaultError("--priority/--ac only apply alongside --with-task")
+
     wiki_root, pages = collect(vault_root, conventions)
     type_enum = set(conventions["types"]["enum"])
     if args.type not in type_enum:
@@ -606,6 +614,26 @@ def cmd_new(vault_root, conventions, args):
             touched.append(hub_path)
 
     print(f"Created {path.relative_to(vault_root)}")
+
+    if with_task:
+        plan_ref = f"wiki/{path.relative_to(wiki_root).as_posix()}"
+        task_argv = ["task", "create", with_task, "-d", args.desc,
+                     "-l", f"project:{project}", "--ref", plan_ref, "--plain"]
+        if priority:
+            task_argv += ["--priority", priority]
+        for ac in acs or []:
+            task_argv += ["--ac", ac]
+        proc = run_backlog(vault_root, task_argv, capture=True)
+        if proc.returncode != 0:
+            raise VaultError(f"backlog task create failed: {(proc.stderr or proc.stdout).strip()}")
+        m = re.search(r"^File: (.+)$", proc.stdout, re.MULTILINE)
+        if m:
+            task_path = Path(m.group(1).strip())
+            touched.append(task_path)
+            print(f"Created backlog task: {task_path.name}")
+        else:
+            print("Created backlog task (couldn't parse its file path for --sync scoping).")
+
     result = maybe_sync(vault_root, conventions, args, touched, f"new: {slug}")
     if result is not None:
         return result
@@ -1751,6 +1779,12 @@ if you omit -m.
       project). Regenerates the index.
       e.g. tome new idea offline-mode --project vaulty --title "Offline mode" --desc "Cache reads for flights."
 
+      For type=plan, add --with-task "Title" to also create a linked
+      Backlog task in one shot: labeled project:<name>, --ref pointing at
+      the plan, description from --desc. --priority/--ac (repeatable) pass
+      through to the task; both only apply alongside --with-task.
+      e.g. tome new plan offline-mode --project vaulty --title "T" --desc "..." --with-task "Ship offline mode" --priority high --ac "Works on a flight"
+
   tome describe <slug> "<one-liner>" [--sync]
       Replace a page's index summary (<=140 chars). Regenerates the index.
       e.g. tome describe vault-cli "Stdlib CLI owning vault mechanics."
@@ -1913,12 +1947,18 @@ def build_parser():
                    help="skip the sync that runs by default after this command")
 
     p = sub.add_parser("new", help="scaffold a page",
-                        epilog='e.g. tome new idea x --project vaulty --title "T" --desc "..."')
+                        epilog='e.g. tome new plan x --project vaulty --title "T" --desc "..." '
+                               '--with-task "Do the thing"')
     p.add_argument("type")
     p.add_argument("slug")
     p.add_argument("--project")
     p.add_argument("--title", required=True)
     p.add_argument("--desc", required=True)
+    p.add_argument("--with-task", metavar="TITLE",
+                   help="also create a linked Backlog task (plan type only)")
+    p.add_argument("--priority", help="task priority — only with --with-task")
+    p.add_argument("--ac", action="append",
+                   help="task acceptance criterion, repeatable — only with --with-task")
     add_sync_flag(p)
 
     p = sub.add_parser("describe", help="replace a page's index summary",

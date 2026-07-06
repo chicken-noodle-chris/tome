@@ -25,22 +25,21 @@ are relative to the vault root, not the plugin root.
 2. **Prime yourself on the vault.** Run `tome sync` to pull, then `tome prime --full`
    (skip if already primed this session).
 
-3. **Design and author the plan page.** `tome new plan <slug> --project <name> --title
-   "T" --desc "..."` to scaffold (the project folder must already exist — `tome new
-   project <name> ...` first if not; the index regenerates automatically), link the new
-   page from the project hub, then write the body directly — timeless prose describing
-   what the work *is*, not its current status. New work is `status: proposed` (or `tome set-status
-   <slug> done` if it's *already implemented*). `tome log plan "..."` for the log entry.
+3. **Design and author the plan page (with its task).** `tome new plan <slug> --project
+   <name> --title "T" --desc "..." --with-task "<task title>" [--priority
+   high|medium|low] [--ac "<criterion>" ...]` scaffolds both in one command — the task is
+   optional (the plan's `status`, not a task, is the source of truth; omit `--with-task`
+   for a plan with none), and its hub listing is generated automatically (the project
+   folder must already exist — `tome new project <name> ...` first if not). Judge
+   `--priority`/ACs yourself when unspecified. Then write the plan body directly —
+   timeless prose describing what the work *is*, not its current status. New work is
+   `status: proposed` (or `tome set-status <slug> done` if it's *already implemented* —
+   close its task separately with `tome done`, since `--with-task` only covers creation).
+   `tome log plan "..."` for the log entry.
 
-4. **Create the Backlog.md task.** Optional — the plan's `status`, not a task, is the
-   source of truth. Create one via `tome task task create "<title>" -d "<why>" -l
-   project:<name> --priority <high|medium|low> --ref <plan path> --ac "<criterion>"`;
-   judge `--priority` and ACs yourself when unspecified. Already-implemented plans get
-   `-s Done`, `--final-summary`, and `--check-ac` on every criterion.
-
-5. **Present for approval — the one gate.** Summarize the approach, key decisions, and
+4. **Present for approval — the one gate.** Summarize the approach, key decisions, and
    any task fields you judged on the user's behalf. Iterate on the page (and task) in
    place until they approve — no separate draft.
 
-6. **Sync.** `tome sync -m "..."` once approved. No separate commit approval needed —
-   step 5's approval covered the plan's content, not its mechanics.
+5. **Sync.** `tome sync -m "..."` once approved. No separate commit approval needed —
+   step 4's approval covered the plan's content, not its mechanics.
