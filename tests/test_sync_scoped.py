@@ -191,3 +191,45 @@ def test_sync_entity_unknown_task_id_fails_loud(tmp_path, run_tome, capsys):
 
     assert code == 1
     assert "no backlog task with id" in capsys.readouterr().err
+
+
+def test_set_status_sync_stages_the_archive_move_fully(tmp_path, run_tome):
+    """A regression guard: set-status's --sync must scope in the OLD path
+    too when the status change also moves the file (plans/ <-> archive/),
+    or the rename's delete-half is left unstaged (found by manually dry-
+    running tome done against the real vault, task-47 piece 7)."""
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    run_tome("--vault", str(vault), "new", "project", "proj",
+             "--title", "Proj", "--desc", "d")
+    run_tome("--vault", str(vault), "new", "plan", "my-plan", "--project", "proj",
+             "--title", "T", "--desc", "d")
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "scaffold")
+    _git(vault, "push")
+
+    code = run_tome("--vault", str(vault), "set-status", "my-plan", "done", "--sync")
+
+    assert code == 0
+    status = _git(vault, "status", "--porcelain")
+    assert status.stdout.strip() == ""
+    show = _git(origin, "show", "--stat", "HEAD")
+    assert "my-plan.md" in show.stdout
+    assert (vault / "wiki" / "proj" / "plans" / "archive" / "my-plan.md").exists()
+    assert not (vault / "wiki" / "proj" / "plans" / "my-plan.md").exists()
+
+
+def test_mv_sync_stages_the_rename_fully(tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    run_tome("--vault", str(vault), "new", "project", "proj",
+             "--title", "Proj", "--desc", "d")
+    run_tome("--vault", str(vault), "new", "idea", "old-slug", "--project", "proj",
+             "--title", "T", "--desc", "d")
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "scaffold")
+    _git(vault, "push")
+
+    code = run_tome("--vault", str(vault), "mv", "old-slug", "new-slug", "--sync")
+
+    assert code == 0
+    status = _git(vault, "status", "--porcelain")
+    assert status.stdout.strip() == ""

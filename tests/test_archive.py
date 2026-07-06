@@ -131,6 +131,33 @@ def test_archive_unknown_slug_fails_loud(make_vault, run_tome):
     assert code == 1
 
 
+def test_archive_sync_stages_the_move_fully(tmp_path, run_tome):
+    """Regression guard (task-47 piece 7): --sync must scope in the old
+    path too, or the move's delete-half is left unstaged."""
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "--bare", str(origin)], check=True, capture_output=True)
+    subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/main"],
+                    cwd=str(origin), check=True, capture_output=True)
+    vault = tmp_path / "vault"
+    subprocess.run(["git", "clone", str(origin), str(vault)], check=True, capture_output=True)
+    _git(vault, "config", "user.email", "test@example.com")
+    _git(vault, "config", "user.name", "Test")
+    assert run_tome("init", str(vault)) == 0
+    run_tome("--vault", str(vault), "new", "project", "proj",
+             "--title", "Proj", "--desc", "d")
+    run_tome("--vault", str(vault), "new", "idea", "my-idea", "--project", "proj",
+             "--title", "T", "--desc", "d")
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "scaffold")
+    _git(vault, "push", "-u", "origin", "main")
+
+    code = run_tome("--vault", str(vault), "archive", "my-idea", "--sync")
+
+    assert code == 0
+    status = _git(vault, "status", "--porcelain")
+    assert status.stdout.strip() == ""
+
+
 def test_archive_keeps_lint_clean(make_vault, run_tome):
     """No inbound-link breakage — wikilinks resolve by slug, unaffected by
     an archive/restore directory move."""

@@ -282,6 +282,10 @@ def test_done_closes_task_and_archives_plan(tmp_path, run_tome, capsys, fake_bac
     out = capsys.readouterr().out
     assert "status -> done" in out
     assert "Completed TASK-1" in out
+    # Regression guard (task-47 piece 7): the archive move's old-path half
+    # must be staged too, or this is left dirty.
+    status = _git(vault, "status", "--porcelain")
+    assert status.stdout.strip() == ""
 
 
 def test_done_as_superseded(tmp_path, run_tome, fake_backlog):

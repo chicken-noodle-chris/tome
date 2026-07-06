@@ -718,6 +718,10 @@ def cmd_set_status(vault_root, conventions, args):
     _, pages = collect(vault_root, conventions)
     index_path = rebuild_index(vault_root, conventions, wiki_root, pages)
     touched = [new_path, index_path]
+    if new_path != page["path"]:
+        # A move stages as new_path's add; the old path's delete needs its
+        # own pathspec entry too, or a scoped --sync leaves it unstaged.
+        touched.append(page["path"])
     if ptype == "plan":
         project = Path(page["rel_path"]).parts[0]
         hub_path = regenerate_hub(conventions, wiki_root, pages, project)
@@ -799,8 +803,8 @@ def cmd_mv(vault_root, conventions, args):
         print("Rewrote inbound links in:")
         for t in touched:
             print(f"  {t}")
-    touched_paths = [new_path, index_path] + [wiki_root / t for t in touched
-                                               if (wiki_root / t) != new_path]
+    touched_paths = [new_path, index_path, page["path"]] + [wiki_root / t for t in touched
+                                                             if (wiki_root / t) != new_path]
     if page["meta"].get("type") == "plan":
         project = Path(page["rel_path"]).parts[0]
         hub_path = regenerate_hub(conventions, wiki_root, pages, project)
@@ -917,7 +921,7 @@ def cmd_archive(vault_root, conventions, args):
 
     _, pages = collect(vault_root, conventions)
     index_path = rebuild_index(vault_root, conventions, wiki_root, pages)
-    touched = [new_path, index_path]
+    touched = [new_path, index_path, page["path"]]
 
     verb = "Restored" if args.restore else "Archived"
     print(f"{verb} [[{args.slug}]] ({new_path.relative_to(vault_root)})")
@@ -1465,6 +1469,8 @@ def cmd_start(vault_root, conventions, args):
         _, pages = collect(vault_root, conventions)
         index_path = rebuild_index(vault_root, conventions, wiki_root, pages)
         touched += [plan_path, index_path]
+        if plan_path != page["path"]:
+            touched.append(page["path"])
         project = Path(page["rel_path"]).parts[0]
         hub_path = regenerate_hub(conventions, wiki_root, pages, project)
         if hub_path is not None:
@@ -1522,6 +1528,8 @@ def cmd_done(vault_root, conventions, args):
     _, pages = collect(vault_root, conventions)
     index_path = rebuild_index(vault_root, conventions, wiki_root, pages)
     touched = [new_path, index_path]
+    if new_path != page["path"]:
+        touched.append(page["path"])
     project = Path(page["rel_path"]).parts[0]
     hub_path = regenerate_hub(conventions, wiki_root, pages, project)
     if hub_path is not None:
