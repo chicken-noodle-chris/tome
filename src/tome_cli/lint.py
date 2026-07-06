@@ -331,20 +331,19 @@ def check_plan_dirs(pages, live, terminal):
 def check_idea_placement(pages, folders):
     """Ideas have no status field to check placement against (unlike plans),
     but the inverse is still mechanically checkable: a page declared
-    type:idea should live under its project's idea folder (archived or
-    not), and a page living there should be type:idea. Advisory only
-    (warning) — there's no ground truth beyond the declared type itself, so
-    this can't gate a sync the way PLAN_DIR does."""
+    type:idea should live under an idea folder (archived or not), and a
+    page living there should be type:idea. Covers both project-scoped
+    (<project>/ideas/) and the cross-cutting top-level wiki/ideas/. Advisory
+    only (warning) — there's no ground truth beyond the declared type
+    itself, so this can't gate a sync the way PLAN_DIR does."""
     idea_folder = folders.get("idea", "ideas")
     out = []
     for p in pages:
         if "read_error" in p or p["malformed_fm"]:
             continue
         parts = p["rel_path"].split("/")
-        if len(parts) < 2:
-            continue
-        in_idea_folder = parts[1] == idea_folder
         is_idea = p["meta"].get("type") == "idea"
+        in_idea_folder = parts[0] == idea_folder or (len(parts) >= 2 and parts[1] == idea_folder)
         if is_idea and not in_idea_folder:
             out.append(Finding(WARNING, "IDEA_DIR", p["rel_path"],
                                 f"type 'idea' but not under {idea_folder}/"))

@@ -193,6 +193,19 @@ def test_idea_dir_silent_when_placement_matches(make_vault, make_page):
     assert "IDEA_DIR" not in _codes_for(findings, "proj/ideas/archive/archived-idea.md")
 
 
+def test_idea_dir_silent_for_cross_cutting_ideas(make_vault, make_page):
+    """wiki/ideas/ (no project) is the cross-cutting group, not a project's
+    own ideas/ subfolder — parts[0] == 'ideas' must count as in-folder too."""
+    vault = make_vault()
+    make_page(vault, "ideas/cross-cutting-idea.md", type="idea", title="X")
+    make_page(vault, "ideas/archive/archived-cross-cutting-idea.md", type="idea", title="Y")
+
+    pages, findings = _lint(vault)
+
+    assert "IDEA_DIR" not in _codes_for(findings, "ideas/cross-cutting-idea.md")
+    assert "IDEA_DIR" not in _codes_for(findings, "ideas/archive/archived-cross-cutting-idea.md")
+
+
 def test_idea_dir_is_warning_not_error(make_vault, make_page):
     vault = make_vault()
     make_page(vault, "proj/proj.md", type="project", title="Proj")
