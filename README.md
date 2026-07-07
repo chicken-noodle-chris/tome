@@ -66,6 +66,45 @@ for `conventions.toml`, else `$VAULT_ROOT` — the vault you're standing in
 always beats the global default, and `$VAULT_ROOT` covers sessions in
 non-vault directories.
 
+## Headless bootstrap
+
+A container with no human at the keyboard — an agentigrator Cloud Run
+instance, a Claude Code cloud session, any headless consumer — clones a
+vault, installs tome, and operates it safely with three env vars:
+
+```
+uv tool install git+https://github.com/chicken-noodle-chris/tome.git
+git clone <vault-remote-url> /path/to/vault   # deploy key or PAT
+export VAULT_ROOT=/path/to/vault
+export TOME_OPS_PROFILE=read-capture
+export TOME_GIT_AUTHOR="tome-remote <tome-remote@invalid>"
+tome doctor
+```
+
+- **`VAULT_ROOT`** points the CLI at the clone when the process isn't
+  standing in it (still overridden by `--vault` or a walk-up match).
+- **`TOME_OPS_PROFILE=read-capture`** restricts the command surface to
+  `search`, `prime`, `doctor`, `help`, and `inbox` — the reads plus the one
+  write that's append-only, schema-free, and conflict-free by design.
+  Anything else (including a command added to tome later) is refused with a
+  clear "this deployment is read-capture" message; the guard lives at one
+  dispatch point, so new commands are guarded by default rather than needing
+  to be added to an allowlist. `help`/`doctor` always run, even under an
+  unset or misconfigured profile, so the deployment can always self-diagnose.
+- **`TOME_GIT_AUTHOR`** (`"Name <email>"`) is applied via `git commit
+  --author` on every tome-driven commit, so `git log` on the vault shows
+  which surface made each change without global git config on the
+  container.
+- **`tome doctor`** is the health gate: run it after bootstrap and treat any
+  `FAIL` line as a blocker. It's profile-aware — under `read-capture` the
+  node/npm/npx check is skipped (`tome task`, the only thing that needs
+  them, is guarded off anyway) instead of warning about binaries the
+  deployment was never going to use.
+- **Sync races**: two writers sharing a vault (a headless remote and a local
+  session, say) will eventually collide on `tome sync`'s push. On rejection,
+  sync retries once (`pull --rebase` + push); a second rejection fails loud
+  with the rebase state left intact rather than guessing further.
+
 ## Browse view
 
 `quartz/` is gitignored inside a vault — a derived build tree, not vault

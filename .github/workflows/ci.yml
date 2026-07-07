@@ -20,3 +20,40 @@ jobs:
       - run: python -m pytest -q
       - run: pip install .
       - run: tome help
+
+  headless-bootstrap-smoke:
+    # The recipe README.md documents for a container with no human at the
+    # keyboard: clone an existing vault, install tome, set the three env
+    # vars, doctor as the health gate. Clones a scratch bare origin rather
+    # than a bare `tome init` — a real headless bootstrap clones a vault
+    # that already has history, not an empty just-initialized one.
+    # ubuntu-only — it's the deployment target, not a cross-platform
+    # contract.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install .
+      - name: headless bootstrap recipe
+        run: |
+          git init --bare /tmp/origin.git
+          git -C /tmp/origin.git symbolic-ref HEAD refs/heads/main
+          git clone /tmp/origin.git /tmp/seed-vault
+          git -C /tmp/seed-vault config user.email seed@example.com
+          git -C /tmp/seed-vault config user.name Seed
+          tome init /tmp/seed-vault
+          git -C /tmp/seed-vault add -A
+          git -C /tmp/seed-vault commit -m "initial"
+          git -C /tmp/seed-vault push -u origin HEAD:main
+
+          git clone /tmp/origin.git /tmp/smoke-vault
+          export VAULT_ROOT=/tmp/smoke-vault
+          export TOME_OPS_PROFILE=read-capture
+          export TOME_GIT_AUTHOR="tome-remote <tome-remote@invalid>"
+          tome doctor
+          tome inbox "smoke test capture note"
+          if tome new idea should-be-refused --title "T" --desc "d"; then
+            echo "::error::new was not refused under TOME_OPS_PROFILE=read-capture" && exit 1
+          fi
