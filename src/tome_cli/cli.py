@@ -79,6 +79,51 @@ GROUP_ORDER = ["Plans — live", "Plans — archived", "Ideas", "Ideas — archi
 
 CROSS_CUTTING_DIRS = ("ideas", "general")
 
+# TOME_OPS_PROFILE restricts the command surface for headless remote
+# consumers that should be structurally unable to do more than they're
+# trusted to. "help" and "doctor" are always reachable (self-diagnosis must
+# work even under a misconfigured or unrecognized profile); every other
+# command defaults to guarded — a profile allows only what it names, so a
+# command added later without touching this table is blocked automatically
+# under any profile.
+ALWAYS_ALLOWED_COMMANDS = frozenset({"help", "doctor"})
+OPS_PROFILES = {
+    "read-capture": frozenset({"search", "prime", "doctor", "help", "inbox"}),
+}
+
+
+def all_registered_commands():
+    """Every top-level subcommand name argparse knows about — the ops-profile
+    guard test enumerates this so a new command defaults to guarded rather
+    than needing to be remembered."""
+    parser = build_parser()
+    for action in parser._subparsers._group_actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return set(action.choices)
+    return set()
+
+
+def enforce_ops_profile(command):
+    """The single dispatch-point guard behind TOME_OPS_PROFILE. Returns None
+    to let the command proceed, or an exit code to short-circuit main()."""
+    if command in ALWAYS_ALLOWED_COMMANDS:
+        return None
+    profile = os.environ.get("TOME_OPS_PROFILE")
+    if not profile:
+        return None
+    allowed = OPS_PROFILES.get(profile)
+    if allowed is None:
+        print(f"tome: error: unknown TOME_OPS_PROFILE '{profile}' — refusing "
+              f"everything but help/doctor until it's fixed or unset",
+              file=sys.stderr)
+        return 1
+    if command not in allowed:
+        print(f"tome: error: this deployment is {profile} — '{command}' is "
+              f"not permitted (allowed: {', '.join(sorted(allowed))})",
+              file=sys.stderr)
+        return 1
+    return None
+
 
 class VaultError(Exception):
     """A fail-loud, user-facing error. main() prints str(e) and exits 1."""
@@ -1208,6 +1253,38 @@ def run_git(vault_root, args):
                            capture_output=True, text=True)
 
 
+def _push_with_retry(vault_root):
+    """Push; on rejection — another writer landed a commit on the remote
+    since our pull, guaranteed eventually once a headless remote and a local
+    session share a vault — pull --rebase once and retry the push exactly
+    once. CLI-owned writes are small and file-disjoint, so a rebase that
+    still fails to push means something unusual: fail loud and leave the
+    rebase state intact rather than guessing further."""
+    push = run_git(vault_root, ["push"])
+    if push.returncode == 0:
+        print(push.stdout, end="")
+        return 0
+
+    retry_pull = run_git(vault_root, ["pull", "--rebase", "--autostash"])
+    print(retry_pull.stdout, end="")
+    if retry_pull.returncode != 0:
+        print(push.stderr, file=sys.stderr)
+        print(retry_pull.stderr, file=sys.stderr)
+        print("tome: push rejected and the retry rebase failed — tree is "
+              "mid-rebase; resolve manually.", file=sys.stderr)
+        return 1
+
+    push_retry = run_git(vault_root, ["push"])
+    if push_retry.returncode != 0:
+        print(push.stderr, file=sys.stderr)
+        print(push_retry.stderr, file=sys.stderr)
+        print("tome: push rejected again after a rebase retry — resolve "
+              "manually.", file=sys.stderr)
+        return 1
+    print(push_retry.stdout, end="")
+    return 0
+
+
 def sync_core(vault_root, conventions, message, no_verify, pathspec=None):
     """The shared pull/lint-gate/commit/push core behind `tome sync` and
     every write command's `--sync`. With pathspec=None, stages the whole
@@ -1260,16 +1337,18 @@ def sync_core(vault_root, conventions, message, no_verify, pathspec=None):
     if add.returncode != 0:
         print(add.stderr, file=sys.stderr)
         return 1
-    commit = run_git(vault_root, ["commit", "-m", message])
+    commit_args = ["commit", "-m", message]
+    author = os.environ.get("TOME_GIT_AUTHOR")
+    if author:
+        commit_args += ["--author", author]
+    commit = run_git(vault_root, commit_args)
     print(commit.stdout, end="")
     if commit.returncode != 0:
         print(commit.stderr, file=sys.stderr)
         return 1
-    push = run_git(vault_root, ["push"])
-    print(push.stdout, end="")
-    if push.returncode != 0:
-        print(push.stderr, file=sys.stderr)
-        return 1
+    push_code = _push_with_retry(vault_root)
+    if push_code != 0:
+        return push_code
     print("synced.")
 
     if pathspec is not None:
@@ -1649,7 +1728,11 @@ def check_git_binary():
     return Check("git", DOC_OK, f"{version} ({path})")
 
 
-def check_node():
+def check_node(profile=None):
+    if profile == "read-capture":
+        return Check("node/npm/npx", DOC_INFO,
+                      "skipped — read-capture profile has no node-dependent "
+                      "commands (tome task is guarded off)")
     names = ["node", "npm", "npx"]
     missing = [n for n in names if not shutil.which(n)]
     if missing:
@@ -1763,11 +1846,25 @@ def render_check_line(c):
     return line
 
 
+def check_ops_profile():
+    profile = os.environ.get("TOME_OPS_PROFILE")
+    if not profile:
+        return Check("ops profile", DOC_INFO, "unset — full command surface")
+    allowed = OPS_PROFILES.get(profile)
+    if allowed is None:
+        return Check("ops profile", DOC_FAIL, f"unknown profile '{profile}'",
+                      "fix or unset TOME_OPS_PROFILE")
+    return Check("ops profile", DOC_INFO,
+                  f"{profile} (allowed: {', '.join(sorted(allowed))})")
+
+
 def cmd_doctor(args):
+    profile = os.environ.get("TOME_OPS_PROFILE")
     checks = [
         _safe_check("python", check_python),
         _safe_check("git", check_git_binary),
-        _safe_check("node/npm/npx", check_node),
+        _safe_check("node/npm/npx", check_node, profile),
+        _safe_check("ops profile", check_ops_profile),
     ]
 
     vault_check, vault_root = _safe_pair("vault resolution", check_vault_resolution, args.vault)
@@ -1924,12 +2021,28 @@ if you omit -m.
 
   tome doctor
       Diagnose python/git/node, vault resolution, conventions, vault shape,
-      lint, git state, and quartz. ok/warn/FAIL per line; exit 1 on any FAIL.
-      Runs to completion even with no vault or a broken one.
+      lint, git state, quartz, and the ops profile. ok/warn/FAIL per line;
+      exit 1 on any FAIL. Runs to completion even with no vault or a broken
+      one, and under any TOME_OPS_PROFILE (help/doctor always run).
       e.g. tome doctor
 
 Root resolution: --vault PATH, else walk up from cwd
 looking for conventions.toml, else $VAULT_ROOT.
+
+Headless remote consumers (env vars, for a container with no human at the
+keyboard — see README.md's "Headless bootstrap" section for the full recipe):
+
+  VAULT_ROOT           Vault root when not standing in one (still overridden
+                        by --vault / a walk-up match).
+  TOME_OPS_PROFILE      Restricts the command surface. read-capture allows
+                        only search, prime, doctor, help, inbox — everything
+                        else (including a command added later) is refused
+                        with a clear message. help/doctor always run.
+  TOME_GIT_AUTHOR       "Name <email>" applied via `git commit --author` on
+                        every tome-driven commit, so a vault's git log shows
+                        which surface (local session vs. a given remote
+                        deployment) made each change without global git
+                        config on the container.
 """
 
 
@@ -2097,6 +2210,10 @@ def build_parser():
 def main():
     parser = build_parser()
     args = parser.parse_args()
+
+    guard_code = enforce_ops_profile(args.command)
+    if guard_code is not None:
+        return guard_code
 
     try:
         if args.command == "init":

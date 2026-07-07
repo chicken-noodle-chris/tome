@@ -120,3 +120,33 @@ def test_missing_binaries_warn_without_crashing(tmp_path, run_tome, monkeypatch,
     assert "warn git: not on PATH" in out
     assert "warn node/npm/npx: missing" in out
     assert "warn git state: git not on PATH" in out
+
+
+def test_read_capture_profile_skips_node_check(tmp_path, run_tome, monkeypatch, capsys):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    capsys.readouterr()  # discard `tome init`'s own stdout
+    monkeypatch.setenv("TOME_OPS_PROFILE", "read-capture")
+
+    code = run_tome("--vault", str(vault), "doctor")
+
+    out = capsys.readouterr().out
+    assert code == 0
+    node_line = next(line for line in out.splitlines() if "node/npm/npx" in line)
+    assert node_line.startswith("info")
+    assert "read-capture" in node_line
+    profile_line = next(line for line in out.splitlines() if "ops profile" in line)
+    assert profile_line.startswith("info")
+    assert "read-capture" in profile_line
+
+
+def test_unknown_ops_profile_fails(tmp_path, run_tome, monkeypatch, capsys):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    capsys.readouterr()  # discard `tome init`'s own stdout
+    monkeypatch.setenv("TOME_OPS_PROFILE", "not-a-real-profile")
+
+    code = run_tome("--vault", str(vault), "doctor")
+
+    out = capsys.readouterr().out
+    profile_line = next(line for line in out.splitlines() if "ops profile" in line)
+    assert code == 1
+    assert profile_line.startswith("FAIL")
