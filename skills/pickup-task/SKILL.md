@@ -6,19 +6,14 @@ when_to_run: When the user asks to start, pick up, or execute a task or plan fro
 
 Optional input: which task or plan to pick up (a task ID, a plan name, or a description).
 
-This skill executes work that's already been planned. Three phases: **locate & start**
-(steps 1–3), **do the work** and ship it (steps 4–5), and **close out** the tracking
-(step 6). The throughline: the vault's task/plan status reflects reality at every step —
-mark work *started* before you begin and *done* when it lands. Conventions live in
-`wiki/SCHEMA.md`; `scripts/tome.py` (`tome help`) enforces the mechanics — lean on it
-rather than hand-executing status moves, links, or git. `tome` is on PATH in Bash (the
-plugin's SessionStart hook puts it there) — just run `tome <cmd>`; if it's ever not found,
-fall back to `python "$TOME_PLUGIN_ROOT/scripts/tome.py" <cmd>`. It resolves which vault to
-act on via `--vault` / walking up from cwd / `VAULT_ROOT`, and bare paths like
+This skill executes work that's already been planned. Use `scripts/tome.py` (`tome help`)
+to manage status changes — don't hand-execute git or status moves. `tome` is on PATH in
+Bash; if not found, fall back to `python "$TOME_PLUGIN_ROOT/scripts/tome.py" <cmd>`. It
+resolves which vault via `--vault` / walking up from cwd / `VAULT_ROOT`; bare paths like
 `wiki/SCHEMA.md` are relative to the vault root, not the plugin root.
 
-Throughout, **the user is always happy to answer questions.** If intent or scope is
-unclear — which task, how far to take it, an ambiguity in the plan — ask.
+**The user is always happy to answer questions.** If intent or scope is unclear — which task,
+how far to take it, an ambiguity in the plan — ask.
 
 1. **Prime yourself on the vault.** Run `tome sync` to pull, then `tome prime --full`
    (skip if already primed this session) — prints SCHEMA.md and the index in one shot.

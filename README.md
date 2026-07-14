@@ -47,16 +47,21 @@ view (init prints the exact command with the plugin's real path), set up a remot
 Skills (triggered by asking, not slash commands): `pickup-task`,
 `write-a-plan`, `retrospect`, `ingest`, `query`, `capture`.
 
-CLI (`tome help` for the full list with examples):
+CLI (`tome help` for the full list with examples; write commands all take
+`--sync` to commit+push just the files they touched):
 
 ```
-tome new <type> <slug> --project <name> --title "T" --desc "..."
-tome lint [--strict]
-tome sync [-m "message"]
-tome set-status <slug> <status>
+tome prime [project] [--full]     # session orientation; --full adds SCHEMA, index, project context
+tome start <slug-or-task-id>      # work-started ritual: statuses, log, sync, prints working context
+tome done <plan-slug> [--summary "..."]   # close-out ritual: archive plan, complete task, log, sync
+tome new <type> <slug> --project <name> --title "T" --desc "..." [--with-task "T"]
+tome set-status <slug> <status>   # plan/decision lifecycle; moves plans to/from plans/archive/
+tome archive <slug> [--restore]   # status-less pages (ideas, reports, ...) to/from archive/
 tome search "<query>" [--top N]   # BM25 fallback search; also --backlinks, --top-linked
 tome rm <slug> [--force]          # delete a page; refuses hubs/linked pages by default
 tome inbox "<note>" [--title "T"]   # schema-free capture; retrospect triages it later
+tome lint [--strict]
+tome sync [<slug-or-task-id>...] [-m "message"]   # pull always; scoped commit when entities given
 tome task <args...>       # passthrough to backlog.md
 tome doctor               # environment + vault health check, ok/warn/FAIL per line
 ```
