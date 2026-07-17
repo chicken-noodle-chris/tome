@@ -1249,9 +1249,28 @@ def cmd_init(args):
 # sync / task
 # --------------------------------------------------------------------------- #
 
+def _git_env():
+    """Env for git subprocesses. When TOME_GIT_AUTHOR is set, derive
+    GIT_COMMITTER_NAME/EMAIL from it (unless already set explicitly): git
+    refuses to commit — and to rebase, which rewrites the committer — without
+    a committer identity, and the headless containers TOME_GIT_AUTHOR exists
+    for have no git config to supply one. `--author` alone can't fix that; it
+    only sets the author half."""
+    author = os.environ.get("TOME_GIT_AUTHOR")
+    if not author:
+        return None
+    m = re.match(r"^\s*(.+?)\s*<(.+)>\s*$", author)
+    if not m:
+        return None
+    env = os.environ.copy()
+    env.setdefault("GIT_COMMITTER_NAME", m.group(1))
+    env.setdefault("GIT_COMMITTER_EMAIL", m.group(2))
+    return env
+
+
 def run_git(vault_root, args):
     return subprocess.run(["git", *args], cwd=str(vault_root),
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, env=_git_env())
 
 
 def _push_with_retry(vault_root):
@@ -2096,11 +2115,13 @@ keyboard — see README.md's "Headless bootstrap" section for the full recipe):
                         only search, prime, doctor, help, inbox — everything
                         else (including a command added later) is refused
                         with a clear message. help/doctor always run.
-  TOME_GIT_AUTHOR       "Name <email>" applied via `git commit --author` on
-                        every tome-driven commit, so a vault's git log shows
+  TOME_GIT_AUTHOR       "Name <email>" applied as author (via `git commit
+                        --author`) and, unless GIT_COMMITTER_* is set
+                        explicitly, as committer identity on every
+                        tome-driven git call, so a vault's git log shows
                         which surface (local session vs. a given remote
-                        deployment) made each change without global git
-                        config on the container.
+                        deployment) made each change and commits work
+                        without any git config on the container.
 """
 
 

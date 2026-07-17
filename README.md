@@ -96,10 +96,12 @@ tome doctor
   dispatch point, so new commands are guarded by default rather than needing
   to be added to an allowlist. `help`/`doctor` always run, even under an
   unset or misconfigured profile, so the deployment can always self-diagnose.
-- **`TOME_GIT_AUTHOR`** (`"Name <email>"`) is applied via `git commit
-  --author` on every tome-driven commit, so `git log` on the vault shows
-  which surface made each change without global git config on the
-  container.
+- **`TOME_GIT_AUTHOR`** (`"Name <email>"`) is applied as the author (via
+  `git commit --author`) and — unless `GIT_COMMITTER_*` is set explicitly —
+  as the committer identity on every tome-driven git call, so `git log` on
+  the vault shows which surface made each change and commits succeed with
+  no git config on the container at all (git refuses to commit without a
+  committer identity; `--author` alone doesn't provide one).
 - **`tome doctor`** is the health gate: run it after bootstrap and treat any
   `FAIL` line as a blocker. It's profile-aware — under `read-capture` the
   node/npm/npx check is skipped (`tome task`, the only thing that needs
