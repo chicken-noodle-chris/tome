@@ -331,6 +331,76 @@ def test_done_plan_without_task(tmp_path, run_tome, fake_backlog):
     assert "done | solo-plan" in log_text
 
 
+def test_done_task_id_without_plan_closes_task_only(tmp_path, run_tome, capsys,
+                                                      fake_backlog, make_task):
+    """task-57 AC #3: a plan-less task closes via its task id alone, no
+    hand-executed ritual (no plan status/hub/index touched, no --ref)."""
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    make_task(vault, 9, "Orphan task")
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "seed task")
+    _git(vault, "push")
+    capsys.readouterr()
+
+    code = run_tome("--vault", str(vault), "done", "task-9", "--summary", "Closed directly.")
+
+    assert code == 0
+    assert not (vault / "backlog" / "tasks").exists() or \
+        not list((vault / "backlog" / "tasks").glob("*.md"))
+    completed = next((vault / "backlog" / "completed").glob("*.md"))
+    completed_text = completed.read_text(encoding="utf-8")
+    assert "status: Done" in completed_text
+    assert "- [x] #1 one" in completed_text
+    assert "Closed directly." in completed_text
+    log_text = (vault / "wiki" / "log.md").read_text(encoding="utf-8")
+    assert "done | task-9: Closed directly." in log_text
+    log = _git(origin, "log", "--oneline")
+    assert "done: task-9" in log.stdout
+    out = capsys.readouterr().out
+    assert "Completed TASK-9" in out
+    assert "status ->" not in out  # no plan step at all
+
+
+def test_done_task_id_rejects_as_status_without_plan(tmp_path, run_tome, fake_backlog, make_task):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    make_task(vault, 9, "Orphan task")
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "seed task")
+    _git(vault, "push")
+
+    code = run_tome("--vault", str(vault), "done", "task-9", "--as", "superseded")
+
+    assert code == 1
+
+
+def test_done_task_id_with_linked_plan_still_archives_it(tmp_path, run_tome, capsys,
+                                                           fake_backlog, make_task):
+    """Closing via task id (rather than the plan slug) must still drive the
+    plan half of the ritual when the task has a linked plan."""
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    _make_plan(vault, run_tome, "my-plan", status="active")
+    make_task(vault, 3, "My plan task", refs=["wiki/proj/plans/my-plan.md"])
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "seed task")
+    _git(vault, "push")
+
+    code = run_tome("--vault", str(vault), "done", "task-3")
+
+    assert code == 0
+    archived = vault / "wiki" / "proj" / "plans" / "archive" / "my-plan.md"
+    assert archived.exists()
+    completed = next((vault / "backlog" / "completed").glob("*.md"))
+    assert "wiki/proj/plans/archive/my-plan.md" in completed.read_text(encoding="utf-8")
+
+
+def test_done_unknown_entity_fails_loud(tmp_path, run_tome, fake_backlog):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+
+    code = run_tome("--vault", str(vault), "done", "no-such-thing")
+
+    assert code == 1
+
+
 def test_done_non_plan_type_rejected(tmp_path, run_tome, fake_backlog):
     vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
     run_tome("--vault", str(vault), "new", "project", "proj",

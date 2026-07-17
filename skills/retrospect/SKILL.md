@@ -30,7 +30,7 @@ the proposed refinements before anything is written.
    - **Edits** — the vault repo root, resolved the same way `tome` itself does (walk-up from cwd, else `$VAULT_ROOT`
      if set, else walk up from cwd looking for `conventions.toml`). `git -C "<vault root>"
      log --since=<date> --stat` for what changed and `git -C "<vault root>" log
-     --since=<date> -p -- wiki/ CLAUDE.md` for how. Churn, reversals, and the same fix made
+     --since=<date> -p -- wiki/` for how. Churn, reversals, and the same fix made
      by hand twice are the signal.
    - **Activity** — the `wiki/log.md` entries since the window start: the arc of recent work.
    - **Inbox** — `ls inbox/` (with each file's age) for everything the `capture` skill has
