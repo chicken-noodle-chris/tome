@@ -140,6 +140,32 @@ def test_new_plan_with_task_creates_linked_task(tmp_path, run_tome, capsys, fake
     assert "Created backlog task:" in out
 
 
+def test_new_plan_with_task_passes_milestone_through(tmp_path, run_tome, fake_backlog_create):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    run_tome("--vault", str(vault), "new", "project", "proj",
+             "--title", "Proj", "--desc", "d")
+
+    code = run_tome("--vault", str(vault), "new", "plan", "my-plan", "--project", "proj",
+                     "--title", "T", "--desc", "d",
+                     "--with-task", "Do the thing", "--milestone", "cloud-facing-vault")
+
+    assert code == 0
+    assert "--milestone" in fake_backlog_create[0]
+    assert fake_backlog_create[0][fake_backlog_create[0].index("--milestone") + 1] == "cloud-facing-vault"
+
+
+def test_new_milestone_without_with_task_rejected(tmp_path, run_tome, fake_backlog_create):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    run_tome("--vault", str(vault), "new", "project", "proj",
+             "--title", "Proj", "--desc", "d")
+
+    code = run_tome("--vault", str(vault), "new", "plan", "my-plan", "--project", "proj",
+                     "--title", "T", "--desc", "d", "--milestone", "cloud-facing-vault")
+
+    assert code == 1
+    assert fake_backlog_create == []
+
+
 def test_new_with_task_scoped_sync_includes_task_file(tmp_path, run_tome, fake_backlog_create):
     vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
     run_tome("--vault", str(vault), "new", "project", "proj",

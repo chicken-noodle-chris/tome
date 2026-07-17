@@ -63,3 +63,11 @@ entity = "notes"
 
 [log]
 ops = ["ingest", "query", "lint", "schema", "shard", "retrospect", "plan", "idea", "docs", "migrate", "author", "work-started", "done", "archive", "spike", "note", "project", "complete", "work-done", "init"]
+
+[staleness]
+# Warn-tier: a page must clear both thresholds (well-linked *and* old) to
+# flag — either alone is normal. Absent [staleness] entirely opts a vault
+# out of the check (older vaults don't get newly gated with no thresholds
+# chosen). retrospect's review-flagged-pages step is what acts on these.
+min_inbound_links = 5
+max_days_since_update = 180

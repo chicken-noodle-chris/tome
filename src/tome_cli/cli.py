@@ -32,6 +32,7 @@ import shutil
 import subprocess
 import sys
 import tomllib
+from collections import defaultdict
 from datetime import date
 from pathlib import Path
 
@@ -595,10 +596,11 @@ def cmd_new(vault_root, conventions, args):
     with_task = getattr(args, "with_task", None)
     priority = getattr(args, "priority", None)
     acs = getattr(args, "ac", None)
+    milestone = getattr(args, "milestone", None)
     if with_task and args.type != "plan":
         raise VaultError("--with-task only applies to `tome new plan`")
-    if (priority or acs) and not with_task:
-        raise VaultError("--priority/--ac only apply alongside --with-task")
+    if (priority or acs or milestone) and not with_task:
+        raise VaultError("--priority/--ac/--milestone only apply alongside --with-task")
 
     wiki_root, pages = collect(vault_root, conventions)
     type_enum = set(conventions["types"]["enum"])
@@ -667,6 +669,8 @@ def cmd_new(vault_root, conventions, args):
                      "-l", f"project:{project}", "--ref", plan_ref, "--plain"]
         if priority:
             task_argv += ["--priority", priority]
+        if milestone:
+            task_argv += ["--milestone", milestone]
         for ac in acs or []:
             task_argv += ["--ac", ac]
         proc = run_backlog(vault_root, task_argv, capture=True)
@@ -1032,10 +1036,92 @@ def log_tail(log_text, n=LOG_TAIL_ENTRIES):
     return "".join(entries[-n:]).rstrip("\n")
 
 
+def read_task_snapshot_fields(path):
+    """The fields the prime task snapshot needs from one backlog task file:
+    id, status, milestone (single-line, fm_get is enough), title (may wrap
+    to a block scalar), labels (block list, for project scoping)."""
+    fm_lines, _ = read_page(path)
+    return {
+        "id": fm_get(fm_lines, "id") or "",
+        "status": fm_get(fm_lines, "status") or "",
+        "milestone": fm_get(fm_lines, "milestone"),
+        "title": task_title(fm_lines),
+        "labels": task_block_list(fm_lines, "labels"),
+    }
+
+
+def _task_sort_key(t):
+    m = TASK_ID_RE.match(t["id"])
+    return int(m.group(1)) if m else t["id"]
+
+
+def open_task_snapshot(vault_root, project=None):
+    """Terse id/status/title listing of every open backlog task (files
+    under backlog/tasks/ — `task complete` is what moves a task to
+    completed/, so anything still there is open regardless of its exact
+    status string), grouped by milestone with done/total counts computed
+    across both tasks/ and completed/ so a milestone's already-shipped work
+    still counts toward its total (backlog.md's own `milestone list` only
+    counts currently-open tasks). None when there's no backlog/tasks/ at
+    all — a fresh vault, or one that never adopted Backlog.md."""
+    tasks_dir = vault_root / "backlog" / "tasks"
+    if not tasks_dir.is_dir():
+        return None
+
+    open_tasks = [read_task_snapshot_fields(p) for p in sorted(tasks_dir.glob("*.md"))]
+    if project:
+        open_tasks = [t for t in open_tasks if f"project:{project}" in t["labels"]]
+    if not open_tasks:
+        return "(no open tasks)"
+
+    milestone_titles = {}
+    milestones_dir = vault_root / "backlog" / "milestones"
+    if milestones_dir.is_dir():
+        for p in sorted(milestones_dir.glob("*.md")):
+            fm_lines, _ = read_page(p)
+            mid = fm_get(fm_lines, "id")
+            if mid:
+                milestone_titles[mid] = fm_get(fm_lines, "title") or mid
+
+    milestone_total = defaultdict(int)
+    milestone_done = defaultdict(int)
+    completed_dir = vault_root / "backlog" / "completed"
+    if completed_dir.is_dir():
+        for p in completed_dir.glob("*.md"):
+            fm_lines, _ = read_page(p)
+            mid = fm_get(fm_lines, "milestone")
+            if mid:
+                milestone_total[mid] += 1
+                milestone_done[mid] += 1
+    for t in open_tasks:
+        if t["milestone"]:
+            milestone_total[t["milestone"]] += 1
+
+    by_milestone = defaultdict(list)
+    unmilestoned = []
+    for t in open_tasks:
+        (by_milestone[t["milestone"]] if t["milestone"] else unmilestoned).append(t)
+
+    lines = []
+    for mid in sorted(by_milestone):
+        title = milestone_titles.get(mid, mid)
+        lines.append(f"{mid} — {title} ({milestone_done[mid]}/{milestone_total[mid]} done):")
+        for t in sorted(by_milestone[mid], key=_task_sort_key):
+            lines.append(f"  {t['id']} [{t['status']}] {t['title']}")
+    if unmilestoned:
+        if lines:
+            lines.append("")
+        lines.append("No milestone:")
+        for t in sorted(unmilestoned, key=_task_sort_key):
+            lines.append(f"  {t['id']} [{t['status']}] {t['title']}")
+    return "\n".join(lines)
+
+
 def prime_full_text(vault_root, conventions, project):
-    """The write protocol: SCHEMA.md and the index always; with a project,
-    also that project's hub, every one of its live plan bodies, and a recent
-    log.md tail — replacing the read fan-out every skill used to open with."""
+    """The write protocol: SCHEMA.md, the index, and an open-task snapshot
+    always; with a project, also that project's hub, every one of its live
+    plan bodies, and a recent log.md tail — replacing the read fan-out every
+    skill used to open with."""
     wiki_root = vault_root / "wiki"
     sections = [
         ((wiki_root / "SCHEMA.md").relative_to(vault_root).as_posix(),
@@ -1043,6 +1129,11 @@ def prime_full_text(vault_root, conventions, project):
         ((wiki_root / conventions["index"]["file"]).relative_to(vault_root).as_posix(),
          (wiki_root / conventions["index"]["file"]).read_text(encoding="utf-8")),
     ]
+
+    task_snapshot = open_task_snapshot(vault_root, project)
+    if task_snapshot is not None:
+        label = f"backlog/tasks (open, project:{project})" if project else "backlog/tasks (open)"
+        sections.append((label, task_snapshot))
 
     if project:
         if project not in list_projects(wiki_root, conventions):
@@ -1518,23 +1609,49 @@ def task_id_from_path(task_path):
     return task_id
 
 
-def task_references(fm_lines):
-    """Parse a backlog task's `references:` block-list from its raw
-    frontmatter lines. Task files are real YAML (backlog.md-owned), not the
-    vault's hand-rolled subset — read only, never written directly here."""
-    refs = []
+def task_block_list(fm_lines, key):
+    """Parse a backlog task's `<key>:` block-list from its raw frontmatter
+    lines (e.g. `references:`/`labels:` followed by `  - value` lines).
+    Task files are real YAML (backlog.md-owned), not the vault's hand-rolled
+    subset — read only, never written directly here. An inline `key: []`
+    (or the key being absent) both fall through to the empty list."""
+    out = []
     in_block = False
     for line in fm_lines:
-        if re.match(r"^references:\s*$", line):
+        if re.match(rf"^{re.escape(key)}:\s*$", line):
             in_block = True
             continue
         if in_block:
             m = re.match(r"^\s*-\s*(.+?)\s*$", line)
             if m:
-                refs.append(m.group(1).strip("'\""))
+                out.append(m.group(1).strip("'\""))
                 continue
             break
-    return refs
+    return out
+
+
+def task_references(fm_lines):
+    return task_block_list(fm_lines, "references")
+
+
+def task_title(fm_lines):
+    """A backlog task's title, unfolding a `>-`/`>`/`|-`/`|` YAML block
+    scalar if present — long titles wrap past the single frontmatter line
+    fm_get's plain-line regex reads, so that alone isn't enough here."""
+    for i, line in enumerate(fm_lines):
+        m = re.match(r"^title:\s*(.*)$", line)
+        if not m:
+            continue
+        value = m.group(1).strip()
+        if value in (">-", ">", "|-", "|"):
+            parts = []
+            j = i + 1
+            while j < len(fm_lines) and (fm_lines[j].startswith("  ") or not fm_lines[j].strip()):
+                parts.append(fm_lines[j].strip())
+                j += 1
+            return " ".join(p for p in parts if p)
+        return value.strip('"').strip("'")
+    return ""
 
 
 AC_LINE_RE = re.compile(r"^- \[.\] #(\d+)", re.MULTILINE)
@@ -2005,9 +2122,10 @@ if you omit -m.
 
       For type=plan, add --with-task "Title" to also create a linked
       Backlog task in one shot: labeled project:<name>, --ref pointing at
-      the plan, description from --desc. --priority/--ac (repeatable) pass
-      through to the task; both only apply alongside --with-task.
-      e.g. tome new plan offline-mode --project vaulty --title "T" --desc "..." --with-task "Ship offline mode" --priority high --ac "Works on a flight"
+      the plan, description from --desc. --priority/--ac (repeatable)/
+      --milestone pass through to the task; all three only apply alongside
+      --with-task.
+      e.g. tome new plan offline-mode --project vaulty --title "T" --desc "..." --with-task "Ship offline mode" --priority high --ac "Works on a flight" --milestone cloud-facing-vault
 
   tome describe <slug> "<one-liner>" [--sync]
       Replace a page's index summary (<=140 chars). Regenerates the index.
@@ -2042,10 +2160,12 @@ if you omit -m.
 
   tome prime [project] [--full]
       Print session orientation. Bare: the terse vault pointer (same text
-      the SessionStart hook injects). --full also prints SCHEMA.md and the
-      index; with a project, also its hub, every live plan's full body, and
-      a recent log.md tail — the write protocol, replacing the read
-      fan-out a skill used to open with.
+      the SessionStart hook injects). --full also prints SCHEMA.md, the
+      index, and an open-task snapshot (grouped by milestone with
+      done/total counts, scoped to the project when one is given); with a
+      project, also its hub, every live plan's full body, and a recent
+      log.md tail — the write protocol, replacing the read fan-out a skill
+      used to open with.
       e.g. tome prime tome --full
 
   tome log <op> "<message>" [--body "..."] [--sync]
@@ -2210,6 +2330,8 @@ def build_parser():
     p.add_argument("--priority", help="task priority — only with --with-task")
     p.add_argument("--ac", action="append",
                    help="task acceptance criterion, repeatable — only with --with-task")
+    p.add_argument("--milestone", metavar="NAME",
+                   help="assign the linked task to a milestone (id or title) — only with --with-task")
     add_sync_flag(p)
 
     p = sub.add_parser("describe", help="replace a page's index summary",

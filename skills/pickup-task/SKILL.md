@@ -18,9 +18,16 @@ how far to take it, an ambiguity in the plan — ask.
 1. **Prime yourself on the vault.** Run `tome sync` to pull, then `tome prime --full`
    (skip if already primed this session) — prints SCHEMA.md and the index in one shot.
 
-2. **Locate the task and its plan.** If the user named one, find it; otherwise check the
-   board (`tome task task list --plain`) and the project's live plans (`plans/`, not
-   `plans/archive/`) and confirm which one they mean.
+2. **Locate the task and its plan.** If the user named a task or plan, find it. If they
+   named a **milestone** instead (an id like `m-0` or its title — the epic layer, see
+   `wiki/SCHEMA.md`), resume it rather than picking one task in isolation: run `tome task
+   task list --milestone <name> --plain` to list its open children (backlog.md already
+   orders each status group by ordinal), then pick the next one — an In Progress child
+   first (someone left it mid-flight), else the highest-priority To Do child, ties broken
+   by list order. Confirm the pick with the user if it's not clear-cut. Selection data
+   comes entirely from that list output; there's no separate tome command for this. With
+   no name given at all, check the board (`tome task task list --plain`) and the project's
+   live plans (`plans/`, not `plans/archive/`) and confirm which one they mean.
 
 3. **Mark the work started.** `tome start <task-id-or-slug>` — accepts either, resolving
    the other half if linked (a plan without a task, or a task without a plan, is normal).

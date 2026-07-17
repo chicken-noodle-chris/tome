@@ -39,6 +39,81 @@ def test_prime_full_without_project_includes_schema_and_index(make_vault, run_to
     assert "Generated file" in out  # from the index preamble
 
 
+def test_prime_full_omits_task_snapshot_without_backlog(make_vault, run_tome, capsys):
+    vault = make_vault()
+
+    code = run_tome("--vault", str(vault), "prime", "--full")
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "backlog/tasks" not in out
+
+
+def test_prime_full_includes_open_task_snapshot(make_vault, run_tome, make_task, capsys):
+    vault = make_vault()
+    make_task(vault, 1, "Do the thing", status="In Progress")
+    capsys.readouterr()
+
+    code = run_tome("--vault", str(vault), "prime", "--full")
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "backlog/tasks (open)" in out
+    assert "TASK-1 [In Progress] Do the thing" in out
+
+
+def test_prime_terse_never_includes_task_snapshot(make_vault, run_tome, make_task, capsys):
+    vault = make_vault()
+    make_task(vault, 1, "Do the thing")
+    capsys.readouterr()
+
+    run_tome("--vault", str(vault), "prime")
+
+    out = capsys.readouterr().out
+    assert "backlog/tasks" not in out
+    assert "Do the thing" not in out
+
+
+def test_prime_full_task_snapshot_scoped_to_project(make_vault, run_tome, make_task, capsys):
+    vault = make_vault()
+    make_task(vault, 1, "Tome task", labels=["project:tome"])
+    make_task(vault, 2, "Other task", labels=["project:other"])
+    run_tome("--vault", str(vault), "new", "project", "tome",
+             "--title", "Tome", "--desc", "d")
+    capsys.readouterr()
+
+    code = run_tome("--vault", str(vault), "prime", "tome", "--full")
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "TASK-1 [To Do] Tome task" in out
+    assert "TASK-2" not in out
+
+
+def test_prime_full_groups_open_tasks_by_milestone_with_done_total(
+        make_vault, run_tome, make_task, capsys):
+    vault = make_vault()
+    milestones_dir = vault / "backlog" / "milestones"
+    milestones_dir.mkdir(parents=True)
+    (milestones_dir / "m-0 - epic.md").write_text(
+        '---\nid: m-0\ntitle: "epic"\n---\n\n## Description\n', encoding="utf-8", newline="\n")
+    make_task(vault, 1, "Shipped piece", milestone="m-0", completed=True)
+    make_task(vault, 2, "Open piece", milestone="m-0")
+    make_task(vault, 3, "No milestone task")
+    capsys.readouterr()
+
+    code = run_tome("--vault", str(vault), "prime", "--full")
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "m-0 — epic (1/2 done):" in out
+    assert "TASK-2 [To Do] Open piece" in out
+    assert "No milestone:" in out
+    assert "TASK-3 [To Do] No milestone task" in out
+    # a completed task doesn't itself appear as an open line
+    assert "Shipped piece" not in out
+
+
 def test_prime_full_with_project_includes_hub_and_live_plans(make_vault, run_tome, capsys):
     vault = make_vault()
     run_tome("--vault", str(vault), "new", "project", "proj",

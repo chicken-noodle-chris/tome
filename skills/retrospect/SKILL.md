@@ -38,19 +38,25 @@ the proposed refinements before anything is written.
    - **Feedback** — your project memory store (its `MEMORY.md` index plus the `feedback`- and `project`-type files): the corrections and preferences you've already been told. Richest source.
    - **Sessions** — if your harness exposes session-history tools (e.g. `list_sessions`, `search_session_transcripts`), mine recent transcripts for corrections the user gave in conversation that never reached SCHEMA or a memory.
 
-3. **Derive the refinements.** Sort what recurs into four kinds; discard one-offs (corrected once is noise, twice is a pattern):
+3. **Review flagged pages.** Run `tome lint` and pull out every `STALE` finding — a page whose inbound-link count and days-since-`updated:` both cleared conventions.toml's `[staleness]` thresholds (well-linked *and* old, together). Check each one against reality: if it's drifted, fix it with a surgical edit (its `updated:` lands naturally from that); if it's still accurate, affirm it by re-running `tome describe <slug> "<same summary>"` — no dedicated touch-only command exists, and this keeps the write flowing through tome instead of a hand-edited frontmatter field. Every flagged page gets one of the two; none silently skipped. No `[staleness]` section, or no findings: skip this step, nothing to review.
+
+4. **Derive the refinements.** Sort what recurs into four kinds; discard one-offs (corrected once is noise, twice is a pattern):
    - **Promote a recurring correction into `wiki/SCHEMA.md`** — the user keeps steering the same way and SCHEMA is silent on it. Draft the convention.
    - **Capture missed knowledge** — something durable surfaced in the work but was never filed. Propose the page (or memory) and where it lands.
    - **Add or prune a convention** — a rule observed practice now contradicts, or one nothing has used. Propose the edit or the deletion.
    - **Route each inbox item** — for every file gathered in step 2, propose which page it becomes or extends (new page, or a surgical edit to an existing one), or propose deletion if it's gone stale. Every inbox item needs a proposal here, even a trivial one — none get silently skipped.
    Anything that's really lint or gap-finding: route it there, don't fix it here.
 
-4. **Present the proposals — the one gate.** Show each refinement as a concrete change: the exact SCHEMA wording, the page to create, the line to cut, the inbox item's destination — grouped by kind, each with the evidence that earns it. Recommend; don't dump every candidate. Iterate in place until the user approves, and drop what they reject.
+5. **Present the proposals — the one gate.** Show each refinement as a concrete change: the exact SCHEMA wording, the page to create, the line to cut, the inbox item's destination — grouped by kind, each with the evidence that earns it. Recommend; don't dump every candidate. Iterate in place until the user approves, and drop what they reject.
 
-5. **Apply, log, and sync.** Make the approved edits. For approved inbox routings: create or
+   **Running unattended** (a scheduled trigger, no live user to approve): skip the live gate. Instead, drop each derived proposal — including step 3's flagged-page fixes if they need judgment rather than a mechanical `updated:` bump — as its own `tome inbox "..."` capture describing the proposed change and its evidence, and stop; the next live retrospect's step 2 picks these up as ordinary inbox items and step 4 routes them from there. Never apply a SCHEMA edit, page rewrite, or convention change without a live approval.
+
+6. **Apply, log, and sync.** Make the approved edits. For approved inbox routings: create or
    extend the destination page (`tome new` / a surgical edit, same discipline as `ingest`
    step 7), then delete the inbox file once its content has landed — an inbox item is only
    removed after its routing lands, never before. `tome log retrospect "<summary>"` naming
    the window reviewed and what changed — **this entry is the state store**; the next run
-   reads its date. `tome sync -m "..."` — no separate commit approval needed; step 4's
-   approval already covered the content.
+   reads its date. `tome sync -m "..."` — no separate commit approval needed; step 5's
+   approval already covered the content. Running unattended: `tome log retrospect
+   "<summary> (unattended — proposals filed to inbox)"` then `tome sync`, since step 5's
+   inbox captures are the only writes that happened.
