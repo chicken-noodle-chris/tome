@@ -25,6 +25,7 @@ command.
 
 import argparse
 import importlib.resources
+import json
 import os
 import re
 import shutil
@@ -1373,20 +1374,24 @@ def maybe_sync(vault_root, conventions, args, touched_paths, auto_message, messa
 
 
 def find_task_file(vault_root, task_num):
-    """Locate backlog/tasks/*.md whose `id:` frontmatter is TASK-<task_num>.
-    Filenames encode the title too (`task-47 - Some-Title.md`), so this reads
-    frontmatter rather than guessing the full filename."""
-    tasks_dir = vault_root / "backlog" / "tasks"
-    if not tasks_dir.is_dir():
-        return None
+    """Locate backlog/{tasks,completed}/*.md whose `id:` frontmatter is
+    TASK-<task_num>. Filenames encode the title too (`task-47 - Some-Title.md`),
+    so this reads frontmatter rather than guessing the full filename. Checks
+    completed/ too — `task complete` moves the file there, and a resolved
+    entity (`tome sync task-47`, `tome start`/`done`) shouldn't go blind the
+    moment a task ships."""
     target_id = f"TASK-{task_num}"
-    for p in tasks_dir.glob("*.md"):
-        try:
-            fm_lines, _ = read_page(p)
-        except VaultError:
+    for subdir in ("tasks", "completed"):
+        tasks_dir = vault_root / "backlog" / subdir
+        if not tasks_dir.is_dir():
             continue
-        if fm_get(fm_lines, "id") == target_id:
-            return p
+        for p in tasks_dir.glob("*.md"):
+            try:
+                fm_lines, _ = read_page(p)
+            except VaultError:
+                continue
+            if fm_get(fm_lines, "id") == target_id:
+                return p
     return None
 
 
@@ -1589,39 +1594,47 @@ def cmd_start(vault_root, conventions, args):
 
 
 def cmd_done(vault_root, conventions, args):
+    """Closes a plan (by slug), a plan-linked task (by either), or a
+    plan-less task (by task id only — the plan half of resolve_entity simply
+    stays None, and the plan-status branch below is skipped entirely)."""
     wiki_root, pages = collect(vault_root, conventions)
-    page = find_page(pages, args.slug)
-    if page["meta"].get("type") != "plan":
-        raise VaultError(f"'{args.slug}' is a {page['meta'].get('type')}, not a plan — "
+    page, task_path = resolve_entity(vault_root, pages, args.slug)
+    if page is None and task_path is None:
+        raise VaultError(f"'{args.slug}' did not resolve to a plan or a backlog task")
+    if page is not None and page["meta"].get("type") != "plan":
+        raise VaultError(f"'{page['slug']}' is a {page['meta'].get('type')}, not a plan — "
                           f"tome done only closes out plans")
+    if page is None and args.as_status:
+        raise VaultError("--as only applies when closing out a plan")
 
-    target_status = args.as_status or "done"
-    terminal = set(conventions["plan_status"]["terminal"])
-    if target_status not in terminal:
-        raise VaultError(f"'{target_status}' is not a terminal plan status ({sorted(terminal)})")
+    touched = []
+    new_path = None
+    old_rel = None
+    subject = page["slug"] if page is not None else f"task-{task_id_from_path(task_path)}"
 
-    task_path = find_task_for_page(vault_root, page["rel_path"])
-    old_rel = f"wiki/{page['rel_path']}".replace("\\", "/")
+    if page is not None:
+        target_status = args.as_status or "done"
+        terminal = set(conventions["plan_status"]["terminal"])
+        if target_status not in terminal:
+            raise VaultError(f"'{target_status}' is not a terminal plan status ({sorted(terminal)})")
 
-    new_path = apply_status(conventions, page, target_status)
-    _, pages = collect(vault_root, conventions)
-    index_path = rebuild_index(vault_root, conventions, wiki_root, pages)
-    touched = [new_path, index_path]
-    if new_path != page["path"]:
-        touched.append(page["path"])
-    project = Path(page["rel_path"]).parts[0]
-    hub_path = regenerate_hub(conventions, wiki_root, pages, project)
-    if hub_path is not None:
-        touched.append(hub_path)
-    print(f"Set [[{args.slug}]] status -> {target_status} "
-          f"(moved to {new_path.relative_to(vault_root)})")
+        old_rel = f"wiki/{page['rel_path']}".replace("\\", "/")
+        new_path = apply_status(conventions, page, target_status)
+        _, pages = collect(vault_root, conventions)
+        index_path = rebuild_index(vault_root, conventions, wiki_root, pages)
+        touched += [new_path, index_path]
+        if new_path != page["path"]:
+            touched.append(page["path"])
+        project = Path(page["rel_path"]).parts[0]
+        hub_path = regenerate_hub(conventions, wiki_root, pages, project)
+        if hub_path is not None:
+            touched.append(hub_path)
+        print(f"Set [[{page['slug']}]] status -> {target_status} "
+              f"(moved to {new_path.relative_to(vault_root)})")
 
     if task_path is not None:
         task_id = task_id_from_path(task_path)
         task_fm_lines, task_body = read_page(task_path)
-        refs = task_references(task_fm_lines)
-        new_rel = f"wiki/{new_path.relative_to(wiki_root).as_posix()}"
-        new_refs = [new_rel if r == old_rel else r for r in refs] or [new_rel]
 
         edit_argv = ["task", "edit", task_id, "-s", "Done"]
         if not args.no_check_ac:
@@ -1629,13 +1642,19 @@ def cmd_done(vault_root, conventions, args):
                 edit_argv += ["--check-ac", str(i)]
         if args.summary:
             edit_argv += ["--final-summary", args.summary]
-        for r in new_refs:
-            edit_argv += ["--ref", r]
+        ref_note = ""
+        if page is not None:
+            refs = task_references(task_fm_lines)
+            new_rel = f"wiki/{new_path.relative_to(wiki_root).as_posix()}"
+            new_refs = [new_rel if r == old_rel else r for r in refs] or [new_rel]
+            for r in new_refs:
+                edit_argv += ["--ref", r]
+            ref_note = f", ref -> {new_rel}"
         proc = run_backlog(vault_root, edit_argv, capture=True)
         if proc.returncode != 0:
             raise VaultError(f"backlog task edit failed: {(proc.stderr or proc.stdout).strip()}")
         touched.append(task_path)
-        print(f"Closed TASK-{task_id}: Done, ref -> {new_rel}")
+        print(f"Closed TASK-{task_id}: Done{ref_note}")
 
         complete = run_backlog(vault_root, ["task", "complete", task_id], capture=True)
         if complete.returncode != 0:
@@ -1651,13 +1670,13 @@ def cmd_done(vault_root, conventions, args):
     log_path = vault_root / "wiki" / "log.md"
     suffix = f": {args.summary}" if args.summary else ""
     with log_path.open("a", encoding="utf-8", newline="\n") as fh:
-        fh.write(f"\n## [{today()}] done | {args.slug}{suffix}\n")
+        fh.write(f"\n## [{today()}] done | {subject}{suffix}\n")
     touched.append(log_path)
-    print(f"Logged done: {args.slug}")
+    print(f"Logged done: {subject}")
 
     if not args.no_sync:
         rel = [str(Path(p).resolve().relative_to(vault_root)) for p in touched]
-        result = sync_core(vault_root, conventions, f"done: {args.slug}", False, pathspec=rel)
+        result = sync_core(vault_root, conventions, f"done: {subject}", False, pathspec=rel)
         if result:
             return result
     return 0
@@ -1831,6 +1850,41 @@ def check_git_state(vault_root):
     return Check("git state", status_level, detail, "; ".join(remedies))
 
 
+def check_plugin_freshness():
+    """Warns when a dev checkout's plugin.json (this file's own repo, when
+    it's actually a checkout and not a hidden pip/wheel install) has moved
+    ahead of the plugin cached for the active session — found via
+    $TOME_PLUGIN_ROOT, which the SessionStart hook exports from
+    $CLAUDE_PLUGIN_ROOT. A directory-source marketplace doesn't auto-refresh
+    when the repo advances, so this drift is otherwise silent (task-57: the
+    installed plugin sat at 1.2.5 while the repo had shipped 1.2.18)."""
+    dev_plugin_json = Path(__file__).resolve().parent.parent.parent / ".claude-plugin" / "plugin.json"
+    if not dev_plugin_json.is_file():
+        return Check("plugin freshness", DOC_INFO, "not running from a dev checkout — skipped")
+
+    cached_root = os.environ.get("TOME_PLUGIN_ROOT")
+    if not cached_root:
+        return Check("plugin freshness", DOC_INFO,
+                      "TOME_PLUGIN_ROOT unset — no active session plugin to compare")
+
+    cached_plugin_json = Path(cached_root) / ".claude-plugin" / "plugin.json"
+    if not cached_plugin_json.is_file():
+        return Check("plugin freshness", DOC_WARN,
+                      f"{cached_plugin_json} not found", "reinstall the plugin")
+
+    try:
+        dev_version = json.loads(dev_plugin_json.read_text(encoding="utf-8"))["version"]
+        cached_version = json.loads(cached_plugin_json.read_text(encoding="utf-8"))["version"]
+    except (OSError, json.JSONDecodeError, KeyError) as e:
+        return Check("plugin freshness", DOC_WARN, f"couldn't read plugin.json: {e}")
+
+    if dev_version == cached_version:
+        return Check("plugin freshness", DOC_OK, f"cached matches dev checkout ({cached_version})")
+    return Check("plugin freshness", DOC_WARN,
+                  f"cached plugin is {cached_version}, dev checkout is {dev_version}",
+                  "claude plugin update tome@tome")
+
+
 def check_quartz(vault_root):
     quartz_dir = vault_root / "quartz"
     bootstrapped = (quartz_dir / ".git").exists() and (quartz_dir / "node_modules").exists()
@@ -1864,6 +1918,7 @@ def cmd_doctor(args):
         _safe_check("python", check_python),
         _safe_check("git", check_git_binary),
         _safe_check("node/npm/npx", check_node, profile),
+        _safe_check("plugin freshness", check_plugin_freshness),
         _safe_check("ops profile", check_ops_profile),
     ]
 
@@ -2006,13 +2061,16 @@ if you omit -m.
       --no-sync), then print the task and full plan body as working context.
       e.g. tome start task-47
 
-  tome done <plan-slug> [--summary "..."] [--as STATUS] [--no-check-ac] [--no-sync]
+  tome done <plan-slug-or-task-id> [--summary "..."] [--as STATUS] [--no-check-ac] [--no-sync]
       Bundle the close-out ritual: set the plan's terminal status (default
       done; archives it, regenerates hub + index), close the linked task
       (Done, every AC checked unless --no-check-ac, --final-summary if
       --summary given, --ref re-pointed at the archived path, then
-      completed), log done, sync (unless --no-sync).
+      completed), log done, sync (unless --no-sync). A task id with no
+      linked plan just closes and completes the task (no plan step; --as
+      is rejected).
       e.g. tome done workflow-compression --summary "Shipped pieces 1-3."
+      e.g. tome done task-57 --summary "Plan-less task, closed directly."
 
   tome init [path]
       Scaffold a fresh, empty vault at path (default: cwd). Fail-loud if
@@ -2105,7 +2163,7 @@ def build_parser():
 
     p = sub.add_parser("done", help="bundle the close-out ritual",
                         epilog='e.g. tome done workflow-compression --summary "..."')
-    p.add_argument("slug", help="the plan's slug")
+    p.add_argument("slug", help="a plan slug or a backlog task id")
     p.add_argument("--summary", help="the task's final summary")
     p.add_argument("--as", dest="as_status", metavar="STATUS",
                    help="terminal status to set instead of 'done' "
@@ -2208,6 +2266,17 @@ def build_parser():
 
 
 def main():
+    # Windows consoles default to a legacy code page (cp1252/cp437), which
+    # can't encode the em-dashes and other punctuation used throughout this
+    # CLI's own output (e.g. HELP_TEXT) — reconfigure to UTF-8 rather than
+    # let print() crash with a UnicodeEncodeError. Piped/redirected streams
+    # on any platform may lack .reconfigure() (e.g. some test harnesses'
+    # capture objects), so guard with hasattr instead of assuming stdlib.
+    if sys.platform == "win32":
+        for stream in (sys.stdout, sys.stderr):
+            if hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8")
+
     parser = build_parser()
     args = parser.parse_args()
 

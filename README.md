@@ -170,6 +170,19 @@ python -m pytest
 To exercise the packaged install locally: `pip install .` (or `uv tool
 install --force .`), then `tome help`.
 
+## Shipping a release
+
+`.claude-plugin/plugin.json`'s `version` is the sole version authority —
+the marketplace entry in `.claude-plugin/marketplace.json` carries no
+`version` field of its own, so there's nothing else to keep in sync. Ship
+ritual: bump `plugin.json`'s version, commit and push, then run `claude
+plugin update tome@tome` to pick it up locally. A directory-source
+marketplace (a local clone, not a GitHub slug) doesn't auto-refresh on repo
+changes — anyone else pointed at it needs that same command after pulling,
+or `tome doctor`'s "plugin freshness" check will flag the drift (a
+resolvable dev checkout's `plugin.json` vs. the cached, currently-active
+plugin found via `$TOME_PLUGIN_ROOT`).
+
 ## Out of scope (for now)
 
 - A multi-vault registry — the CLI's root-resolution seam supports it, but

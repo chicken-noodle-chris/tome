@@ -2,8 +2,10 @@
 crash) whether the vault is healthy, absent, or broken, and gate its exit
 code on FAIL-severity checks only."""
 
+import json
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -137,6 +139,69 @@ def test_read_capture_profile_skips_node_check(tmp_path, run_tome, monkeypatch, 
     profile_line = next(line for line in out.splitlines() if "ops profile" in line)
     assert profile_line.startswith("info")
     assert "read-capture" in profile_line
+
+
+def test_plugin_freshness_no_cache_env_is_info(tmp_path, run_tome, monkeypatch, capsys):
+    """Running from this real checkout with $TOME_PLUGIN_ROOT unset (no
+    active session to compare against) — the common case for a bare CLI
+    invocation outside a Claude Code session."""
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    capsys.readouterr()
+    monkeypatch.delenv("TOME_PLUGIN_ROOT", raising=False)
+
+    code = run_tome("--vault", str(vault), "doctor")
+
+    out = capsys.readouterr().out
+    line = next(line for line in out.splitlines() if "plugin freshness" in line)
+    assert code == 0
+    assert line.startswith("info")
+    assert "TOME_PLUGIN_ROOT unset" in line
+
+
+def test_plugin_freshness_matching_versions_ok(tmp_path, run_tome, monkeypatch, capsys):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    capsys.readouterr()
+
+    from tome_cli import cli as tome
+    dev_plugin_json = (Path(tome.__file__).resolve().parent.parent.parent
+                        / ".claude-plugin" / "plugin.json")
+    dev_version = json.loads(dev_plugin_json.read_text(encoding="utf-8"))["version"]
+
+    cached_root = tmp_path / "cached-plugin"
+    (cached_root / ".claude-plugin").mkdir(parents=True)
+    (cached_root / ".claude-plugin" / "plugin.json").write_text(
+        json.dumps({"name": "tome", "version": dev_version}), encoding="utf-8")
+    monkeypatch.setenv("TOME_PLUGIN_ROOT", str(cached_root))
+
+    code = run_tome("--vault", str(vault), "doctor")
+
+    out = capsys.readouterr().out
+    line = next(line for line in out.splitlines() if "plugin freshness" in line)
+    assert code == 0
+    assert line.startswith("ok")
+    assert dev_version in line
+
+
+def test_plugin_freshness_stale_cache_warns(tmp_path, run_tome, monkeypatch, capsys):
+    """The exact task-57 scenario: a directory-source marketplace's cached
+    plugin sat at an old version while the dev checkout had moved on."""
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    capsys.readouterr()
+
+    cached_root = tmp_path / "cached-plugin"
+    (cached_root / ".claude-plugin").mkdir(parents=True)
+    (cached_root / ".claude-plugin" / "plugin.json").write_text(
+        json.dumps({"name": "tome", "version": "0.0.1-stale"}), encoding="utf-8")
+    monkeypatch.setenv("TOME_PLUGIN_ROOT", str(cached_root))
+
+    code = run_tome("--vault", str(vault), "doctor")
+
+    out = capsys.readouterr().out
+    line = next(line for line in out.splitlines() if "plugin freshness" in line)
+    assert code == 0  # warn, not FAIL
+    assert line.startswith("warn")
+    assert "0.0.1-stale" in line
+    assert "claude plugin update tome@tome" in line
 
 
 def test_unknown_ops_profile_fails(tmp_path, run_tome, monkeypatch, capsys):

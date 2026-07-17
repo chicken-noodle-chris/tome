@@ -184,6 +184,47 @@ def test_sync_entity_resolves_by_task_id(tmp_path, run_tome, capsys):
     assert "my-plan.md" in show.stdout
 
 
+def test_sync_entity_resolves_completed_task_id(tmp_path, run_tome, capsys):
+    """A task already closed and moved to backlog/completed/ (task-57 AC #4)
+    must still resolve — e.g. `tome sync` invoked against a task id after
+    `tome done` already shipped it, or a task closed by hand."""
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    run_tome("--vault", str(vault), "new", "project", "proj",
+             "--title", "Proj", "--desc", "d")
+    run_tome("--vault", str(vault), "new", "plan", "my-plan", "--project", "proj",
+              "--title", "My Plan", "--desc", "d")
+
+    completed_dir = vault / "backlog" / "completed"
+    completed_dir.mkdir(parents=True, exist_ok=True)
+    task_path = completed_dir / "task-1 - My-Plan.md"
+    task_path.write_text(
+        "---\n"
+        "id: TASK-1\n"
+        "title: My Plan\n"
+        "status: Done\n"
+        "references:\n"
+        "  - wiki/proj/plans/my-plan.md\n"
+        "---\n\n## Description\n\nDo it.\n",
+        encoding="utf-8", newline="\n",
+    )
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "scaffold + completed task")
+    _git(vault, "push")
+    capsys.readouterr()
+
+    plan_path = vault / "wiki" / "proj" / "plans" / "my-plan.md"
+    plan_path.write_text(plan_path.read_text(encoding="utf-8") + "\nMore detail.\n",
+                          encoding="utf-8")
+
+    code = run_tome("--vault", str(vault), "sync", "task-1", "-m", "expand via completed task")
+
+    assert code == 0
+    log = _git(origin, "log", "--oneline")
+    assert "expand via completed task" in log.stdout
+    show = _git(origin, "show", "--stat", "HEAD")
+    assert "my-plan.md" in show.stdout
+
+
 def test_sync_entity_unknown_task_id_fails_loud(tmp_path, run_tome, capsys):
     vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
 
