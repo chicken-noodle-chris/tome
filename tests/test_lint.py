@@ -290,6 +290,67 @@ def test_index_oversize_warns_past_soft_cap(make_vault, run_tome):
     assert findings[0].severity == tome.WARNING
 
 
+def test_stale_flags_well_linked_old_page(make_vault, make_page):
+    vault = make_vault()
+    make_page(vault, "proj/proj.md", type="project", title="Proj")
+    make_page(vault, "proj/notes/hub.md", type="concept", title="Hub",
+              updated="2020-01-01")
+    for i in range(5):
+        make_page(vault, f"proj/notes/linker{i}.md", type="concept", title=f"Linker {i}",
+                  body="\nSee [[hub]].\n")
+
+    pages, findings = _lint(vault)
+
+    assert "STALE" in _codes_for(findings, "proj/notes/hub.md")
+    finding = next(f for f in findings if f.code == "STALE")
+    assert finding.severity == tome_lint.WARNING
+
+
+def test_stale_silent_under_link_threshold(make_vault, make_page):
+    vault = make_vault()
+    make_page(vault, "proj/proj.md", type="project", title="Proj")
+    make_page(vault, "proj/notes/hub.md", type="concept", title="Hub",
+              updated="2020-01-01")
+    make_page(vault, "proj/notes/linker.md", type="concept", title="Linker",
+              body="\nSee [[hub]].\n")
+
+    pages, findings = _lint(vault)
+
+    assert "STALE" not in _codes_for(findings, "proj/notes/hub.md")
+
+
+def test_stale_silent_when_recently_updated(make_vault, make_page):
+    vault = make_vault()
+    make_page(vault, "proj/proj.md", type="project", title="Proj")
+    make_page(vault, "proj/notes/hub.md", type="concept", title="Hub",
+              updated=tome.today())
+    for i in range(5):
+        make_page(vault, f"proj/notes/linker{i}.md", type="concept", title=f"Linker {i}",
+                  body="\nSee [[hub]].\n")
+
+    pages, findings = _lint(vault)
+
+    assert "STALE" not in _codes_for(findings, "proj/notes/hub.md")
+
+
+def test_stale_opt_out_without_conventions_section(make_vault, make_page):
+    vault = make_vault()
+    make_page(vault, "proj/proj.md", type="project", title="Proj")
+    make_page(vault, "proj/notes/hub.md", type="concept", title="Hub",
+              updated="2020-01-01")
+    for i in range(5):
+        make_page(vault, f"proj/notes/linker{i}.md", type="concept", title=f"Linker {i}",
+                  body="\nSee [[hub]].\n")
+    conventions = tome.load_conventions(vault)
+    del conventions["staleness"]
+    wiki_root = vault / "wiki"
+    index_path = wiki_root / conventions["index"]["file"]
+
+    _, findings = tome_lint.run(wiki_root, conventions, index_path)
+
+    assert "STALE" not in _codes_for(findings, "proj/notes/hub.md")
+
+
 def test_unparsed_frontmatter_nested_map(make_vault, make_page):
     vault = make_vault()
     make_page(vault, "proj/proj.md", type="project", title="Proj")

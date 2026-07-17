@@ -48,8 +48,9 @@ def make_task():
     real backlog.md CLI — see the fake `run_backlog` pattern in
     test_start_done.py for how mutations are simulated."""
     def _make(vault_root, task_num, title, *, status="To Do", assignee=None,
-              refs=None, acs=("one", "two"), ordinal=1000):
-        tasks_dir = vault_root / "backlog" / "tasks"
+              refs=None, acs=("one", "two"), ordinal=1000, labels=None,
+              milestone=None, completed=False):
+        tasks_dir = vault_root / "backlog" / ("completed" if completed else "tasks")
         tasks_dir.mkdir(parents=True, exist_ok=True)
         path = tasks_dir / f"task-{task_num} - {title.replace(' ', '-')}.md"
         assignee_block = ("assignee: []" if not assignee
@@ -57,6 +58,9 @@ def make_task():
         refs = refs or []
         refs_block = ("references: []" if not refs
                       else "references:\n" + "\n".join(f"  - {r}" for r in refs))
+        labels_block = ("labels: []" if not labels
+                        else "labels:\n" + "\n".join(f"  - '{l}'" for l in labels))
+        milestone_line = f"milestone: {milestone}\n" if milestone else ""
         ac_lines = "\n".join(f"- [ ] #{i} {text}" for i, text in enumerate(acs, start=1))
         text = (
             "---\n"
@@ -66,7 +70,8 @@ def make_task():
             f"{assignee_block}\n"
             "created_date: '2026-01-01 00:00'\n"
             "updated_date: '2026-01-01 00:00'\n"
-            "labels: []\n"
+            f"{labels_block}\n"
+            f"{milestone_line}"
             "dependencies: []\n"
             f"{refs_block}\n"
             f"ordinal: {ordinal}\n"

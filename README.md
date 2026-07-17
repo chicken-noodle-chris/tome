@@ -126,7 +126,7 @@ CLI (`tome help` for the full list with examples; write commands all take
 `--sync` to commit+push just the files they touched):
 
 ```
-tome prime [project] [--full]     # session orientation; --full adds SCHEMA, index, project context
+tome prime [project] [--full]     # session orientation; --full adds SCHEMA, index, open-task snapshot, project context
 tome start <slug-or-task-id>      # work-started ritual: statuses, log, sync, prints working context
 tome done <plan-slug> [--summary "..."]   # close-out ritual: archive plan, complete task, log, sync
 tome new <type> <slug> --project <name> --title "T" --desc "..." [--with-task "T"]
@@ -145,6 +145,42 @@ Root resolution for the CLI: `--vault PATH`, else walk up from cwd looking
 for `conventions.toml`, else `$VAULT_ROOT` — the vault you're standing in
 always beats the global default, and `$VAULT_ROOT` covers sessions in
 non-vault directories.
+
+## Scheduled retrospect
+
+`retrospect` (see the skill) is designed as a periodic ritual, but a ritual
+nobody schedules only runs when someone remembers — so point whatever
+recurring-job mechanism your environment offers at it, roughly weekly. The
+two constraints that make an unattended firing safe:
+
+- **The prompt is `/tome:retrospect`, nothing more.** The skill already
+  contains an "unattended" branch (no live user to approve): it still
+  gathers evidence and derives proposals, but instead of the live approval
+  gate it drops every proposal as a `tome inbox` capture and stops — no
+  SCHEMA edit, page rewrite, or convention change ever happens without a
+  human present. A scheduled run is a gather-and-propose pass, not an
+  autonomous-edit pass.
+- **The next live retrospect (or a `capture` triage) picks the captures
+  up.** They land in `inbox/` exactly like any other capture; nothing about
+  them is special beyond the "(unattended — proposals filed to inbox)" note
+  in the log entry the run leaves behind.
+
+What fires the prompt is deliberately not tome's concern — "the schedule
+itself is per-machine." A few options, pick whichever your environment
+already has:
+
+- **Claude Code on the web / Cowork Routines** — create a weekly-cron
+  Routine (`create_trigger` with a `cron_expression` like `0 9 * * 1` and
+  `prompt: "/tome:retrospect"`) bound to a session that already has the
+  vault primed. Cheapest option if you're already running sessions there.
+- **A headless container's system cron**, calling a non-interactive `claude
+  -p "/tome:retrospect"` (or your harness's equivalent) against the vault —
+  reuse the [Headless bootstrap](#headless-bootstrap) section's `VAULT_ROOT`
+  and `TOME_GIT_AUTHOR`, but *not* `TOME_OPS_PROFILE=read-capture`: even the
+  unattended branch still needs `tome inbox`, `tome log`, and `tome sync`
+  (step 6), and read-capture only allows the first of those.
+- **Any other trigger your agent harness exposes** — the only requirement
+  is that it lands a single `/tome:retrospect` turn on a schedule.
 
 ## Headless bootstrap
 

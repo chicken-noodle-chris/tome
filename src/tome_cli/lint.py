@@ -36,6 +36,7 @@ import json
 import sys
 import tomllib
 from collections import defaultdict
+from datetime import date
 from pathlib import Path
 import re
 
@@ -210,15 +211,22 @@ def check_duplicate_slugs(pages):
     return out
 
 
-def check_links_and_orphans(pages, resolvable):
-    """A wikilink whose target matches no page slug is broken (error). A content
-    page with no inbound links from other content pages is an orphan (warning —
-    a hub legitimately reads as an orphan until a content page links it)."""
-    out = []
+def compute_inbound(pages):
+    """slug -> set of slugs of content pages linking to it. Shared by the
+    orphan check and the staleness check — both need the same inbound
+    count, and it's a real recomputation to avoid, not just a naming tidy."""
     inbound = defaultdict(set)
     for p in pages:
         for link in p.get("links", []):
             inbound[link].add(p["slug"])
+    return inbound
+
+
+def check_links_and_orphans(pages, resolvable, inbound):
+    """A wikilink whose target matches no page slug is broken (error). A content
+    page with no inbound links from other content pages is an orphan (warning —
+    a hub legitimately reads as an orphan until a content page links it)."""
+    out = []
     for p in pages:
         for link in dict.fromkeys(p.get("links", [])):  # de-dup, preserve order
             if link not in resolvable:
@@ -227,6 +235,43 @@ def check_links_and_orphans(pages, resolvable):
         if not inbound.get(p["slug"]):
             out.append(Finding(WARNING, "ORPHAN", p["rel_path"],
                                f"no inbound links to [[{p['slug']}]]"))
+    return out
+
+
+def check_staleness(pages, conventions, inbound, today=None):
+    """Wikis rot from the most-linked pages outward: warn on a page whose
+    inbound-link count *and* days-since-`updated:` both clear the
+    thresholds in conventions.toml's [staleness] (either alone is normal —
+    a fresh page starts with zero links, a stable well-linked page can
+    validly go untouched). Opt-in: silent when a vault's conventions.toml
+    has no [staleness] section, so older vaults aren't newly gated without
+    choosing thresholds. Advisory only (warning) — lint has no way to know
+    whether a page just hasn't needed a change, so judgment about what to
+    do with a flagged page stays with retrospect, not this check."""
+    cfg = conventions.get("staleness")
+    if not cfg:
+        return []
+    min_inbound = cfg["min_inbound_links"]
+    max_days = cfg["max_days_since_update"]
+    today = today or date.today()
+
+    out = []
+    for p in pages:
+        if "read_error" in p or p["malformed_fm"]:
+            continue
+        updated = p["meta"].get("updated")
+        if not isinstance(updated, str):
+            continue
+        try:
+            updated_date = date.fromisoformat(updated)
+        except ValueError:
+            continue
+        count = len(inbound.get(p["slug"], ()))
+        days = (today - updated_date).days
+        if count >= min_inbound and days >= max_days:
+            out.append(Finding(WARNING, "STALE", p["rel_path"],
+                               f"{count} inbound link(s), last updated {days} days ago "
+                               f"(thresholds: >={min_inbound} links, >={max_days} days)"))
     return out
 
 
@@ -403,10 +448,12 @@ def run(wiki_root, conventions, index_path):
     if conventions["tags"].get("allow_project_name_tags"):
         tag_vocab |= project_names(wiki_root, skip_dirs)
 
+    inbound = compute_inbound(pages)
+
     findings = []
     findings += check_read_errors(pages)
     findings += check_duplicate_slugs(pages)
-    findings += check_links_and_orphans(pages, resolvable)
+    findings += check_links_and_orphans(pages, resolvable, inbound)
     findings += check_frontmatter(pages, conventions["frontmatter"]["required"])
     findings += check_frontmatter_syntax(pages)
     findings += check_size(pages, conventions["size"]["soft_cap"], conventions["size"]["hard_cap"])
@@ -415,6 +462,7 @@ def run(wiki_root, conventions, index_path):
                                 set(conventions["plan_status"]["terminal"]))
     findings += check_idea_placement(pages, conventions["folders"])
     findings += check_index_drift(pages, index_path, resolvable)
+    findings += check_staleness(pages, conventions, inbound)
     return pages, findings
 
 
