@@ -54,36 +54,50 @@ plugin available — commit the identical `.claude/settings.json` stanza above
 to that project repo too. There's no separate `tome enroll` command; copying
 the file is the whole procedure.
 
-**Sibling-checkout vault discovery.** The SessionStart hook resolves the
-vault by walking up from cwd, same as `tome` itself. In a multi-repo cloud
-workspace the vault is commonly a *sibling* checkout next to the project
-repo rather than an ancestor directory, so walk-up alone misses it. When
-`CLAUDE_CODE_REMOTE=true`, the hook additionally scans the workspace for a
-sibling directory containing `conventions.toml` and exports `VAULT_ROOT`
-(via the same `$CLAUDE_ENV_FILE` mechanism used for `PATH`), so every `tome`
-command for the rest of the session resolves regardless of which repo a
-Bash command's cwd happens to be in. This scan is gated to remote sessions
-only — an arbitrary local multi-repo checkout on someone's laptop isn't a
-safe place to assume any sibling with a `conventions.toml` is *the* vault.
+**Nearby-checkout vault discovery.** The SessionStart hook resolves the
+vault by walking up from cwd, same as `tome` itself. A multi-repo cloud
+workspace shows up in two shapes depending on whether a "primary" repo was
+designated: with one, cwd starts inside that repo and the vault sits
+alongside it as a *sibling* checkout; with none, cwd starts at the workspace
+root itself, one level *above* every checkout, so the vault is a *child* of
+cwd instead. Walk-up alone misses both. When `CLAUDE_CODE_REMOTE=true`, the
+hook additionally scans cwd's children and cwd's siblings for a directory
+containing `conventions.toml` and exports `VAULT_ROOT` (via the same
+`$CLAUDE_ENV_FILE` mechanism used for `PATH`), so every `tome` command for
+the rest of the session resolves regardless of which repo a Bash command's
+cwd happens to be in. This scan is gated to remote sessions only — an
+arbitrary local multi-repo checkout on someone's laptop isn't a safe place
+to assume any nearby `conventions.toml` is *the* vault.
 
-**Canonical setup-script snippet.** A cloud environment's setup script
-already creates a user-level `~/.claude/CLAUDE.md` today; append a pointer
-to the vault so a session primed from a project repo (not the vault itself)
-still knows where it lives, and optionally put `tome` on PATH for terminal
-use without waiting on the plugin's own PATH export:
+**Verified cloud environment setup-script recipe.** The most reliable way
+to prime a cloud environment, confirmed working end-to-end: add the plugin
+install to the environment's setup script (it runs before the session
+starts, at user scope, so it applies no matter which repo ends up primary
+or whether the repos-committed `.claude/settings.json` stanza above even
+gets read — that part turned out to be unreliable with no primary repo
+designated) —
 
 ```bash
-cat >> ~/.claude/CLAUDE.md <<'EOF'
-
-# Wiki
-Your knowledge vault lives at <path-or-clone-url>; see its own CLAUDE.md
-for conventions before reading or writing it.
-EOF
-uv tool install git+https://github.com/chicken-noodle-chris/tome.git   # optional: tome on PATH for terminal use
+claude plugin marketplace add chicken-noodle-chris/tome
+claude plugin install tome@tome
+npm install backlog.md -g   # tome task passthrough depends on it
 ```
 
-Copy-paste this alongside the `.claude/settings.json` stanza when setting up
-a new cloud environment.
+— **and** include the vault repo itself as one of the session's attached
+repos, alongside whatever project repo you're actually there to work on. With
+both of those true, the plugin is installed before the session starts, the
+vault lands near cwd for the nearby-checkout scan above to find, and the
+session is primed with zero first-prompt setup — verified against a real
+Claude Code web session with `ai-toolkit` as the working repo and
+`knowledge-vault` attached alongside it.
+
+Tried and *not* yet working: having the setup script itself `git clone` the
+vault, so a session only needs the project repo attached and the vault
+comes along for free. The per-session git-auth proxy this environment uses
+for attached repos doesn't appear to be reachable at setup-script time, so
+an authenticated clone from there failed. Revisit with a PAT/deploy-key
+clone (the pattern the headless bootstrap section below already documents)
+if this seam matters enough to unblock.
 
 ## Start a vault
 
