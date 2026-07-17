@@ -112,7 +112,8 @@ def test_session_context_no_vault_anywhere_is_silent(tmp_path):
 def test_session_context_finds_sibling_vault_when_remote(tmp_path):
     """A cloud (CLAUDE_CODE_REMOTE=true) session standing in a project repo
     with the vault checked out alongside it, not above it, must still
-    resolve the vault by scanning siblings."""
+    resolve the vault by scanning siblings. This is the shape when a
+    "primary" repo is designated — cwd starts inside it."""
     vault = _make_vault(tmp_path, name="knowledge-vault")
     project = tmp_path / "some-project"
     project.mkdir()
@@ -125,9 +126,27 @@ def test_session_context_finds_sibling_vault_when_remote(tmp_path):
     assert str(vault) in out["hookSpecificOutput"]["additionalContext"]
 
 
-def test_session_context_sibling_scan_not_used_when_not_remote(tmp_path):
-    """The same layout without CLAUDE_CODE_REMOTE=true must not pick up a
-    sibling vault — the scan is gated to cloud sessions only."""
+def test_session_context_finds_child_vault_when_remote_and_no_primary_repo(tmp_path):
+    """With no "primary" repo designated, a multi-repo cloud session's cwd
+    starts at the workspace root itself, one level *above* every checkout —
+    so the vault is a child of cwd, not a sibling. Confirmed against a real
+    session: see the task-54 follow-up where the sibling-only scan missed
+    this shape entirely (tome isn't on PATH at all, not just VAULT_ROOT
+    unset, since the plugin never got a chance to export anything)."""
+    vault = _make_vault(tmp_path, name="knowledge-vault")
+    (tmp_path / "some-project").mkdir()
+    env = {"PATH": os.environ.get("PATH", ""), "CLAUDE_CODE_REMOTE": "true"}
+
+    result = _run_hook(SESSION_CONTEXT_HOOK, cwd=tmp_path, env=env)
+
+    assert result.returncode == 0
+    out = json.loads(result.stdout)
+    assert str(vault) in out["hookSpecificOutput"]["additionalContext"]
+
+
+def test_session_context_nearby_scan_not_used_when_not_remote(tmp_path):
+    """The same layouts without CLAUDE_CODE_REMOTE=true must not pick up a
+    nearby vault — the scan is gated to cloud sessions only."""
     _make_vault(tmp_path, name="knowledge-vault")
     project = tmp_path / "some-project"
     project.mkdir()
