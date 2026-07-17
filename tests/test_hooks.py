@@ -2,6 +2,7 @@
 process with a controlled cwd/env/stdin, exactly as Claude Code invokes it —
 these are stdlib-only scripts outside the tome_cli package, so they can't be
 exercised via run_tome()."""
+import importlib.util
 import json
 import os
 import shutil
@@ -16,6 +17,11 @@ pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git not on 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SESSION_CONTEXT_HOOK = REPO_ROOT / "hooks" / "tome_session_context.py"
 SYNC_REMINDER_HOOK = REPO_ROOT / "hooks" / "tome_sync_reminder.py"
+
+_spec = importlib.util.spec_from_file_location("tome_session_context", SESSION_CONTEXT_HOOK)
+_session_context = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_session_context)
+to_posix = _session_context.to_posix
 
 
 def _run_hook(script, cwd, env=None, payload=None):
@@ -151,7 +157,7 @@ def test_session_context_sibling_vault_exports_vault_root(tmp_path):
 
     assert result.returncode == 0
     written = env_file.read_text(encoding="utf-8")
-    assert f'export VAULT_ROOT="{vault}"' in written
+    assert f'export VAULT_ROOT="{to_posix(vault)}"' in written
 
 
 def test_session_context_walkup_vault_does_not_export_vault_root(tmp_path):
