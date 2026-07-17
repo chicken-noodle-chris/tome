@@ -1,5 +1,6 @@
 """`tome init` — vault scaffolding."""
 
+import json
 import subprocess
 
 
@@ -12,12 +13,28 @@ def test_init_scaffolds_expected_layout(tmp_path, run_tome):
         "conventions.toml", ".gitignore", "CLAUDE.md",
         "quartz.config.yaml", "quartz.lock.json",
         "wiki/SCHEMA.md", "wiki/index.md", "wiki/log.md",
+        ".claude/settings.json",
     ):
         assert (target / rel).is_file(), rel
 
     assert (target / "inbox").is_dir()
     assert (target / "raw" / "assets").is_dir()
     assert (target / ".git").is_dir()
+
+
+def test_init_scaffolds_plugin_auto_install_stanza(tmp_path, run_tome):
+    """`.claude/settings.json` must declare the tome marketplace and enable
+    the plugin, so a cloud session opening the vault installs it with zero
+    prompting — see wiki/tome/plans/cloud-session-priming.md."""
+    target = tmp_path / "vault"
+    code = run_tome("init", str(target))
+    assert code == 0
+
+    settings = json.loads((target / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    assert settings["extraKnownMarketplaces"]["tome"]["source"] == {
+        "source": "github", "repo": "chicken-noodle-chris/tome",
+    }
+    assert settings["enabledPlugins"]["tome@tome"] is True
 
 
 def test_init_defaults_to_cwd(tmp_path, run_tome, monkeypatch):

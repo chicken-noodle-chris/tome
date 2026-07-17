@@ -1205,6 +1205,7 @@ def cmd_init(args):
         target / "wiki" / "log.md",
         target / "inbox",
         target / "raw" / "assets",
+        target / ".claude" / "settings.json",
     ]
     existing = [p for p in to_create if p.exists()]
     if existing:
@@ -1216,6 +1217,7 @@ def cmd_init(args):
     (target / "wiki").mkdir(parents=True, exist_ok=True)
     (target / "inbox").mkdir(parents=True, exist_ok=True)
     (target / "raw" / "assets").mkdir(parents=True, exist_ok=True)
+    (target / ".claude").mkdir(parents=True, exist_ok=True)
 
     _copy_template("conventions.toml", target / "conventions.toml")
     _copy_template("SCHEMA.md", target / "wiki" / "SCHEMA.md")
@@ -1223,6 +1225,7 @@ def cmd_init(args):
     _copy_template("vault.gitignore", target / ".gitignore")
     _copy_template("quartz.config.yaml", target / "quartz.config.yaml")
     _copy_template("quartz.lock.json", target / "quartz.lock.json")
+    _copy_template("claude-settings.json", target / ".claude" / "settings.json")
 
     conventions = load_conventions(target)
     (target / "wiki" / "log.md").write_text(

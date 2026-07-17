@@ -103,6 +103,75 @@ def test_session_context_no_vault_anywhere_is_silent(tmp_path):
     assert result.stdout.strip() == ""
 
 
+def test_session_context_finds_sibling_vault_when_remote(tmp_path):
+    """A cloud (CLAUDE_CODE_REMOTE=true) session standing in a project repo
+    with the vault checked out alongside it, not above it, must still
+    resolve the vault by scanning siblings."""
+    vault = _make_vault(tmp_path, name="knowledge-vault")
+    project = tmp_path / "some-project"
+    project.mkdir()
+    env = {"PATH": os.environ.get("PATH", ""), "CLAUDE_CODE_REMOTE": "true"}
+
+    result = _run_hook(SESSION_CONTEXT_HOOK, cwd=project, env=env)
+
+    assert result.returncode == 0
+    out = json.loads(result.stdout)
+    assert str(vault) in out["hookSpecificOutput"]["additionalContext"]
+
+
+def test_session_context_sibling_scan_not_used_when_not_remote(tmp_path):
+    """The same layout without CLAUDE_CODE_REMOTE=true must not pick up a
+    sibling vault — the scan is gated to cloud sessions only."""
+    _make_vault(tmp_path, name="knowledge-vault")
+    project = tmp_path / "some-project"
+    project.mkdir()
+    env = {"PATH": os.environ.get("PATH", "")}
+
+    result = _run_hook(SESSION_CONTEXT_HOOK, cwd=project, env=env)
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == ""
+
+
+def test_session_context_sibling_vault_exports_vault_root(tmp_path):
+    """Resolution via the sibling scan must export VAULT_ROOT through
+    $CLAUDE_ENV_FILE so `tome` commands run from anywhere in the workspace
+    (e.g. a Bash cwd inside the project repo, not the vault) still resolve."""
+    vault = _make_vault(tmp_path, name="knowledge-vault")
+    project = tmp_path / "some-project"
+    project.mkdir()
+    env_file = tmp_path / "env.sh"
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "CLAUDE_CODE_REMOTE": "true",
+        "CLAUDE_ENV_FILE": str(env_file),
+    }
+
+    result = _run_hook(SESSION_CONTEXT_HOOK, cwd=project, env=env)
+
+    assert result.returncode == 0
+    written = env_file.read_text(encoding="utf-8")
+    assert f'export VAULT_ROOT="{vault}"' in written
+
+
+def test_session_context_walkup_vault_does_not_export_vault_root(tmp_path):
+    """A vault found by ordinary cwd walk-up needs no VAULT_ROOT export —
+    only the sibling-scan fallback does."""
+    vault = _make_vault(tmp_path)
+    env_file = tmp_path / "env.sh"
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "CLAUDE_CODE_REMOTE": "true",
+        "CLAUDE_ENV_FILE": str(env_file),
+    }
+
+    result = _run_hook(SESSION_CONTEXT_HOOK, cwd=vault, env=env)
+
+    assert result.returncode == 0
+    written = env_file.read_text(encoding="utf-8") if env_file.exists() else ""
+    assert "VAULT_ROOT" not in written
+
+
 # --------------------------------------------------------------------------- #
 # Stop: tome_sync_reminder.py
 # --------------------------------------------------------------------------- #

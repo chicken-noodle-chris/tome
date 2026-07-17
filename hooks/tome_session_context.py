@@ -38,47 +38,89 @@ def to_posix(path):
     return p
 
 
-def export_env(plugin_root):
+def export_env(plugin_root, vault_root=None):
     """Append tome exports to $CLAUDE_ENV_FILE. Returns True when written,
     False when the mechanism is unavailable (older Claude Code) — the caller
-    degrades to spelling out the invocation path in context instead."""
+    degrades to spelling out the invocation path in context instead.
+    vault_root is only passed when resolution needed the sibling-checkout
+    scan below; a vault found by cwd walk-up needs no export because
+    tome.py's own walk-up will find it again from wherever a Bash command's
+    cwd happens to be inside it."""
     env_file = os.environ.get("CLAUDE_ENV_FILE")
-    if not env_file or plugin_root is None:
+    if not env_file:
         return False
-    scripts = to_posix(plugin_root / "scripts")
-    lines = (
-        f'export PATH="{scripts}:$PATH"\n'
-        f'export TOME_PLUGIN_ROOT="{to_posix(plugin_root)}"\n'
-        f'export TOME_PYTHON="{to_posix(sys.executable)}"\n'
-    )
+    lines = ""
+    if plugin_root is not None:
+        scripts = to_posix(plugin_root / "scripts")
+        lines += (
+            f'export PATH="{scripts}:$PATH"\n'
+            f'export TOME_PLUGIN_ROOT="{to_posix(plugin_root)}"\n'
+            f'export TOME_PYTHON="{to_posix(sys.executable)}"\n'
+        )
+    if vault_root is not None:
+        lines += f'export VAULT_ROOT="{to_posix(vault_root)}"\n'
+    if not lines:
+        return False
     with open(env_file, "a", encoding="utf-8") as f:
         f.write(lines)
     return True
 
 
+def find_sibling_vault(cur):
+    """Scan cur's siblings (children of cur's parent) for a conventions.toml.
+    Cloud sessions often check out a project repo and the vault repo side by
+    side in one workspace, so the vault is a sibling checkout rather than an
+    ancestor directory cwd walk-up would find. Deterministic first match by
+    sorted name; a workspace pairing more than one vault alongside a project
+    repo is not a case this needs to disambiguate."""
+    workspace_root = cur.parent
+    try:
+        children = sorted(workspace_root.iterdir())
+    except OSError:
+        return None
+    for child in children:
+        if child == cur:
+            continue
+        if (child / "conventions.toml").is_file():
+            return child
+    return None
+
+
 def find_vault_root():
-    """Walk up from cwd looking for conventions.toml, else $VAULT_ROOT — same
-    resolution tome.py itself uses. Unlike the Stop hook, this fallback stays:
-    awareness is cheap and correct everywhere, whereas blocking is not."""
+    """Walk up from cwd looking for conventions.toml; in a Claude Code Remote
+    (cloud) session, fall back to scanning sibling checkouts; else
+    $VAULT_ROOT — same resolution tome.py itself uses, plus the sibling
+    scan. Unlike the Stop hook, this fallback stays: awareness is cheap and
+    correct everywhere, whereas blocking is not. The sibling scan is gated on
+    CLAUDE_CODE_REMOTE=true since it isn't a safe assumption for an arbitrary
+    local multi-repo checkout on someone's laptop.
+
+    Returns (vault_path_or_None, found_via_sibling_scan)."""
     cur = pathlib.Path.cwd().resolve()
     for d in (cur, *cur.parents):
         if (d / "conventions.toml").is_file():
-            return d
+            return d, False
+    if os.environ.get("CLAUDE_CODE_REMOTE") == "true":
+        sibling = find_sibling_vault(cur)
+        if sibling is not None:
+            return sibling, True
     env = os.environ.get("VAULT_ROOT")
     if env:
-        return pathlib.Path(env)
-    return None
+        return pathlib.Path(env), False
+    return None, False
 
 
 def main():
     plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT")
     plugin_root = pathlib.Path(plugin_root) if plugin_root else None
+
+    vault, via_sibling = find_vault_root()
+
     try:
-        export_env(plugin_root)
+        export_env(plugin_root, vault if via_sibling else None)
     except Exception:
         pass
 
-    vault = find_vault_root()
     if vault is None or not vault.exists():
         return
 

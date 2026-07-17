@@ -24,6 +24,67 @@ claude plugin install tome@tome
 (Working from a local clone instead? Point the marketplace at the clone's
 path rather than the GitHub slug.)
 
+## Cloud session priming
+
+A cloud session (Claude Code on the web) starts with no human at the
+keyboard to run the install ritual above, so the plugin is designed to
+travel with the repos themselves instead — see the vault's
+`cloud-session-priming` plan page for the full design.
+
+**Vault repo.** `tome init` scaffolds `.claude/settings.json` into every new
+vault, declaring the marketplace and enabling the plugin:
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "tome": { "source": { "source": "github", "repo": "chicken-noodle-chris/tome" } }
+  },
+  "enabledPlugins": { "tome@tome": true }
+}
+```
+
+Any cloud session that opens the vault repo installs the plugin, runs the
+SessionStart hook, and gets the prime text — no first prompt spent on setup.
+An existing vault predating this stanza just needs the same file committed
+by hand.
+
+**Enrolling a project repo.** A cloud session whose primary repo is a
+*project*, with the vault pulled in as a source alongside it, needs the same
+plugin available — commit the identical `.claude/settings.json` stanza above
+to that project repo too. There's no separate `tome enroll` command; copying
+the file is the whole procedure.
+
+**Sibling-checkout vault discovery.** The SessionStart hook resolves the
+vault by walking up from cwd, same as `tome` itself. In a multi-repo cloud
+workspace the vault is commonly a *sibling* checkout next to the project
+repo rather than an ancestor directory, so walk-up alone misses it. When
+`CLAUDE_CODE_REMOTE=true`, the hook additionally scans the workspace for a
+sibling directory containing `conventions.toml` and exports `VAULT_ROOT`
+(via the same `$CLAUDE_ENV_FILE` mechanism used for `PATH`), so every `tome`
+command for the rest of the session resolves regardless of which repo a
+Bash command's cwd happens to be in. This scan is gated to remote sessions
+only — an arbitrary local multi-repo checkout on someone's laptop isn't a
+safe place to assume any sibling with a `conventions.toml` is *the* vault.
+
+**Canonical setup-script snippet.** A cloud environment's setup script
+already creates a user-level `~/.claude/CLAUDE.md` today; append a pointer
+to the vault so a session primed from a project repo (not the vault itself)
+still knows where it lives, and optionally put `tome` on PATH for terminal
+use without waiting on the plugin's own PATH export:
+
+```bash
+cat >> ~/.claude/CLAUDE.md <<'EOF'
+
+# Wiki
+Your knowledge vault lives at <path-or-clone-url>; see its own CLAUDE.md
+for conventions before reading or writing it.
+EOF
+uv tool install git+https://github.com/chicken-noodle-chris/tome.git   # optional: tome on PATH for terminal use
+```
+
+Copy-paste this alongside the `.claude/settings.json` stanza when setting up
+a new cloud environment.
+
 ## Start a vault
 
 In an empty directory (or a fresh repo):

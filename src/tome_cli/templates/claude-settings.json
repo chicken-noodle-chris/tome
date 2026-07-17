@@ -1,0 +1,13 @@
+{
+  "extraKnownMarketplaces": {
+    "tome": {
+      "source": {
+        "source": "github",
+        "repo": "chicken-noodle-chris/tome"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "tome@tome": true
+  }
+}
