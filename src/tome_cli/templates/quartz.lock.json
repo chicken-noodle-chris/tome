@@ -25,6 +25,17 @@
       "commit": "f8fc7da3515a4d4bbe0bd4be0fd9188823866a01",
       "installedAt": "2026-07-02T22:08:34.836Z"
     },
+    "board": {
+      "source": {
+        "name": "board",
+        "repo": "github:chicken-noodle-chris/tome",
+        "subdir": "quartz-plugins/board"
+      },
+      "resolved": "https://github.com/chicken-noodle-chris/tome.git",
+      "commit": "ead39b0502a0f30f462aaf2a540e2afadf0aa19d",
+      "subdir": "quartz-plugins/board",
+      "installedAt": "2026-07-18T00:54:41.954Z"
+    },
     "breadcrumbs": {
       "source": "github:quartz-community/breadcrumbs",
       "resolved": "https://github.com/quartz-community/breadcrumbs.git",
@@ -96,6 +107,17 @@
       "resolved": "https://github.com/quartz-community/description.git",
       "commit": "56dc546614d905ad07dd0da8dd5820e25e5ea97b",
       "installedAt": "2026-07-02T22:08:31.285Z"
+    },
+    "edit-button": {
+      "source": {
+        "name": "edit-button",
+        "repo": "github:chicken-noodle-chris/tome",
+        "subdir": "quartz-plugins/edit-button"
+      },
+      "resolved": "https://github.com/chicken-noodle-chris/tome.git",
+      "commit": "ead39b0502a0f30f462aaf2a540e2afadf0aa19d",
+      "subdir": "quartz-plugins/edit-button",
+      "installedAt": "2026-07-18T00:54:41.993Z"
     },
     "encrypted-pages": {
       "source": "github:quartz-community/encrypted-pages",
