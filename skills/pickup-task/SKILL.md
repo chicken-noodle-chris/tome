@@ -29,23 +29,30 @@ how far to take it, an ambiguity in the plan — ask.
    no name given at all, check the board (`tome task task list --plain`) and the project's
    live plans (`plans/`, not `plans/archive/`) and confirm which one they mean.
 
-3. **Mark the work started.** `tome start <task-id-or-slug>` — accepts either, resolving
+3. **Check the agent-tier label.** If the task carries an `agent:<tier>` label
+   (tier: `haiku` < `sonnet` < `opus` < `fable` — the *minimum* suggested executor),
+   compare it against the model you are running as (stated in your system context). If
+   your tier is lower, or you can't tell, **stop before starting the work**: tell the
+   user the suggested minimum and your own tier, and wait — they'll either switch agents
+   or tell you to continue anyway. No label, or you're at/above the tier: proceed.
+
+4. **Mark the work started.** `tome start <task-id-or-slug>` — accepts either, resolving
    the other half if linked (a plan without a task, or a task without a plan, is normal).
    Sets the plan `active`, moves the task to In Progress (`-a @me`), logs `work-started`,
    syncs, then prints the task text and the full plan body as your working context — read
    it in full, follow its `[[wikilinks]]`, and if you have concerns stop and discuss with
    the user before continuing.
 
-4. **Do the task work.** Execute the plan in the relevant code repo (not the vault),
+5. **Do the task work.** Execute the plan in the relevant code repo (not the vault),
    following that repo's `CLAUDE.md`. Stick to the plan's scope; if you hit a fork it
    doesn't resolve, ask rather than guess. Verify per the plan's verification section and
    report results honestly.
 
-5. **Commit, then present the work.** Commit by default. Show the user what changed and the
+6. **Commit, then present the work.** Commit by default. Show the user what changed and the
    verification results. The code repo is separate from the vault and follows its own
    commit conventions — check its `CLAUDE.md`. Push only after the user approves.
 
-6. **Close out the tracking.** Once the work has landed: `tome done <slug> --summary "..."`
+7. **Close out the tracking.** Once the work has landed: `tome done <slug> --summary "..."`
    citing the shipping commit (`--as superseded`/`--as abandoned` instead of the default
    `done`, if that's how it landed). This archives the plan (moves it to `plans/archive/`,
    regenerates its project hub and the index), checks the task's acceptance criteria,
