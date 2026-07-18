@@ -30,11 +30,13 @@ how far to take it, an ambiguity in the plan — ask.
    live plans (`plans/`, not `plans/archive/`) and confirm which one they mean.
 
 3. **Check the agent-tier label.** If the task carries an `agent:<tier>` label
-   (tier: `haiku` < `sonnet` < `opus` < `fable` — the *minimum* suggested executor),
-   compare it against the model you are running as (stated in your system context). If
-   your tier is lower, or you can't tell, **stop before starting the work**: tell the
-   user the suggested minimum and your own tier, and wait — they'll either switch agents
-   or tell you to continue anyway. No label, or you're at/above the tier: proceed.
+   (tier: `haiku` < `sonnet` < `opus` < `fable` — the suggested executor), compare it
+   against the model you are running as (stated in your system context). If your tier
+   *differs in either direction*, or you can't tell, **stop before starting the work**:
+   tell the user the suggested tier and your own, and wait for direction. Running below
+   the tier risks the work's quality; running above it wastes capability and money —
+   both are the user's call, they'll switch agents or tell you to continue. No label,
+   or an exact match: proceed.
 
 4. **Mark the work started.** `tome start <task-id-or-slug>` — accepts either, resolving
    the other half if linked (a plan without a task, or a task without a plan, is normal).

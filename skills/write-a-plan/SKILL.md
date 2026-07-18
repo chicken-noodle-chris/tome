@@ -31,10 +31,11 @@ are relative to the vault root, not the plugin root.
    optional (the plan's `status`, not a task, is the source of truth; omit `--with-task`
    for a plan with none), and its hub listing is generated automatically (the project
    folder must already exist — `tome new project <name> ...` first if not). Judge
-   `--priority`/ACs yourself when unspecified. If the work demands a stronger executor
-   than usual (greenfield architecture, precedent-setting design), add a minimum
-   agent-tier label: `-l agent:<haiku|sonnet|opus|fable>` — pickup-task halts a
-   lower-tier executor for user direction; omit when any tier can do it. Then write
+   `--priority`/ACs yourself when unspecified. If the work clearly wants a particular
+   executor tier — stronger for greenfield/precedent-setting design, weaker for
+   mechanical work not worth premium tokens — add an agent-tier label:
+   `-l agent:<haiku|sonnet|opus|fable>` — pickup-task halts a mismatched executor
+   (either direction) for user direction; omit when any tier can do it. Then write
    the plan body directly —
    timeless prose describing what the work *is*, not its current status. New work is
    `status: proposed` (or `tome set-status <slug> done` if it's *already implemented* —
