@@ -1,0 +1,27 @@
+.edit-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.6rem;
+  border: 1px solid var(--lightgray);
+  border-radius: 5px;
+  font-size: 0.85rem;
+  line-height: 1;
+  color: var(--darkgray);
+  background: var(--light);
+  text-decoration: none;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+
+  & > svg {
+    flex-shrink: 0;
+  }
+
+  &:hover {
+    background: var(--lightgray);
+    border-color: var(--gray);
+    color: var(--dark);
+  }
+}

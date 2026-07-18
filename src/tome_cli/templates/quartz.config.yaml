@@ -277,6 +277,26 @@ plugins:
       darkMode: auto
       exportPadding: 20
     order: 50
+  # tome-owned browse-view plugins (see the tome repo, quartz-plugins/).
+  - source:
+      name: edit-button
+      repo: github:chicken-noodle-chris/tome
+      subdir: quartz-plugins/edit-button
+    enabled: true
+    options:
+      label: Edit
+    layout:
+      position: beforeBody
+      priority: 25
+  - source:
+      name: board
+      repo: github:chicken-noodle-chris/tome
+      subdir: quartz-plugins/board
+    enabled: true
+    options:
+      slug: board
+      title: Board
+    order: 50
 layout:
   groups:
     toolbar:
@@ -302,3 +322,8 @@ layout:
         right: []
     canvas: {}
     bases: {}
+    board:
+      exclude:
+        - reader-mode
+      positions:
+        right: []
