@@ -50,14 +50,17 @@ CONTENT_TYPES = {
 
 def build_index(vault_root, conventions):
     """The `/index.json` contract: every wiki page as
-    {slug, title, description, type, status, project, path, url, tags,
-    updated, links}. `path` is POSIX-relative to wiki/; `url` is where the
-    raw markdown is served; `links` is the page's outbound wikilink slugs
-    (the graph the frontend resolves `[[wikilinks]]` against). Pages that
-    failed to read are skipped — the linter is the loud channel for those."""
+    {slug, title, description, type, status, project, path, url, absPath,
+    tags, updated, links}. `path` is POSIX-relative to wiki/; `url` is where
+    the raw markdown is served; `absPath` is the source file's absolute path
+    (forward-slashed, so it drops straight into a `vscode://file/` URI on
+    any OS) for the frontend's edit affordance; `links` is the page's
+    outbound wikilink slugs (the graph the frontend resolves `[[wikilinks]]`
+    against). Pages that failed to read are skipped — the linter is the
+    loud channel for those."""
     from tome_cli import cli
 
-    _, pages = cli.collect(vault_root, conventions)
+    wiki_root, pages = cli.collect(vault_root, conventions)
     out = []
     for p in pages:
         if "read_error" in p:
@@ -73,6 +76,7 @@ def build_index(vault_root, conventions):
             "project": PurePosixPath(rel).parts[0],
             "path": rel,
             "url": "/raw/" + rel,
+            "absPath": (wiki_root / rel).as_posix(),
             "tags": meta.get("tags") or [],
             "updated": meta.get("updated") or "",
             "links": list(dict.fromkeys(p.get("links", []))),

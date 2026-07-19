@@ -62,7 +62,10 @@
         <template x-if="!pageError && pageMeta">
           <article>
             <div class="fm-card">
-              <h1 x-text="pageMeta.title || currentSlug"></h1>
+              <div class="fm-head">
+                <h1 x-text="pageMeta.title || currentSlug"></h1>
+                <a class="edit-link" :href="editUrl()" title="Open in VS Code">Edit</a>
+              </div>
               <dl>
                 <template x-for="[k, v] of fmRows(pageMeta)" :key="k">
                   <div class="fm-row">

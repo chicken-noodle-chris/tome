@@ -39,6 +39,7 @@ def test_build_index_shape_and_links(make_vault, make_page):
     assert alpha["project"] == "tome"
     assert alpha["path"] == "tome/ideas/alpha.md"
     assert alpha["url"] == "/raw/tome/ideas/alpha.md"
+    assert alpha["absPath"] == (vault / "wiki" / "tome/ideas/alpha.md").as_posix()
     assert alpha["tags"] == ["tome", "idea"]
     # Outbound wikilink graph is captured verbatim — including targets with no
     # page yet, which is how the frontend knows to render them broken.

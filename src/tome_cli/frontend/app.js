@@ -37,6 +37,7 @@ function tomeApp() {
 
     // current page
     currentSlug: null,
+    currentPage: null, // the index.json entry — carries absPath for the edit link
     pageMeta: null,
     pageHtml: "",
     pageError: "",
@@ -78,6 +79,7 @@ function tomeApp() {
       const page = this.bySlug.get(slug);
       this.view = "page";
       this.currentSlug = slug;
+      this.currentPage = page || null;
       if (!page) {
         this.pageMeta = null;
         this.pageHtml = "";
@@ -118,6 +120,13 @@ function tomeApp() {
         event.preventDefault();
         this.loadPage(slug);
       }
+    },
+
+    // vscode://file/ URI for the current page's source — opens the editor
+    // straight to that markdown file. Local-only by nature (the URI does
+    // nothing on a static/remote deploy of this frontend).
+    editUrl() {
+      return this.currentPage ? `vscode://file/${this.currentPage.absPath}` : null;
     },
 
     fmRows(meta) {
