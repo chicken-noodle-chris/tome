@@ -18,31 +18,65 @@
         <button :class="{ active: view === 'page' }" @click="view = 'page'">Page</button>
         <button :class="{ active: view === 'board' }" @click="view = 'board'">Board</button>
       </nav>
-      <span class="hint" x-show="view === 'page'">Phase 1 foundation slice — one page, wikilinks live</span>
+      <span class="hint" x-show="view === 'page'" x-text="pages.length + ' pages'"></span>
     </header>
 
-    <!-- Page view -->
-    <main class="page" x-show="view === 'page'">
-      <template x-if="pageError">
-        <p class="error" x-text="pageError"></p>
-      </template>
-      <template x-if="!pageError && pageMeta">
-        <article>
-          <div class="fm-card">
-            <h1 x-text="pageMeta.title || currentSlug"></h1>
-            <dl>
-              <template x-for="[k, v] of fmRows(pageMeta)" :key="k">
-                <div class="fm-row">
-                  <dt x-text="k"></dt>
-                  <dd x-text="Array.isArray(v) ? v.join(', ') : v"></dd>
-                </div>
-              </template>
-            </dl>
-          </div>
-          <div class="markdown" x-html="pageHtml" @click="onContentClick($event)"></div>
-        </article>
-      </template>
-    </main>
+    <!-- Page view: sidebar (vault tree) + content area -->
+    <div class="layout" x-show="view === 'page'">
+      <aside class="sidebar">
+        <nav class="tree">
+          <template x-for="group of tree()" :key="group.project">
+            <section class="tree-project">
+              <button class="tree-project-head" @click="toggleProject(group.project)">
+                <span class="twisty" x-text="collapsed[group.project] ? '▸' : '▾'"></span>
+                <span x-text="group.project"></span>
+              </button>
+              <div class="tree-project-body" x-show="!collapsed[group.project]">
+                <template x-for="folder of group.folders" :key="folder.name">
+                  <div class="tree-folder">
+                    <div class="tree-folder-name" x-show="folder.name" x-text="folder.label"></div>
+                    <ul>
+                      <template x-for="pg of folder.pages" :key="pg.slug">
+                        <li>
+                          <a class="tree-link"
+                             :class="{ current: pg.slug === currentSlug }"
+                             :href="'?page=' + encodeURIComponent(pg.slug)"
+                             :title="pg.title"
+                             @click.prevent="loadPage(pg.slug)"
+                             x-text="pg.title"></a>
+                        </li>
+                      </template>
+                    </ul>
+                  </div>
+                </template>
+              </div>
+            </section>
+          </template>
+        </nav>
+      </aside>
+
+      <main class="page">
+        <template x-if="pageError">
+          <p class="error" x-text="pageError"></p>
+        </template>
+        <template x-if="!pageError && pageMeta">
+          <article>
+            <div class="fm-card">
+              <h1 x-text="pageMeta.title || currentSlug"></h1>
+              <dl>
+                <template x-for="[k, v] of fmRows(pageMeta)" :key="k">
+                  <div class="fm-row">
+                    <dt x-text="k"></dt>
+                    <dd x-text="Array.isArray(v) ? v.join(', ') : v"></dd>
+                  </div>
+                </template>
+              </dl>
+            </div>
+            <div class="markdown" x-html="pageHtml" @click="onContentClick($event)"></div>
+          </article>
+        </template>
+      </main>
+    </div>
 
     <!-- Board view (full-width) -->
     <main class="board-wrap" x-show="view === 'board'">

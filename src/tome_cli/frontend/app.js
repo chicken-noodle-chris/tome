@@ -1,9 +1,10 @@
-// tome browse frontend — Phase 1 foundation slice.
+// tome browse frontend.
 //
-// One Alpine component drives two views: a single rendered wiki page (with
-// client-side wikilink navigation) and a full-width read-only board. Data comes
-// from the two generated contracts the server emits, `/index.json` and
-// `/board.json`; raw markdown comes from `/raw/…`. No writes.
+// One Alpine component drives two views: a page view — a sidebar navigating the
+// whole vault (grouped like the wiki tree) beside a content area that renders the
+// selected page, with client-side wikilink navigation — and a full-width
+// read-only board. Data comes from the two generated contracts the server emits,
+// `/index.json` and `/board.json`; raw markdown comes from `/raw/…`. No writes.
 //
 // Alpine is the behaviour layer (vendored, no build). This module registers the
 // component on the `alpine:init` event, which Alpine dispatches when it starts —
@@ -18,6 +19,14 @@ const DEFAULT_PAGE = "custom-frontend";
 // Frontmatter keys not worth showing in the page's header card.
 const FM_HIDDEN = new Set(["title"]);
 
+// Sidebar folder ordering — mirrors how the wiki index reads a project: the hub
+// page first (folder ""), then plans (live before archived), then the rest.
+// Folders not listed sort after these, alphabetically.
+const FOLDER_ORDER = [
+  "", "plans", "plans/archive", "ideas", "ideas/archive",
+  "reports", "decisions", "notes", "sources",
+];
+
 function tomeApp() {
   return {
     view: "page",
@@ -31,6 +40,9 @@ function tomeApp() {
     pageMeta: null,
     pageHtml: "",
     pageError: "",
+
+    // sidebar
+    collapsed: {}, // project name -> true when its section is folded shut
 
     // board.json
     board: { statuses: [], defaultStatus: "", cards: [] },
@@ -112,6 +124,50 @@ function tomeApp() {
       return Object.entries(meta).filter(
         ([k, v]) => !FM_HIDDEN.has(k) && v !== "" && !(Array.isArray(v) && v.length === 0),
       );
+    },
+
+    // -- sidebar (vault tree) -------------------------------------------- //
+
+    // Group index.json pages the way the wiki lives on disk: by project
+    // (top-level folder), then by the folder path beneath it — so a page at
+    // `tome/plans/archive/foo.md` lands under project "tome", folder
+    // "plans/archive". The project hub (`tome/tome.md`) has an empty folder and
+    // sorts first. Returns [{project, folders: [{name, label, pages}]}].
+    tree() {
+      const projects = new Map();
+      for (const p of this.pages) {
+        const parts = (p.path || "").split("/");
+        const project = parts[0] || "";
+        const folder = parts.slice(1, -1).join("/");
+        if (!projects.has(project)) projects.set(project, new Map());
+        const folders = projects.get(project);
+        if (!folders.has(folder)) folders.set(folder, []);
+        folders.get(folder).push(p);
+      }
+      return [...projects.entries()]
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([project, folders]) => ({
+          project,
+          folders: [...folders.entries()]
+            .sort((a, b) => this.folderRank(a[0]) - this.folderRank(b[0]) || a[0].localeCompare(b[0]))
+            .map(([name, pages]) => ({
+              name,
+              label: name.replace("/", " / "),
+              pages: pages
+                .slice()
+                .sort((x, y) => (x.title || x.slug).localeCompare(y.title || y.slug)),
+            })),
+        }));
+    },
+
+    folderRank(name) {
+      const i = FOLDER_ORDER.indexOf(name);
+      return i === -1 ? FOLDER_ORDER.length : i;
+    },
+
+    // Reassign the object (not mutate a key) so Alpine tracks the change.
+    toggleProject(project) {
+      this.collapsed = { ...this.collapsed, [project]: !this.collapsed[project] };
     },
 
     // -- board view ------------------------------------------------------ //
