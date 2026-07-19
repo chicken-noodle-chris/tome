@@ -128,7 +128,7 @@ CLI (`tome help` for the full list with examples; write commands all take
 ```
 tome prime [project] [--full]     # session orientation; --full adds SCHEMA, index, open-task snapshot, project context
 tome start <slug-or-task-id>      # work-started ritual: statuses, log, sync, prints working context
-tome done <plan-slug> [--summary "..."]   # close-out ritual: archive plan, complete task, log, sync
+tome done <plan-slug> [--summary "..."] [--force]   # close-out ritual: archive plan, complete task, log, sync (umbrella plans stay active until the last sibling task closes)
 tome new <type> <slug> --project <name> --title "T" --desc "..." [--with-task "T"]
 tome set-status <slug> <status>   # plan/decision lifecycle; moves plans to/from plans/archive/
 tome archive <slug> [--restore]   # status-less pages (ideas, reports, ...) to/from archive/

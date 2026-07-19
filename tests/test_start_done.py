@@ -420,3 +420,109 @@ def test_done_invalid_as_status_rejected(tmp_path, run_tome, fake_backlog):
     code = run_tome("--vault", str(vault), "done", "my-plan", "--as", "not-a-status")
 
     assert code == 1
+
+
+# --------------------------------------------------------------------------- #
+# tome done — umbrella/milestone guard (one plan, many phase tasks)
+# --------------------------------------------------------------------------- #
+
+def test_done_phase_task_with_open_siblings_leaves_plan_active(
+        tmp_path, run_tome, capsys, fake_backlog, make_task):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    _make_plan(vault, run_tome, "umbrella", status="active")
+    for n in (60, 61, 62):
+        make_task(vault, n, f"Phase {n}",
+                  status="In Progress" if n == 60 else "To Do",
+                  assignee=["@me"] if n == 60 else None,
+                  refs=["wiki/proj/plans/umbrella.md"], milestone="m-1")
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "seed tasks")
+    _git(vault, "push")
+    capsys.readouterr()
+
+    code = run_tome("--vault", str(vault), "done", "task-60", "--summary", "Phase 60 done.")
+
+    assert code == 0
+    plan = vault / "wiki" / "proj" / "plans" / "umbrella.md"
+    assert plan.exists()  # NOT moved to archive/
+    assert "status: active" in plan.read_text(encoding="utf-8")
+    assert not (vault / "wiki" / "proj" / "plans" / "archive" / "umbrella.md").exists()
+    # task-60 completed; the two siblings stay open in tasks/
+    assert len(list((vault / "backlog" / "tasks").glob("*.md"))) == 2
+    completed = next((vault / "backlog" / "completed").glob("*.md"))
+    ctext = completed.read_text(encoding="utf-8")
+    assert "status: Done" in ctext
+    # ref left pointing at the still-live plan (not rewritten to an archive path)
+    assert "wiki/proj/plans/umbrella.md" in ctext
+    assert "archive/umbrella.md" not in ctext
+    out = capsys.readouterr().out
+    assert "[[umbrella]]" in out
+    assert "2 open sibling task(s) — left active" in out
+    assert "status ->" not in out  # plan branch skipped entirely
+    log_text = (vault / "wiki" / "log.md").read_text(encoding="utf-8")
+    assert "done | task-60: Phase 60 done." in log_text
+
+
+def test_done_last_sibling_archives_plan(tmp_path, run_tome, fake_backlog, make_task):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    _make_plan(vault, run_tome, "umbrella", status="active")
+    for n in (60, 61):
+        make_task(vault, n, f"Phase {n}", refs=["wiki/proj/plans/umbrella.md"])
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "seed tasks")
+    _git(vault, "push")
+
+    # First phase: a sibling remains, so the plan is left in place.
+    assert run_tome("--vault", str(vault), "done", "task-60") == 0
+    assert (vault / "wiki" / "proj" / "plans" / "umbrella.md").exists()
+
+    # Last phase: no open siblings left, so the plan archives automatically.
+    assert run_tome("--vault", str(vault), "done", "task-61") == 0
+    archived = vault / "wiki" / "proj" / "plans" / "archive" / "umbrella.md"
+    assert archived.exists()
+    assert "status: done" in archived.read_text(encoding="utf-8")
+    # The last sibling's ref is repointed at the archived path.
+    completed_texts = [p.read_text(encoding="utf-8")
+                       for p in (vault / "backlog" / "completed").glob("*.md")]
+    assert any("wiki/proj/plans/archive/umbrella.md" in t for t in completed_texts)
+
+
+def test_done_plan_slug_with_open_referrers_refused_unless_force(
+        tmp_path, run_tome, capsys, fake_backlog, make_task):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    _make_plan(vault, run_tome, "umbrella", status="active")
+    for n in (60, 61):
+        make_task(vault, n, f"Phase {n}", refs=["wiki/proj/plans/umbrella.md"])
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "seed tasks")
+    _git(vault, "push")
+    capsys.readouterr()
+
+    # Closing the plan slug while phase tasks still reference it is refused.
+    assert run_tome("--vault", str(vault), "done", "umbrella") == 1
+    assert (vault / "wiki" / "proj" / "plans" / "umbrella.md").exists()  # untouched
+    assert not (vault / "wiki" / "proj" / "plans" / "archive" / "umbrella.md").exists()
+    err = capsys.readouterr().err
+    assert "still has open task(s) referencing it" in err
+
+    # --force archives anyway (accepting the dangled refs).
+    assert run_tome("--vault", str(vault), "done", "umbrella", "--force") == 0
+    assert (vault / "wiki" / "proj" / "plans" / "archive" / "umbrella.md").exists()
+
+
+def test_done_dangling_ref_warns(tmp_path, run_tome, capsys, fake_backlog, make_task):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    make_task(vault, 9, "Dangler", refs=["wiki/proj/plans/ghost.md"])
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "seed task")
+    _git(vault, "push")
+    capsys.readouterr()
+
+    # The ref points at no collected page: plan-less operation stays legal
+    # (code 0), but a loud warning names the task and the dangling ref.
+    code = run_tome("--vault", str(vault), "done", "task-9", "--summary", "x")
+
+    assert code == 0
+    err = capsys.readouterr().err
+    assert "task-9 references wiki/proj/plans/ghost.md" in err
+    assert "matches no page" in err

@@ -1526,6 +1526,32 @@ def find_task_for_page(vault_root, page_rel_path):
     return None
 
 
+def open_tasks_referencing_plan(vault_root, plan_rel_path, exclude_path=None):
+    """Task ids ('task-<n>') of open backlog tasks (backlog/tasks/*.md) whose
+    `references:` include this plan's wiki path, excluding one task file.
+    Read-only — backlog.md owns these files, so refs are read via
+    read_page/task_references, never rewritten here. cmd_done uses this to
+    refuse archiving a plan that still has live phase-task referents (the
+    milestone/umbrella case: one plan, many phase tasks)."""
+    tasks_dir = vault_root / "backlog" / "tasks"
+    if not tasks_dir.is_dir():
+        return []
+    plan_ref = f"wiki/{plan_rel_path}".replace("\\", "/")
+    exclude = exclude_path.resolve() if exclude_path is not None else None
+    ids = []
+    for p in sorted(tasks_dir.glob("*.md")):
+        if exclude is not None and p.resolve() == exclude:
+            continue
+        try:
+            fm_lines, _ = read_page(p)
+        except VaultError:
+            continue
+        if plan_ref in [r.replace("\\", "/") for r in task_references(fm_lines)]:
+            ids.append(f"task-{task_id_from_path(p)}")
+    ids.sort(key=lambda t: int(TASK_ID_RE.match(t).group(1)))
+    return ids
+
+
 def resolve_entity(vault_root, pages, entity):
     """Resolve one `tome start`/`tome sync <entity>` argument — a page slug
     or a backlog task id — to (page-or-None, task_path-or-None). At least
@@ -1543,6 +1569,14 @@ def resolve_entity(vault_root, pages, entity):
             ref_rel = ref_m.group(1)
             page = next((p for p in pages
                          if p["rel_path"].replace("\\", "/") == ref_rel), None)
+            if page is None:
+                # A ref that points at no collected page is suspect — warn
+                # loudly (naming the task and the dangling ref) rather than
+                # silently degrading to a plan-less operation. Plan-less is
+                # legal; a ref to nothing is not, so it's a warning, not an error.
+                print(f"tome: warning: task-{m.group(1)} references "
+                      f"{ref_m.group(0)} which matches no page — "
+                      f"treating as plan-less", file=sys.stderr)
     else:
         page = find_page(pages, entity)
         task_path = find_task_for_page(vault_root, page["rel_path"])
@@ -1735,7 +1769,13 @@ def cmd_start(vault_root, conventions, args):
 def cmd_done(vault_root, conventions, args):
     """Closes a plan (by slug), a plan-linked task (by either), or a
     plan-less task (by task id only — the plan half of resolve_entity simply
-    stays None, and the plan-status branch below is skipped entirely)."""
+    stays None, and the plan-status branch below is skipped entirely).
+
+    Umbrella guard: a plan shared by several phase tasks (one milestone plan,
+    many phase tasks) is not archived while any sibling is still open. Closing
+    a phase *task* with open siblings closes only the task; closing the *plan
+    slug* with open referents is refused unless --force. The last sibling's
+    close archives the plan on the current 1:1 path."""
     wiki_root, pages = collect(vault_root, conventions)
     page, task_path = resolve_entity(vault_root, pages, args.slug)
     if page is None and task_path is None:
@@ -1749,9 +1789,44 @@ def cmd_done(vault_root, conventions, args):
     touched = []
     new_path = None
     old_rel = None
-    subject = page["slug"] if page is not None else f"task-{task_id_from_path(task_path)}"
 
-    if page is not None:
+    # Umbrella/milestone guard: a plan referenced by several phase tasks must
+    # not be archived while any of them is still open — that would physically
+    # move the plan and dangle every sibling's ref. Check open sibling tasks
+    # referencing the same plan, excluding the one being closed here.
+    named_task = TASK_ID_RE.match(args.slug) is not None
+    plan_open_referrers = (
+        open_tasks_referencing_plan(vault_root, page["rel_path"], task_path)
+        if page is not None else []
+    )
+    if page is not None and plan_open_referrers:
+        if named_task:
+            # Closing a phase task: leave the shared plan untouched, close only
+            # the task. The last sibling's `tome done` archives the plan.
+            print(f"plan [[{page['slug']}]] has {len(plan_open_referrers)} "
+                  f"open sibling task(s) — left active")
+            archive_plan = False
+        elif args.force:
+            archive_plan = True
+        else:
+            # Closing the plan slug directly with live referents: refuse — the
+            # tool never decides an umbrella is finished, it only refuses to
+            # archive a plan with provably live referents.
+            raise VaultError(
+                f"plan '{page['slug']}' still has open task(s) referencing it: "
+                f"{', '.join(plan_open_referrers)} — close them first, or pass "
+                f"--force to archive anyway (dangles their refs)")
+    else:
+        archive_plan = page is not None
+
+    if archive_plan:
+        subject = page["slug"]
+    elif task_path is not None:
+        subject = f"task-{task_id_from_path(task_path)}"
+    else:
+        subject = page["slug"]
+
+    if archive_plan:
         target_status = args.as_status or "done"
         terminal = set(conventions["plan_status"]["terminal"])
         if target_status not in terminal:
@@ -1782,7 +1857,7 @@ def cmd_done(vault_root, conventions, args):
         if args.summary:
             edit_argv += ["--final-summary", args.summary]
         ref_note = ""
-        if page is not None:
+        if archive_plan:
             refs = task_references(task_fm_lines)
             new_rel = f"wiki/{new_path.relative_to(wiki_root).as_posix()}"
             new_refs = [new_rel if r == old_rel else r for r in refs] or [new_rel]
@@ -2203,7 +2278,7 @@ if you omit -m.
       --no-sync), then print the task and full plan body as working context.
       e.g. tome start task-47
 
-  tome done <plan-slug-or-task-id> [--summary "..."] [--as STATUS] [--no-check-ac] [--no-sync]
+  tome done <plan-slug-or-task-id> [--summary "..."] [--as STATUS] [--no-check-ac] [--force] [--no-sync]
       Bundle the close-out ritual: set the plan's terminal status (default
       done; archives it, regenerates hub + index), close the linked task
       (Done, every AC checked unless --no-check-ac, --final-summary if
@@ -2211,6 +2286,10 @@ if you omit -m.
       completed), log done, sync (unless --no-sync). A task id with no
       linked plan just closes and completes the task (no plan step; --as
       is rejected).
+      Umbrella guard: when a plan is shared by several phase tasks, closing a
+      phase task with open siblings closes only the task and leaves the plan
+      active; closing the plan slug while open tasks still reference it is
+      refused unless --force. The last sibling's close archives the plan.
       e.g. tome done workflow-compression --summary "Shipped pieces 1-3."
       e.g. tome done task-57 --summary "Plan-less task, closed directly."
 
@@ -2321,6 +2400,10 @@ def build_parser():
                         "(e.g. superseded, abandoned)")
     p.add_argument("--no-check-ac", action="store_true",
                    help="don't check every acceptance criterion on the linked task")
+    p.add_argument("--force", action="store_true",
+                   help="archive a plan even while open tasks still reference it "
+                        "(dangles their refs — closing a plan slug otherwise "
+                        "refuses when it has live referents)")
     p.add_argument("--no-sync", action="store_true",
                    help="skip the sync that runs by default after this command")
 

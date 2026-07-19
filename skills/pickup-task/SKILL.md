@@ -59,4 +59,9 @@ how far to take it, an ambiguity in the plan — ask.
    `done`, if that's how it landed). This archives the plan (moves it to `plans/archive/`,
    regenerates its project hub and the index), checks the task's acceptance criteria,
    closes and completes it with the summary, re-points its `--ref` at the archived path,
-   logs `done`, and syncs — one command, no deferred sweep.
+   logs `done`, and syncs — one command, no deferred sweep. **Umbrella plans:** if the
+   task is one phase of a milestone plan shared by sibling phase tasks, `tome done
+   <task-id>` closes only that task and leaves the plan active (it prints how many open
+   siblings kept it alive); the plan archives automatically when the last sibling closes.
+   Don't try to close the shared plan slug while phases remain open — it's refused unless
+   `--force`.
