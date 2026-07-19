@@ -139,6 +139,7 @@ tome lint [--strict]
 tome sync [<slug-or-task-id>...] [-m "message"]   # pull always; scoped commit when entities given
 tome task <args...>       # passthrough to backlog.md
 tome doctor               # environment + vault health check, ok/warn/FAIL per line
+tome serve [--open]       # local no-build browse frontend (pages + read-only board); read-only
 ```
 
 Root resolution for the CLI: `--vault PATH`, else walk up from cwd looking

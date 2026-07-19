@@ -2226,6 +2226,13 @@ if you omit -m.
       one, and under any TOME_OPS_PROFILE (help/doctor always run).
       e.g. tome doctor
 
+  tome serve [--host H] [--port N] [--open]
+      Serve the no-build browse frontend locally (stdlib http.server): the
+      frontend's static files, the vault's raw .md under /raw/, and two
+      generated JSON contracts (/index.json, /board.json) rebuilt per
+      request. Read-only — no write endpoints.
+      e.g. tome serve --open
+
 Root resolution: --vault PATH, else walk up from cwd
 looking for conventions.toml, else $VAULT_ROOT.
 
@@ -2408,6 +2415,15 @@ def build_parser():
     sub.add_parser("doctor", help="diagnose the environment and vault",
                     epilog="e.g. tome doctor")
 
+    p = sub.add_parser("serve", help="serve the browse frontend locally",
+                        epilog="e.g. tome serve --open")
+    p.add_argument("--host", default="127.0.0.1",
+                   help="bind address (default: 127.0.0.1)")
+    p.add_argument("--port", type=int, default=8765,
+                   help="port (default: 8765)")
+    p.add_argument("--open", action="store_true",
+                   help="open the browser once the server is up")
+
     return parser
 
 
@@ -2473,6 +2489,9 @@ def main():
             return cmd_inbox(vault_root, conventions, args)
         if args.command == "index" and args.index_command == "rebuild":
             return cmd_index_rebuild(vault_root, conventions, args)
+        if args.command == "serve":
+            from tome_cli import serve
+            return serve.cmd_serve(vault_root, conventions, args)
         parser.error(f"unknown command {args.command}")
     except VaultError as e:
         print(f"tome: error: {e}", file=sys.stderr)

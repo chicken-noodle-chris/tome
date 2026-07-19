@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>tome</title>
+    <link rel="stylesheet" href="/app/styles.css" />
+    <!-- app.js (an ES module, implicitly deferred) registers the Alpine
+         component on `alpine:init`; it appears before alpine.min.js so it runs
+         first and its listener is in place when Alpine starts. -->
+    <script type="module" src="/app/app.js"></script>
+    <script defer src="/app/vendor/alpine.min.js"></script>
+  </head>
+  <body x-data="tomeApp" x-cloak>
+    <header class="topbar">
+      <span class="brand">tome</span>
+      <nav class="views">
+        <button :class="{ active: view === 'page' }" @click="view = 'page'">Page</button>
+        <button :class="{ active: view === 'board' }" @click="view = 'board'">Board</button>
+      </nav>
+      <span class="hint" x-show="view === 'page'">Phase 1 foundation slice — one page, wikilinks live</span>
+    </header>
+
+    <!-- Page view -->
+    <main class="page" x-show="view === 'page'">
+      <template x-if="pageError">
+        <p class="error" x-text="pageError"></p>
+      </template>
+      <template x-if="!pageError && pageMeta">
+        <article>
+          <div class="fm-card">
+            <h1 x-text="pageMeta.title || currentSlug"></h1>
+            <dl>
+              <template x-for="[k, v] of fmRows(pageMeta)" :key="k">
+                <div class="fm-row">
+                  <dt x-text="k"></dt>
+                  <dd x-text="Array.isArray(v) ? v.join(', ') : v"></dd>
+                </div>
+              </template>
+            </dl>
+          </div>
+          <div class="markdown" x-html="pageHtml" @click="onContentClick($event)"></div>
+        </article>
+      </template>
+    </main>
+
+    <!-- Board view (full-width) -->
+    <main class="board-wrap" x-show="view === 'board'">
+      <div class="board-toolbar">
+        <label>
+          Project
+          <select x-model="projectFilter">
+            <option value="__all__">All projects</option>
+            <template x-for="p of projects()" :key="p">
+              <option :value="p" x-text="p"></option>
+            </template>
+          </select>
+        </label>
+        <span class="total" x-text="visibleCards().length + ' tasks'"></span>
+      </div>
+      <div class="board-columns">
+        <template x-for="status of columns()" :key="status">
+          <section class="board-column">
+            <div class="col-head">
+              <h2 x-text="status"></h2>
+              <span class="count" x-text="cardsFor(status).length"></span>
+            </div>
+            <div class="col-body">
+              <template x-for="card of cardsFor(status)" :key="card.id">
+                <article class="card">
+                  <div class="card-meta">
+                    <span class="card-id" x-text="card.rawId"></span>
+                    <span class="card-prio" :data-prio="card.priority" x-show="card.priority" x-text="card.priority"></span>
+                  </div>
+                  <div class="card-title" x-text="card.title"></div>
+                  <div class="card-chips">
+                    <span class="chip" x-show="card.project" x-text="card.project"></span>
+                    <span class="chip chip--milestone" x-show="card.milestone" x-text="card.milestone"></span>
+                  </div>
+                </article>
+              </template>
+            </div>
+          </section>
+        </template>
+      </div>
+    </main>
+  </body>
+</html>
