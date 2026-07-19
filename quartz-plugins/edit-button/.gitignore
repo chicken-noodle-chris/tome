@@ -1,5 +1,0 @@
-node_modules/
-*.tsbuildinfo
-.DS_Store
-# dist/ is intentionally committed — Quartz installs the pre-built output
-# (hasPrebuiltDist) so a fresh vault never has to compile the plugin.

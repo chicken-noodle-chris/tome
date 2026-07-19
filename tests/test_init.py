@@ -11,7 +11,6 @@ def test_init_scaffolds_expected_layout(tmp_path, run_tome):
 
     for rel in (
         "conventions.toml", ".gitignore", "CLAUDE.md",
-        "quartz.config.yaml", "quartz.lock.json",
         "wiki/SCHEMA.md", "wiki/index.md", "wiki/log.md",
         ".claude/settings.json",
     ):

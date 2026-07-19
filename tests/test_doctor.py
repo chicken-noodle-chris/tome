@@ -53,7 +53,7 @@ def test_healthy_vault_all_ok(tmp_path, run_tome, capsys):
     lines = [line for line in out.splitlines() if line.strip()]
     check_lines, summary = lines[:-1], lines[-1]
     assert code == 0
-    # every check is ok except quartz (a fresh vault has none bootstrapped, info)
+    # every check is ok except ops profile (unset by default, info)
     assert all(line.startswith(("ok", "info")) for line in check_lines)
     assert "0 FAIL" in summary
     assert "0 warn" in summary

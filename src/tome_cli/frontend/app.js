@@ -186,7 +186,7 @@ function tomeApp() {
     },
 
     // Configured statuses first, then any status present on a card but not
-    // configured (mirrors the Quartz board's column ordering).
+    // configured.
     columns() {
       const known = new Set(this.board.statuses);
       const extras = [];

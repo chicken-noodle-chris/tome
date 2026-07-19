@@ -16,7 +16,6 @@ Repository = "https://github.com/chicken-noodle-chris/tome"
 
 [project.scripts]
 tome = "tome_cli.cli:main"
-tome-setup-quartz = "tome_cli.quartz_setup:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tome_cli"]

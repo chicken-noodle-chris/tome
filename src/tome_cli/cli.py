@@ -47,8 +47,7 @@ FRONTMATTER_RE = tome_lint.FRONTMATTER_RE
 SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 TASK_ID_RE = re.compile(r"^(?:task-)?(\d+)$", re.IGNORECASE)
 
-# `tome task` passthrough version, pinned like the repo's other dependencies
-# (Quartz is SHA-pinned, quartz.lock.json locks its plugins) rather than
+# `tome task` passthrough version, pinned deliberately rather than
 # floating on @latest. Bump deliberately: check `npm view backlog.md
 # version`, update this constant, run `tome task task list --plain` against
 # a real vault to confirm the new release still behaves, then commit.
@@ -1289,8 +1288,6 @@ def cmd_init(args):
         target / "conventions.toml",
         target / ".gitignore",
         target / "CLAUDE.md",
-        target / "quartz.config.yaml",
-        target / "quartz.lock.json",
         target / "wiki" / "SCHEMA.md",
         target / "wiki" / "index.md",
         target / "wiki" / "log.md",
@@ -1314,8 +1311,6 @@ def cmd_init(args):
     _copy_template("SCHEMA.md", target / "wiki" / "SCHEMA.md")
     _copy_template("CLAUDE.md", target / "CLAUDE.md")
     _copy_template("vault.gitignore", target / ".gitignore")
-    _copy_template("quartz.config.yaml", target / "quartz.config.yaml")
-    _copy_template("quartz.lock.json", target / "quartz.lock.json")
     _copy_template("claude-settings.json", target / ".claude" / "settings.json")
 
     conventions = load_conventions(target)
@@ -1330,11 +1325,7 @@ def cmd_init(args):
     print(f"Initialized a new vault at {target}")
     print("Next steps:")
     print('  - author a first project page: tome new project <name> --title "T" --desc "..."')
-    if shutil.which("tome-setup-quartz"):
-        print("  - bootstrap the browse view: tome-setup-quartz")
-    else:
-        quartz_setup = Path(__file__).resolve().parent / "quartz_setup.py"
-        print(f'  - bootstrap the browse view: python "{quartz_setup}"')
+    print("  - browse it: tome serve --open")
     print('  - set up a remote, then: tome sync -m "Initial vault"')
     return 0
 
@@ -1970,7 +1961,7 @@ def check_node(profile=None):
     missing = [n for n in names if not shutil.which(n)]
     if missing:
         return Check("node/npm/npx", DOC_WARN, f"missing: {', '.join(missing)}",
-                      "install Node.js (Quartz browse view and backlog.md need it)")
+                      "install Node.js (backlog.md needs it)")
     versions = []
     for n in names:
         proc = subprocess.run([n, "--version"], capture_output=True, text=True,
@@ -2099,14 +2090,6 @@ def check_plugin_freshness():
                   "claude plugin update tome@tome")
 
 
-def check_quartz(vault_root):
-    quartz_dir = vault_root / "quartz"
-    bootstrapped = (quartz_dir / ".git").exists() and (quartz_dir / "node_modules").exists()
-    if bootstrapped:
-        return Check("quartz", DOC_OK, "bootstrapped")
-    return Check("quartz", DOC_INFO, "not bootstrapped — run tome-setup-quartz")
-
-
 def render_check_line(c):
     line = f"{c.status:<4} {c.name}: {c.detail}"
     if c.status != DOC_OK and c.remedy:
@@ -2160,11 +2143,6 @@ def cmd_doctor(args):
         checks.append(_safe_check("git state", check_git_state, vault_root))
     else:
         checks.append(Check("git state", DOC_INFO, "no vault found — skipped"))
-
-    if vault_root is not None:
-        checks.append(_safe_check("quartz", check_quartz, vault_root))
-    else:
-        checks.append(Check("quartz", DOC_INFO, "no vault found — skipped"))
 
     for c in checks:
         print(render_check_line(c))
@@ -2300,17 +2278,19 @@ if you omit -m.
 
   tome doctor
       Diagnose python/git/node, vault resolution, conventions, vault shape,
-      lint, git state, quartz, and the ops profile. ok/warn/FAIL per line;
+      lint, git state, and the ops profile. ok/warn/FAIL per line;
       exit 1 on any FAIL. Runs to completion even with no vault or a broken
       one, and under any TOME_OPS_PROFILE (help/doctor always run).
       e.g. tome doctor
 
-  tome serve [--host H] [--port N] [--open]
+  tome serve [--host H] [--port N] [--open] [--export DIR]
       Serve the no-build browse frontend locally (stdlib http.server): the
       frontend's static files, the vault's raw .md under /raw/, and two
       generated JSON contracts (/index.json, /board.json) rebuilt per
-      request. Read-only — no write endpoints.
-      e.g. tome serve --open
+      request. Read-only — no write endpoints. --export DIR writes the same
+      frontend plus a frozen index.json/board.json/raw/*.md snapshot to DIR
+      instead of serving — a static deploy for any static host.
+      e.g. tome serve --open, or tome serve --export ./public
 
 Root resolution: --vault PATH, else walk up from cwd
 looking for conventions.toml, else $VAULT_ROOT.
@@ -2499,13 +2479,15 @@ def build_parser():
                     epilog="e.g. tome doctor")
 
     p = sub.add_parser("serve", help="serve the browse frontend locally",
-                        epilog="e.g. tome serve --open")
+                        epilog='e.g. tome serve --open, or tome serve --export ./public')
     p.add_argument("--host", default="127.0.0.1",
                    help="bind address (default: 127.0.0.1)")
     p.add_argument("--port", type=int, default=8765,
                    help="port (default: 8765)")
     p.add_argument("--open", action="store_true",
                    help="open the browser once the server is up")
+    p.add_argument("--export", metavar="DIR",
+                   help="write a static, read-only snapshot to DIR instead of serving")
 
     return parser
 

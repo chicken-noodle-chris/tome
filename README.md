@@ -4,7 +4,8 @@ A commonplace book for you and your agents — where your project lore lives.
 
 `tome` is the tooling: a small stdlib CLI, six Claude Code skills, a
 SessionStart vault-context hook and a scoped Stop sync-reminder hook, and a
-Quartz browse-view bootstrap, all shipped as one Claude Code plugin. A
+no-build browse frontend (`tome serve`), all shipped as one Claude Code
+plugin. A
 **vault** is the content: your own private repo of
 `wiki/`, `backlog/`, `raw/`, and `inbox/`, following the conventions this
 plugin enforces. One copy of the tooling; as many vaults as you want.
@@ -108,14 +109,12 @@ tome init
 ```
 
 This scaffolds `conventions.toml`, `wiki/SCHEMA.md`, an empty `wiki/index.md`,
-`wiki/log.md`, `inbox/`, `raw/assets/`, a vault `.gitignore`, a `CLAUDE.md`
-primer, and default Quartz config + lockfile. It runs `git init` if the
-target isn't already a repo, and fails loudly rather than merging into a
-non-empty target.
+`wiki/log.md`, `inbox/`, `raw/assets/`, a vault `.gitignore`, and a
+`CLAUDE.md` primer. It runs `git init` if the target isn't already a repo,
+and fails loudly rather than merging into a non-empty target.
 
-Next steps it'll print: author a first project page, bootstrap the browse
-view (init prints the exact command with the plugin's real path), set up a remote, and
-`tome sync`.
+Next steps it'll print: author a first project page, browse it (`tome serve
+--open`), set up a remote, and `tome sync`.
 
 ## Everyday commands
 
@@ -139,7 +138,7 @@ tome lint [--strict]
 tome sync [<slug-or-task-id>...] [-m "message"]   # pull always; scoped commit when entities given
 tome task <args...>       # passthrough to backlog.md
 tome doctor               # environment + vault health check, ok/warn/FAIL per line
-tome serve [--open]       # local no-build browse frontend (pages + read-only board); read-only
+tome serve [--open] [--export DIR]   # local no-build browse frontend (pages + read-only board); --export writes a static read-only snapshot instead of serving
 ```
 
 Root resolution for the CLI: `--vault PATH`, else walk up from cwd looking
@@ -226,22 +225,16 @@ tome doctor
 
 ## Browse view
 
-`quartz/` is gitignored inside a vault — a derived build tree, not vault
-content. Bootstrap it once per vault:
+`tome serve [--open]` runs a stdlib `http.server` (no build step, no node
+dependency) that serves the frontend's static files, the vault's raw `.md`
+under `/raw/`, and two generated JSON contracts — `/index.json` (the wiki
+catalogue + wikilink graph) and `/board.json` (the Backlog.md kanban) —
+rebuilt fresh on every request. Read-only: no write endpoints.
 
-```
-python <path-to-this-repo>/scripts/setup_quartz.py
-cd quartz && npx quartz build --serve
-```
-
-(`tome init` prints the exact next command: `tome-setup-quartz` if you have
-the human CLI installed, otherwise the real script path. Agents reach it via
-`$CLAUDE_PLUGIN_ROOT`.)
-
-The first command clones [Quartz](https://github.com/jackyzha0/quartz)
-(pinned to a known-good commit), wires the vault's `wiki/` in as its content
-source, and installs the plugins pinned in the vault's `quartz.lock.json`;
-safe to re-run any time. The second serves the site locally.
+`tome serve --export DIR` writes the same frontend plus a point-in-time
+snapshot of `index.json`, `board.json`, and the vault's raw markdown to
+`DIR` instead of starting a server — a static, read-only deploy that any
+static host (GitHub Pages, `python -m http.server`, etc.) can serve as-is.
 
 ## Human CLI access (optional)
 
@@ -257,8 +250,8 @@ uv tool install git+https://github.com/chicken-noodle-chris/tome.git
 ```
 
 (`pipx install git+https://github.com/chicken-noodle-chris/tome.git` works
-too, if you prefer pipx.) This puts `tome` and `tome-setup-quartz` on PATH
-with the right interpreter baked in. Working from a local clone instead?
+too, if you prefer pipx.) This puts `tome` on PATH with the right
+interpreter baked in. Working from a local clone instead?
 `uv tool install ~/Development/tome` installs from the path directly — that's
 also how to pick up local changes before pushing.
 
@@ -266,8 +259,8 @@ also how to pick up local changes before pushing.
 
 ```
 tome/
-├─ src/tome_cli/      the package: cli.py, lint.py, search.py, quartz_setup.py, templates/
-├─ scripts/           thin shims (tome.py, tome_lint.py, wiki_search.py, setup_quartz.py) —
+├─ src/tome_cli/      the package: cli.py, lint.py, search.py, serve.py, frontend/, templates/
+├─ scripts/           thin shims (tome.py, tome_lint.py, wiki_search.py) —
 │                     the plugin's actual invocation path via $CLAUDE_PLUGIN_ROOT
 ├─ skills/            pickup-task, write-a-plan, retrospect, ingest, query, capture
 ├─ hooks/             SessionStart vault-context + Stop sync-reminder hooks

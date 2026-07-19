@@ -17,7 +17,6 @@ SCRIPTS_DIR = REPO_ROOT / "scripts"
     ("tome.py", "help"),
     ("tome_lint.py", "--help"),
     ("wiki_search.py", "--help"),
-    ("setup_quartz.py", "--help"),
 ])
 def test_shim_runs(script, arg):
     result = subprocess.run(

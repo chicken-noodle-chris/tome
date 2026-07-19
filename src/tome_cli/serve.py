@@ -16,8 +16,9 @@ tome_cli.serve — the local browse host for the no-build frontend.
 
 The JSON *schemas* are the deliberate, permanent part of this slice; the
 server internals and the frontend are rough by design and hardened in place by
-later phases. build_index()/build_board() return plain dicts so a future
-static-export path can write them to disk unchanged.
+later phases. build_index()/build_board() return plain dicts so the
+static-export path (`--export`, see export_static() below) can write them to
+disk unchanged.
 
 stdlib only, imports cli lazily to avoid an import cycle (cli dispatches here).
 """
@@ -27,7 +28,7 @@ import json
 import re
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from urllib.parse import unquote, urlparse
 
 FRONTEND_DIR = importlib.resources.files("tome_cli") / "frontend"
@@ -112,10 +113,9 @@ def _read_board_config(backlog_dir):
 
 
 def build_board(vault_root, conventions):
-    """The `/board.json` contract: the kanban read from backlog/tasks/*.md,
-    mirroring the field set the Quartz board plugin's Task model exposes so
-    the eventual full board reuses this shape. Reuses cli's existing task
-    frontmatter readers rather than adding another hand-rolled parser."""
+    """The `/board.json` contract: the kanban read from backlog/tasks/*.md.
+    Reuses cli's existing task frontmatter readers rather than adding
+    another hand-rolled parser."""
     from tome_cli import cli
 
     backlog_dir = vault_root / "backlog"
@@ -246,10 +246,69 @@ def _content_type(name):
 
 
 # --------------------------------------------------------------------------- #
+# Static export — the same frontend and contracts, written to disk once for
+# any static host to serve (no python process, no write endpoints, ever).
+# --------------------------------------------------------------------------- #
+
+def _copy_tree(src, dest):
+    """Recursively copy an importlib.resources Traversable (src) into a real
+    filesystem directory (dest) — plain Path.iterdir()/shutil can't be
+    trusted on a Traversable (e.g. inside a zipped wheel)."""
+    dest.mkdir(parents=True, exist_ok=True)
+    for item in src.iterdir():
+        if item.is_dir():
+            _copy_tree(item, dest / item.name)
+        else:
+            (dest / item.name).write_bytes(item.read_bytes())
+
+
+def export_static(vault_root, conventions, out_dir):
+    """Write the frontend + a point-in-time index.json/board.json/raw/*.md
+    snapshot to out_dir. The frontend's fetches are all root-absolute
+    (/index.json, /board.json, /raw/…, /app/…), so this layout is servable
+    by any static host exactly like `tome serve`'s routes, just frozen."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    (out_dir / "index.html").write_bytes((FRONTEND_DIR / "index.html").read_bytes())
+    app_dir = out_dir / "app"
+    app_dir.mkdir(exist_ok=True)
+    for item in FRONTEND_DIR.iterdir():
+        if item.name == "index.html":
+            continue
+        if item.is_dir():
+            _copy_tree(item, app_dir / item.name)
+        else:
+            (app_dir / item.name).write_bytes(item.read_bytes())
+
+    (out_dir / "index.json").write_text(
+        json.dumps(build_index(vault_root, conventions), ensure_ascii=False, indent=2),
+        encoding="utf-8")
+    (out_dir / "board.json").write_text(
+        json.dumps(build_board(vault_root, conventions), ensure_ascii=False, indent=2),
+        encoding="utf-8")
+
+    wiki_root = (vault_root / "wiki").resolve()
+    raw_dir = out_dir / "raw"
+    for src in wiki_root.rglob("*.md"):
+        dest = raw_dir / src.relative_to(wiki_root)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(src.read_bytes())
+
+    return out_dir
+
+
+# --------------------------------------------------------------------------- #
 # Command entry point (dispatched from cli.main()).
 # --------------------------------------------------------------------------- #
 
 def cmd_serve(vault_root, conventions, args):
+    if getattr(args, "export", None):
+        out_dir = export_static(vault_root, conventions, Path(args.export).resolve())
+        print(f"tome serve --export: wrote a static snapshot to {out_dir}")
+        print(f"  serve it read-only with any static host, e.g.: "
+              f"python -m http.server --directory \"{out_dir}\" 8000")
+        return 0
+
     # BaseHTTPRequestHandler is instantiated per-request, so stash the vault
     # context on the class rather than trying to thread it through __init__.
     TomeHandler.vault_root = vault_root
