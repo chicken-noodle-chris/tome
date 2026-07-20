@@ -229,12 +229,32 @@ tome doctor
 dependency) that serves the frontend's static files, the vault's raw `.md`
 under `/raw/`, and two generated JSON contracts — `/index.json` (the wiki
 catalogue + wikilink graph) and `/board.json` (the Backlog.md kanban) —
-rebuilt fresh on every request. Read-only: no write endpoints.
+rebuilt fresh on every request. One write route, `POST
+/api/task/<id>/status`, moves a board card by shelling out to backlog.md
+(never a direct YAML write) — drag a card to a new column in the board view
+to use it.
 
 `tome serve --export DIR` writes the same frontend plus a point-in-time
 snapshot of `index.json`, `board.json`, and the vault's raw markdown to
-`DIR` instead of starting a server — a static, read-only deploy that any
-static host (GitHub Pages, `python -m http.server`, etc.) can serve as-is.
+`DIR` instead of starting a server — a static, read-only deploy (no write
+route; `board.json`'s `writable` is `false`, so the frontend drops the drag
+affordance) that any static host (GitHub Pages, `python -m http.server`,
+etc.) can serve as-is.
+
+### Desktop launcher
+
+Installing the package (`uv tool install`/`pip install`, see below) also
+installs `tome-serve` as a console-less GUI launcher — on Windows this is a
+`pythonw`-backed `.exe` (no terminal window), via the standard
+`project.gui-scripts` mechanism. Pin a shortcut to it (`where tome-serve` to
+find the installed path) for a double-click "open my vault" launcher: it
+opens the browser itself and auto-exits after 30 idle minutes, since a
+console-less process has no window to close by hand. It takes no arguments —
+vault resolution is the normal walk-up-from-cwd/`VAULT_ROOT` rule, so either
+set the shortcut's "Start in" folder to the vault root or set `VAULT_ROOT`
+permanently. `tome serve` itself defaults `--idle-timeout` to `0`
+(disabled) — pass it explicitly if you want a terminal-launched server to
+auto-exit too.
 
 ## Human CLI access (optional)
 

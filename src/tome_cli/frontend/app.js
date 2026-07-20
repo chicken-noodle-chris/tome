@@ -3,8 +3,11 @@
 // One Alpine component drives two views: a page view — a sidebar navigating the
 // whole vault (grouped like the wiki tree) beside a content area that renders the
 // selected page, with client-side wikilink navigation — and a full-width
-// read-only board. Data comes from the two generated contracts the server emits,
-// `/index.json` and `/board.json`; raw markdown comes from `/raw/…`. No writes.
+// board. Data comes from the two generated contracts the server emits,
+// `/index.json` and `/board.json`; raw markdown comes from `/raw/…`. The board
+// supports drag-to-move when `board.writable` is true (a live `tome serve`),
+// POSTing to `/api/task/<id>/status` — absent on a static export, where the
+// board stays read-only. No other writes exist.
 //
 // Alpine is the behaviour layer (vendored, no build). This module registers the
 // component on the `alpine:init` event, which Alpine dispatches when it starts —
@@ -46,8 +49,11 @@ function tomeApp() {
     collapsed: {}, // project name -> true when its section is folded shut
 
     // board.json
-    board: { statuses: [], defaultStatus: "", cards: [] },
+    board: { statuses: [], defaultStatus: "", cards: [], writable: false },
     projectFilter: "__all__",
+    draggingId: null, // card.id currently being dragged
+    movingCardId: null, // card.id awaiting its POST response
+    boardError: "",
 
     async init() {
       try {
@@ -206,6 +212,58 @@ function tomeApp() {
       return this.visibleCards()
         .filter((c) => c.status === status)
         .sort((a, b) => (a.ordinal ?? Infinity) - (b.ordinal ?? Infinity));
+    },
+
+    // -- board interaction (write path) ----------------------------------- //
+    // Drag-to-move POSTs to /api/task/<id>/status, which shells out to
+    // backlog.md server-side — this module never edits task YAML itself.
+    // Absent on a static export (board.writable is false there), so the
+    // drag handlers no-op and the UI drops the drag affordance entirely.
+
+    onDragStart(event, card) {
+      if (!this.board.writable) return;
+      this.draggingId = card.id;
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", card.id);
+    },
+
+    onDragEnd() {
+      this.draggingId = null;
+    },
+
+    onDrop(event, status) {
+      if (!this.board.writable) return;
+      const cardId = event.dataTransfer.getData("text/plain") || this.draggingId;
+      this.draggingId = null;
+      const card = this.board.cards.find((c) => c.id === cardId);
+      if (card && card.status !== status) this.moveCard(card, status);
+    },
+
+    async moveCard(card, status) {
+      const prevBoard = this.board;
+      // Reassign (not mutate a card in place) so Alpine tracks the change —
+      // same convention as toggleProject() above.
+      this.board = {
+        ...this.board,
+        cards: this.board.cards.map((c) => (c.id === card.id ? { ...c, status } : c)),
+      };
+      this.movingCardId = card.id;
+      this.boardError = "";
+      try {
+        const res = await fetch(`/api/task/${encodeURIComponent(card.id)}/status`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        this.board = data; // authoritative post-move board, straight from the server
+      } catch (e) {
+        this.board = prevBoard;
+        this.boardError = `Move failed: ${e.message}`;
+      } finally {
+        this.movingCardId = null;
+      }
     },
   };
 }

@@ -2283,13 +2283,18 @@ if you omit -m.
       one, and under any TOME_OPS_PROFILE (help/doctor always run).
       e.g. tome doctor
 
-  tome serve [--host H] [--port N] [--open] [--export DIR]
+  tome serve [--host H] [--port N] [--open] [--export DIR] [--idle-timeout MIN]
       Serve the no-build browse frontend locally (stdlib http.server): the
       frontend's static files, the vault's raw .md under /raw/, and two
       generated JSON contracts (/index.json, /board.json) rebuilt per
-      request. Read-only — no write endpoints. --export DIR writes the same
-      frontend plus a frozen index.json/board.json/raw/*.md snapshot to DIR
-      instead of serving — a static deploy for any static host.
+      request. One write route, POST /api/task/<id>/status, moves a board
+      card by shelling out to backlog.md — never a direct YAML write.
+      --export DIR writes the same frontend plus a frozen
+      index.json/board.json/raw/*.md snapshot to DIR instead of serving — a
+      read-only static deploy (no write route, board.json.writable: false)
+      for any static host. --idle-timeout MIN auto-exits after MIN idle
+      minutes (0 default disables it; the pythonw desktop launcher installed
+      as project.gui-scripts uses 30, since it has no console to Ctrl-C).
       e.g. tome serve --open, or tome serve --export ./public
 
 Root resolution: --vault PATH, else walk up from cwd
@@ -2488,6 +2493,9 @@ def build_parser():
                    help="open the browser once the server is up")
     p.add_argument("--export", metavar="DIR",
                    help="write a static, read-only snapshot to DIR instead of serving")
+    p.add_argument("--idle-timeout", type=int, default=0, metavar="MIN",
+                   help="auto-exit after MIN idle minutes, 0 disables (default: 0; "
+                        "the pythonw launcher installed by project.gui-scripts uses 30)")
 
     return parser
 

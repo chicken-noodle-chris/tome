@@ -93,8 +93,10 @@
             </template>
           </select>
         </label>
+        <span class="chip chip--readonly" x-show="!board.writable">read-only</span>
         <span class="total" x-text="visibleCards().length + ' tasks'"></span>
       </div>
+      <p class="board-error" x-show="boardError" x-text="boardError"></p>
       <div class="board-columns">
         <template x-for="status of columns()" :key="status">
           <section class="board-column">
@@ -102,9 +104,15 @@
               <h2 x-text="status"></h2>
               <span class="count" x-text="cardsFor(status).length"></span>
             </div>
-            <div class="col-body">
+            <div class="col-body"
+                 @dragover.prevent
+                 @drop.prevent="onDrop($event, status)">
               <template x-for="card of cardsFor(status)" :key="card.id">
-                <article class="card">
+                <article class="card"
+                         :draggable="board.writable"
+                         :class="{ dragging: draggingId === card.id, moving: movingCardId === card.id }"
+                         @dragstart="onDragStart($event, card)"
+                         @dragend="onDragEnd">
                   <div class="card-meta">
                     <span class="card-id" x-text="card.rawId"></span>
                     <span class="card-prio" :data-prio="card.priority" x-show="card.priority" x-text="card.priority"></span>

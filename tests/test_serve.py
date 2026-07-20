@@ -93,3 +93,141 @@ def test_build_board_empty_without_backlog(make_vault):
     vault = make_vault()
     board = serve.build_board(vault, _conv(vault))
     assert board == {"statuses": [], "defaultStatus": "", "cards": []}
+
+
+# --------------------------------------------------------------------------- #
+# apply_task_status — the one write `tome serve` accepts, always shelled
+# through backlog.md ([[kanban-render-side]]). Tests fake out
+# tome.run_backlog rather than shelling out to the real npx CLI, same
+# pattern as test_start_done.py's fake_backlog.
+# --------------------------------------------------------------------------- #
+
+class _Result:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def _fake_run_backlog(monkeypatch, result=None):
+    calls = []
+
+    def _run(vault_root, argv, capture=False):
+        calls.append(list(argv))
+        return result or _Result()
+
+    monkeypatch.setattr(tome, "run_backlog", _run)
+    return calls
+
+
+def test_apply_task_status_strips_task_prefix(monkeypatch, make_vault):
+    vault = make_vault()
+    calls = _fake_run_backlog(monkeypatch)
+
+    ok, message = serve.apply_task_status(vault, "TASK-64", "In Progress")
+
+    assert (ok, message) == (True, "")
+    assert calls == [["task", "edit", "64", "-s", "In Progress"]]
+
+
+def test_apply_task_status_accepts_lowercase_id(monkeypatch, make_vault):
+    vault = make_vault()
+    calls = _fake_run_backlog(monkeypatch)
+
+    ok, _ = serve.apply_task_status(vault, "task-7", "Done")
+
+    assert ok is True
+    assert calls == [["task", "edit", "7", "-s", "Done"]]
+
+
+def test_apply_task_status_rejects_non_numeric_id(monkeypatch, make_vault):
+    vault = make_vault()
+    calls = _fake_run_backlog(monkeypatch)
+
+    ok, message = serve.apply_task_status(vault, "not-a-task", "Done")
+
+    assert ok is False
+    assert "bad task id" in message
+    assert calls == []  # never shells out for an invalid id
+
+
+def test_apply_task_status_rejects_empty_status(monkeypatch, make_vault):
+    vault = make_vault()
+    calls = _fake_run_backlog(monkeypatch)
+
+    ok, message = serve.apply_task_status(vault, "task-1", "")
+
+    assert ok is False
+    assert "status is required" in message
+    assert calls == []
+
+
+def test_apply_task_status_surfaces_backlog_failure(monkeypatch, make_vault):
+    vault = make_vault()
+    _fake_run_backlog(monkeypatch, _Result(returncode=1, stderr="no such task"))
+
+    ok, message = serve.apply_task_status(vault, "task-1", "Done")
+
+    assert ok is False
+    assert message == "no such task"
+
+
+# --------------------------------------------------------------------------- #
+# writable flag — live serve vs. static export, layered onto build_board()
+# without changing its own pure-function contract (tested above).
+# --------------------------------------------------------------------------- #
+
+def test_board_with_writable_true_for_live_serve(make_vault):
+    vault = make_vault()
+    board = serve._board_with_writable(vault, _conv(vault), True)
+    assert board["writable"] is True
+    assert board["statuses"] == []  # build_board's own shape still comes through
+
+
+def test_export_static_board_json_is_read_only(tmp_path, make_vault):
+    import json
+
+    vault = make_vault()
+    out_dir = tmp_path / "export"
+    serve.export_static(vault, _conv(vault), out_dir)
+
+    board = json.loads((out_dir / "board.json").read_text(encoding="utf-8"))
+    assert board["writable"] is False
+
+
+# --------------------------------------------------------------------------- #
+# launch_gui — the pythonw/gui-scripts desktop launcher. Tests the wiring
+# (vault resolution, args passed to cmd_serve) without starting a real
+# server or opening a browser.
+# --------------------------------------------------------------------------- #
+
+def test_launch_gui_resolves_vault_and_opens_with_idle_timeout(monkeypatch, make_vault):
+    vault = make_vault()
+    monkeypatch.chdir(vault)
+
+    captured = {}
+
+    def fake_cmd_serve(vault_root, conventions, args):
+        captured["vault_root"] = vault_root
+        captured["args"] = args
+        return 0
+
+    monkeypatch.setattr(serve, "cmd_serve", fake_cmd_serve)
+
+    code = serve.launch_gui()
+
+    assert code == 0
+    assert captured["vault_root"] == vault
+    assert captured["args"].open is True
+    assert captured["args"].idle_timeout == 30
+    assert captured["args"].export is None
+
+
+def test_launch_gui_reports_failure_without_crashing(monkeypatch, tmp_path):
+    # No conventions.toml anywhere up from here and no VAULT_ROOT set.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("VAULT_ROOT", raising=False)
+
+    code = serve.launch_gui()
+
+    assert code == 1

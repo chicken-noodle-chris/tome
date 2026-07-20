@@ -2,9 +2,7 @@
 """
 tome_cli.serve — the local browse host for the no-build frontend.
 
-`tome serve` is a stdlib http.server that does three things and nothing more
-(no write endpoints — writes land in a later phase, and stay CLI-shelled per
-[[kanban-render-side]]):
+`tome serve` is a stdlib http.server that does four things and nothing more:
 
   * serves the frontend's static files (ES modules, CSS, vendored libs) out of
     the package's `frontend/` directory — the permanent home for that code;
@@ -12,20 +10,30 @@ tome_cli.serve — the local browse host for the no-build frontend.
   * emits two generated JSON contracts, `/index.json` (the wiki catalogue +
     wikilink graph) and `/board.json` (the Backlog.md kanban), fresh on every
     request so the render always reflects the markdown on disk — the
-    render-from-markdown rule ([[render-layer-principle]]), never the reverse.
+    render-from-markdown rule ([[render-layer-principle]]), never the reverse;
+  * accepts one write, `POST /api/task/<id>/status`, which shells out to the
+    pinned backlog.md CLI (`cli.run_backlog`) rather than touching task YAML
+    directly — the writes-through-CLI boundary from [[kanban-render-side]].
+    `board.json` carries a `writable` flag so the frontend can tell a live
+    `tome serve` (true) from a frozen static export (false, see
+    export_static() below) and hide drag-to-move accordingly — the static
+    deploy has no server behind it to accept the POST at all.
 
 The JSON *schemas* are the deliberate, permanent part of this slice; the
 server internals and the frontend are rough by design and hardened in place by
 later phases. build_index()/build_board() return plain dicts so the
-static-export path (`--export`, see export_static() below) can write them to
-disk unchanged.
+static-export path (`--export`) can write them to disk unchanged.
 
 stdlib only, imports cli lazily to avoid an import cycle (cli dispatches here).
 """
 
 import importlib.resources
 import json
+import os
 import re
+import sys
+import threading
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
@@ -152,14 +160,54 @@ def build_board(vault_root, conventions):
     return {"statuses": statuses, "defaultStatus": default_status, "cards": cards}
 
 
+def _board_with_writable(vault_root, conventions, writable):
+    """`build_board()` stays a pure function of on-disk state (and its tests
+    assert an exact dict shape); `writable` is a serving-time fact layered on
+    top, not vault state, so it's added here rather than inside build_board."""
+    return {**build_board(vault_root, conventions), "writable": writable}
+
+
 # --------------------------------------------------------------------------- #
-# HTTP handler — GET only, three route families, path-safe raw reads.
+# Task status writes — the one mutation this server accepts, always shelled
+# through backlog.md per [[kanban-render-side]]. Split out from the HTTP
+# handler so it's unit-testable without a live server.
 # --------------------------------------------------------------------------- #
 
+def apply_task_status(vault_root, raw_task_id, status):
+    """Moves a backlog task to `status` via `backlog.md task edit -s`. Returns
+    (ok, message) — message is empty on success, an error string otherwise.
+    `raw_task_id` accepts either case and an optional `task-`/`TASK-` prefix,
+    matching what `board.json` cards and the frontend's URLs carry."""
+    from tome_cli import cli
+
+    task_id = raw_task_id.strip()
+    if task_id.upper().startswith("TASK-"):
+        task_id = task_id[len("TASK-"):]
+    if not task_id.isdigit():
+        return False, f"bad task id {raw_task_id!r}"
+    if not status:
+        return False, "status is required"
+
+    proc = cli.run_backlog(vault_root, ["task", "edit", task_id, "-s", status], capture=True)
+    if proc.returncode != 0:
+        message = (proc.stderr or proc.stdout).strip() or "backlog task edit failed"
+        return False, message
+    return True, ""
+
+
+# --------------------------------------------------------------------------- #
+# HTTP handler — GET (four route families, path-safe raw reads) plus one
+# POST write route.
+# --------------------------------------------------------------------------- #
+
+_TASK_STATUS_RE = re.compile(r"^/api/task/([^/]+)/status$")
+
+
 class TomeHandler(BaseHTTPRequestHandler):
-    # Set by the partial() in serve().
+    # Set by cmd_serve() before the server starts.
     vault_root = None
     conventions = None
+    last_activity = None
 
     server_version = "tome-serve"
 
@@ -169,6 +217,7 @@ class TomeHandler(BaseHTTPRequestHandler):
         print(f"  {self.command} {self.path} -> {args[1] if len(args) > 1 else ''}")
 
     def do_GET(self):
+        TomeHandler.last_activity = time.monotonic()
         path = unquote(urlparse(self.path).path)
         try:
             if path in ("/", "/index.html"):
@@ -176,7 +225,7 @@ class TomeHandler(BaseHTTPRequestHandler):
             if path == "/index.json":
                 return self._send_json(build_index(self.vault_root, self.conventions))
             if path == "/board.json":
-                return self._send_json(build_board(self.vault_root, self.conventions))
+                return self._send_json(_board_with_writable(self.vault_root, self.conventions, True))
             if path.startswith("/raw/"):
                 return self._send_raw(path[len("/raw/"):])
             if path.startswith("/app/"):
@@ -184,6 +233,27 @@ class TomeHandler(BaseHTTPRequestHandler):
             self._send_error(404, "not found")
         except BrokenPipeError:
             pass  # client navigated away mid-response — nothing to report
+
+    def do_POST(self):
+        TomeHandler.last_activity = time.monotonic()
+        path = unquote(urlparse(self.path).path)
+        try:
+            m = _TASK_STATUS_RE.match(path)
+            if not m:
+                return self._send_error(404, "not found")
+            length = int(self.headers.get("Content-Length") or 0)
+            raw_body = self.rfile.read(length) if length else b""
+            try:
+                payload = json.loads(raw_body) if raw_body else {}
+            except json.JSONDecodeError:
+                return self._send_json({"error": "malformed JSON body"}, status=400)
+            status = str(payload.get("status") or "").strip()
+            ok, message = apply_task_status(self.vault_root, m.group(1), status)
+            if not ok:
+                return self._send_json({"error": message}, status=400)
+            self._send_json(_board_with_writable(self.vault_root, self.conventions, True))
+        except BrokenPipeError:
+            pass
 
     # -- responders -------------------------------------------------------- #
 
@@ -194,9 +264,9 @@ class TomeHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _send_json(self, obj):
+    def _send_json(self, obj, status=200):
         body = json.dumps(obj, ensure_ascii=False, indent=2).encode("utf-8")
-        self._send_bytes(body, CONTENT_TYPES[".json"])
+        self._send_bytes(body, CONTENT_TYPES[".json"], status)
 
     def _send_error(self, status, message):
         self._send_bytes(message.encode("utf-8"), "text/plain; charset=utf-8", status)
@@ -284,7 +354,7 @@ def export_static(vault_root, conventions, out_dir):
         json.dumps(build_index(vault_root, conventions), ensure_ascii=False, indent=2),
         encoding="utf-8")
     (out_dir / "board.json").write_text(
-        json.dumps(build_board(vault_root, conventions), ensure_ascii=False, indent=2),
+        json.dumps(_board_with_writable(vault_root, conventions, False), ensure_ascii=False, indent=2),
         encoding="utf-8")
 
     wiki_root = (vault_root / "wiki").resolve()
@@ -295,6 +365,20 @@ def export_static(vault_root, conventions, out_dir):
         dest.write_bytes(src.read_bytes())
 
     return out_dir
+
+
+def _idle_watchdog(httpd, timeout_seconds):
+    """Runs in a daemon thread; shuts the server down once `timeout_seconds`
+    have passed with no request. Only meaningful when something started the
+    server with no way to Ctrl-C it — the `launch_gui()` pythonw launcher —
+    so an idle server doesn't run forever in the background."""
+    while True:
+        time.sleep(min(30, timeout_seconds))
+        idle_for = time.monotonic() - TomeHandler.last_activity
+        if idle_for >= timeout_seconds:
+            print(f"tome serve: idle {int(idle_for)}s >= {timeout_seconds}s, shutting down.")
+            httpd.shutdown()
+            return
 
 
 # --------------------------------------------------------------------------- #
@@ -313,11 +397,20 @@ def cmd_serve(vault_root, conventions, args):
     # context on the class rather than trying to thread it through __init__.
     TomeHandler.vault_root = vault_root
     TomeHandler.conventions = conventions
+    TomeHandler.last_activity = time.monotonic()
 
     httpd = ThreadingHTTPServer((args.host, args.port), TomeHandler)
     url = f"http://{args.host}:{args.port}/"
     print(f"tome serve: {url} (vault: {vault_root})")
     print("  serving  /  /index.json  /board.json  /raw/<page>.md  /app/<file>")
+    print("  POST /api/task/<id>/status  (status moves, shelled to backlog.md)")
+
+    idle_minutes = getattr(args, "idle_timeout", 0) or 0
+    if idle_minutes > 0:
+        print(f"  auto-exit after {idle_minutes}min idle (--idle-timeout 0 disables)")
+        threading.Thread(target=_idle_watchdog, args=(httpd, idle_minutes * 60),
+                          daemon=True).start()
+
     print("  Ctrl-C to stop.")
     if getattr(args, "open", False):
         webbrowser.open(url)
@@ -328,3 +421,34 @@ def cmd_serve(vault_root, conventions, args):
     finally:
         httpd.server_close()
     return 0
+
+
+def launch_gui():
+    """Zero-argument entry point installed as an OS-native GUI launcher
+    (pythonw on Windows, via project.gui-scripts) so a desktop/Start-Menu
+    shortcut opens the browse UI with no terminal window. pythonw provides
+    no stdio — sys.stdout/stderr are None — so both are swallowed before
+    anything else runs. Vault resolution follows tome's normal rule (walk up
+    from cwd, then VAULT_ROOT): point the shortcut's "Start in" folder at the
+    vault, or set VAULT_ROOT, so this finds it with no arguments. Always
+    opens the browser and auto-exits after 30 idle minutes, since a
+    console-less process has no window for the user to close by hand."""
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w")
+
+    from types import SimpleNamespace
+
+    from tome_cli import cli
+
+    try:
+        vault_root = cli.resolve_vault_root(None)
+        conventions = cli.load_conventions(vault_root)
+    except cli.VaultError as e:
+        print(f"tome-serve: {e}")
+        return 1
+
+    args = SimpleNamespace(host="127.0.0.1", port=8765, open=True,
+                            export=None, idle_timeout=30)
+    return cmd_serve(vault_root, conventions, args)

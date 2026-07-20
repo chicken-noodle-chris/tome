@@ -17,5 +17,8 @@ Repository = "https://github.com/chicken-noodle-chris/tome"
 [project.scripts]
 tome = "tome_cli.cli:main"
 
+[project.gui-scripts]
+tome-serve = "tome_cli.serve:launch_gui"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/tome_cli"]
