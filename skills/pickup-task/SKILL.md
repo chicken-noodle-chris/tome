@@ -15,10 +15,17 @@ resolves which vault via `--vault` / walking up from cwd / `VAULT_ROOT`; bare pa
 **The user is always happy to answer questions.** If intent or scope is unclear — which task,
 how far to take it, an ambiguity in the plan — ask.
 
-1. **Prime yourself on the vault.** Run `tome sync` to pull, then `tome prime --full`
+1. **Prep on Haiku (gate).** Steps 2–3 are mechanical — a git pull, priming, and a task
+   lookup — and don't need a strong model. If you are **not** running as Haiku, stop and
+   ask whether to switch to Haiku for the prep (the user may decline and stay on their
+   current model — either is fine; you can't switch your own model, only they can).
+   Already Haiku, or once they've answered: continue. The tier that matters for the
+   actual *work* is a separate decision, made at step 4 once the task is known.
+
+2. **Prime yourself on the vault.** Run `tome sync` to pull, then `tome prime --full`
    (skip if already primed this session) — prints SCHEMA.md and the index in one shot.
 
-2. **Locate the task and its plan.** If the user named a task or plan, find it. If they
+3. **Locate the task and its plan.** If the user named a task or plan, find it. If they
    named a **milestone** instead (an id like `m-0` or its title — the epic layer, see
    `wiki/SCHEMA.md`), resume it rather than picking one task in isolation: run `tome task
    task list --milestone <name> --plain` to list its open children (backlog.md already
@@ -29,32 +36,32 @@ how far to take it, an ambiguity in the plan — ask.
    no name given at all, check the board (`tome task task list --plain`) and the project's
    live plans (`plans/`, not `plans/archive/`) and confirm which one they mean.
 
-3. **Check the agent-tier label.** If the task carries an `agent:<tier>` label
-   (tier: `haiku` < `sonnet` < `opus` < `fable` — the suggested executor), compare it
-   against the model you are running as (stated in your system context). If your tier
-   *differs in either direction*, or you can't tell, **stop before starting the work**:
-   tell the user the suggested tier and your own, and wait for direction. Running below
-   the tier risks the work's quality; running above it wastes capability and money —
-   both are the user's call, they'll switch agents or tell you to continue. No label,
-   or an exact match: proceed.
+4. **Check the agent-tier label.** With the task located, read its `agent:<tier>` label
+   (tier: `haiku` < `sonnet` < `opus` < `fable` — the suggested executor for the *work*,
+   not the prep) and compare it against the model you are running as — which, if you took
+   the Haiku prep at step 1, is still Haiku. If the tier *differs in either direction*, or
+   there's a label and you can't tell, **stop before starting the work**: tell the user
+   the suggested tier and your own, and wait. Running below the tier risks the work's
+   quality; running above it wastes capability and money — both are the user's call,
+   they'll switch the model or tell you to continue. No label, or an exact match: proceed.
 
-4. **Mark the work started.** `tome start <task-id-or-slug>` — accepts either, resolving
+5. **Mark the work started.** `tome start <task-id-or-slug>` — accepts either, resolving
    the other half if linked (a plan without a task, or a task without a plan, is normal).
    Sets the plan `active`, moves the task to In Progress (`-a @me`), logs `work-started`,
    syncs, then prints the task text and the full plan body as your working context — read
    it in full, follow its `[[wikilinks]]`, and if you have concerns stop and discuss with
    the user before continuing.
 
-5. **Do the task work.** Execute the plan in the relevant code repo (not the vault),
+6. **Do the task work.** Execute the plan in the relevant code repo (not the vault),
    following that repo's `CLAUDE.md`. Stick to the plan's scope; if you hit a fork it
    doesn't resolve, ask rather than guess. Verify per the plan's verification section and
    report results honestly.
 
-6. **Commit, then present the work.** Commit by default. Show the user what changed and the
+7. **Commit, then present the work.** Commit by default. Show the user what changed and the
    verification results. The code repo is separate from the vault and follows its own
    commit conventions — check its `CLAUDE.md`. Push only after the user approves.
 
-7. **Close out the tracking.** Once the work has landed: `tome done <slug> --summary "..."`
+8. **Close out the tracking.** Once the work has landed: `tome done <slug> --summary "..."`
    citing the shipping commit (`--as superseded`/`--as abandoned` instead of the default
    `done`, if that's how it landed). This archives the plan (moves it to `plans/archive/`,
    regenerates its project hub and the index), checks the task's acceptance criteria,
