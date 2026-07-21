@@ -7,8 +7,13 @@ frontend and any future static-export path depend on, so those are what's
 locked here.
 """
 
+import hashlib
+import shutil
+import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
@@ -18,6 +23,37 @@ from tome_cli import serve  # noqa: E402
 
 def _conv(vault):
     return tome.load_conventions(vault)
+
+
+def _git(vault, *args):
+    return subprocess.run(["git", *args], cwd=str(vault),
+                           check=True, capture_output=True, text=True)
+
+
+def _bootstrap_git_vault(tmp_path, run_tome, name="vault"):
+    """Same helper as test_sync_scoped.py/test_start_done.py, duplicated per
+    that convention rather than shared — save_page needs a real origin to
+    push against, same as sync_core's scoped-commit tests."""
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "--bare", str(origin)],
+                    check=True, capture_output=True)
+    subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/main"],
+                    cwd=str(origin), check=True, capture_output=True)
+
+    vault = tmp_path / name
+    subprocess.run(["git", "clone", str(origin), str(vault)],
+                    check=True, capture_output=True)
+    _git(vault, "config", "user.email", "test@example.com")
+    _git(vault, "config", "user.name", "Test")
+
+    code = run_tome("init", str(vault))
+    assert code == 0
+
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "initial")
+    _git(vault, "push", "-u", "origin", "main")
+
+    return vault, origin
 
 
 def test_build_index_shape_and_links(make_vault, make_page):
@@ -170,6 +206,129 @@ def test_apply_task_status_surfaces_backlog_failure(monkeypatch, make_vault):
 
     assert ok is False
     assert message == "no such task"
+
+
+# --------------------------------------------------------------------------- #
+# save_page — the [[page-editing]] write, conflict- and lint-gated, committed
+# + pushed scoped to just the one file. Needs a real git origin (unlike
+# apply_task_status, which never touches git), so these skip without git on
+# PATH, same as test_sync_scoped.py.
+# --------------------------------------------------------------------------- #
+
+pytestmark_git = pytest.mark.skipif(shutil.which("git") is None, reason="git not on PATH")
+
+
+def _scaffold_idea(vault, run_tome, slug="alpha"):
+    """A real `tome new` page (indexed, lint-clean), not `make_page`'s direct
+    file write — save_page's own lint gate would otherwise always fire
+    INDEX_MISSING on a page the index doesn't know about."""
+    run_tome("--vault", str(vault), "new", "project", "tome", "--title", "Tome", "--desc", "d")
+    run_tome("--vault", str(vault), "new", "idea", slug, "--project", "tome",
+              "--title", slug.capitalize(), "--desc", "d")
+    return vault / "wiki" / "tome" / "ideas" / f"{slug}.md"
+
+
+@pytestmark_git
+def test_save_page_happy_path_commits_and_pushes(tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    target = _scaffold_idea(vault, run_tome)
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "add alpha")
+    _git(vault, "push")
+
+    base_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+
+    status, result = serve.save_page(vault, _conv(vault), "tome/ideas/alpha.md",
+                                      "\n# Alpha\n\nEdited body.\n", base_hash)
+
+    assert status == 200
+    assert result["hash"] == hashlib.sha256(target.read_bytes()).hexdigest()
+    assert "Edited body." in target.read_text(encoding="utf-8")
+    assert "type: idea" in target.read_text(encoding="utf-8")  # frontmatter preserved
+    log = _git(origin, "log", "--oneline")
+    assert "edit: alpha" in log.stdout
+
+
+@pytestmark_git
+def test_save_page_conflict_on_stale_hash(tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    target = _scaffold_idea(vault, run_tome)
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "add alpha")
+    _git(vault, "push")
+
+    original_text = target.read_text(encoding="utf-8")
+
+    status, result = serve.save_page(vault, _conv(vault), "tome/ideas/alpha.md",
+                                      "\n# Alpha\n\nEdited body.\n", "stale-hash")
+
+    assert status == 409
+    assert "currentHash" in result
+    assert target.read_text(encoding="utf-8") == original_text  # untouched
+    status_out = _git(vault, "status", "--porcelain")
+    assert status_out.stdout.strip() == ""  # nothing written, nothing to commit
+
+
+@pytestmark_git
+def test_save_page_lint_failure_restores_file(tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    target = _scaffold_idea(vault, run_tome)
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "add alpha")
+    _git(vault, "push")
+
+    original_text = target.read_text(encoding="utf-8")
+    base_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+
+    status, result = serve.save_page(vault, _conv(vault), "tome/ideas/alpha.md",
+                                      "\nSee [[does-not-exist]].\n", base_hash)
+
+    assert status == 422
+    codes = {f["code"] for f in result["findings"]}
+    assert "BROKEN_LINK" in codes
+    assert target.read_text(encoding="utf-8") == original_text  # restored
+    status_out = _git(vault, "status", "--porcelain")
+    assert status_out.stdout.strip() == ""  # nothing left dirty
+    log = _git(origin, "log", "--oneline")
+    assert "edit: alpha" not in log.stdout  # never committed
+
+
+@pytestmark_git
+def test_save_page_rejects_path_traversal(tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+
+    status, result = serve.save_page(vault, _conv(vault), "../../etc/passwd",
+                                      "pwned", "irrelevant")
+
+    assert status == 404
+    assert "error" in result
+
+
+@pytestmark_git
+def test_save_page_rejects_missing_page(tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+
+    status, result = serve.save_page(vault, _conv(vault), "tome/ideas/no-such-page.md",
+                                      "body", "irrelevant")
+
+    assert status == 404
+    assert "error" in result
+
+
+@pytestmark_git
+def test_save_page_rejects_non_markdown_path(tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    (vault / "wiki" / "tome").mkdir(parents=True, exist_ok=True)
+    (vault / "wiki" / "tome" / "notes.txt").write_text("not markdown", encoding="utf-8")
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "add stray file")
+    _git(vault, "push")
+
+    status, result = serve.save_page(vault, _conv(vault), "tome/notes.txt",
+                                      "body", "irrelevant")
+
+    assert status == 404
+    assert "error" in result
 
 
 # --------------------------------------------------------------------------- #

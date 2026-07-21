@@ -64,7 +64,12 @@
             <div class="fm-card">
               <div class="fm-head">
                 <h1 x-text="pageMeta.title || currentSlug"></h1>
-                <a class="edit-link" :href="editUrl()" title="Open in VS Code">Edit</a>
+                <div class="fm-head-actions">
+                  <button class="edit-btn" x-show="board.writable && !editing"
+                          @click="enterEdit()" x-text="editorLoading ? 'Loading…' : 'Edit'"
+                          :disabled="editorLoading"></button>
+                  <a class="edit-link" :href="editUrl()" title="Open in VS Code">VS Code</a>
+                </div>
               </div>
               <dl>
                 <template x-for="[k, v] of fmRows(pageMeta)" :key="k">
@@ -75,7 +80,30 @@
                 </template>
               </dl>
             </div>
-            <div class="markdown" x-html="pageHtml" @click="onContentClick($event)"></div>
+
+            <template x-if="!editing">
+              <div class="markdown" x-html="pageHtml" @click="onContentClick($event)"></div>
+            </template>
+
+            <template x-if="editing">
+              <div class="editor-pane">
+                <p class="editor-banner" :class="'editor-banner--' + editorBannerKind"
+                   x-show="editorBanner" x-text="editorBanner"></p>
+                <ul class="editor-findings" x-show="editorFindings.length">
+                  <template x-for="f of editorFindings" :key="f.code + f.path + f.message">
+                    <li x-text="f.path + ' — ' + f.code + ': ' + f.message"></li>
+                  </template>
+                </ul>
+                <div x-ref="editorMount"></div>
+                <div class="editor-actions">
+                  <button class="editor-btn-reload" x-show="editorBannerKind === 'conflict'"
+                          @click="reloadAfterConflict()">Reload</button>
+                  <button class="editor-btn-cancel" @click="cancelEdit()">Cancel</button>
+                  <button class="editor-btn-save" @click="saveEdit()" :disabled="saving"
+                          x-text="saving ? 'Saving…' : 'Save'"></button>
+                </div>
+              </div>
+            </template>
           </article>
         </template>
       </main>

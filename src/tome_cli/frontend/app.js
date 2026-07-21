@@ -6,8 +6,9 @@
 // board. Data comes from the two generated contracts the server emits,
 // `/index.json` and `/board.json`; raw markdown comes from `/raw/…`. The board
 // supports drag-to-move when `board.writable` is true (a live `tome serve`),
-// POSTing to `/api/task/<id>/status` — absent on a static export, where the
-// board stays read-only. No other writes exist.
+// POSTing to `/api/task/<id>/status`; the page view supports body editing on
+// the same flag, POSTing to `/api/page` ([[page-editing]]) — both absent on a
+// static export, where everything stays read-only. No other writes exist.
 //
 // Alpine is the behaviour layer (vendored, no build). This module registers the
 // component on the `alpine:init` event, which Alpine dispatches when it starts —
@@ -21,6 +22,40 @@ const DEFAULT_PAGE = "custom-frontend";
 
 // Frontmatter keys not worth showing in the page's header card.
 const FM_HIDDEN = new Set(["title"]);
+
+// TOAST UI Editor + its CodeMirror dependency ([[page-editing]]) — vendored,
+// loaded lazily on first Edit click so their ~640KB stays off the browse path.
+const EDITOR_SCRIPTS = ["/app/vendor/codemirror.min.js", "/app/vendor/toastui-editor.min.js"];
+const EDITOR_STYLES = ["/app/vendor/codemirror.min.css", "/app/vendor/toastui-editor.min.css"];
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    if (document.querySelector(`script[src="${src}"]`)) return resolve();
+    const el = document.createElement("script");
+    el.src = src;
+    el.onload = () => resolve();
+    el.onerror = () => reject(new Error(`failed to load ${src}`));
+    document.head.appendChild(el);
+  });
+}
+
+function loadStyle(href) {
+  return new Promise((resolve, reject) => {
+    if (document.querySelector(`link[href="${href}"]`)) return resolve();
+    const el = document.createElement("link");
+    el.rel = "stylesheet";
+    el.href = href;
+    el.onload = () => resolve();
+    el.onerror = () => reject(new Error(`failed to load ${href}`));
+    document.head.appendChild(el);
+  });
+}
+
+// The mounted TOAST UI Editor instance lives outside Alpine's reactive
+// `data()` object — a plain module-level variable, not a rich third-party
+// class instance for Alpine to recursively proxy. Only one editor is ever
+// mounted at a time, matching this app's single-component design.
+let mountedEditor = null;
 
 // Sidebar folder ordering — mirrors how the wiki index reads a project: the hub
 // page first (folder ""), then plans (live before archived), then the rest.
@@ -43,7 +78,18 @@ function tomeApp() {
     currentPage: null, // the index.json entry — carries absPath for the edit link
     pageMeta: null,
     pageHtml: "",
+    pageBodyRaw: "", // markdown body only (frontmatter stripped) — feeds the editor
     pageError: "",
+    currentHash: null, // ETag of the last-fetched /raw/ response — the save conflict token
+
+    // page editing ([[page-editing]]) — the editor instance itself is the
+    // module-level `mountedEditor`, not reactive state; see its comment.
+    editing: false,
+    editorLoading: false,
+    saving: false,
+    editorBanner: "",
+    editorBannerKind: "", // "conflict" | "lint" | "error"
+    editorFindings: [],
 
     // sidebar
     collapsed: {}, // project name -> true when its section is folded shut
@@ -82,6 +128,7 @@ function tomeApp() {
     },
 
     async loadPage(slug, { push = true } = {}) {
+      if (this.editing) this.exitEdit(); // navigating away discards any in-progress edit
       const page = this.bySlug.get(slug);
       this.view = "page";
       this.currentSlug = slug;
@@ -93,12 +140,13 @@ function tomeApp() {
         return;
       }
       try {
-        const raw = await fetch(page.url).then((r) => {
-          if (!r.ok) throw new Error(`${r.status}`);
-          return r.text();
-        });
+        const res = await fetch(page.url);
+        if (!res.ok) throw new Error(`${res.status}`);
+        const raw = await res.text();
+        this.currentHash = res.headers.get("ETag");
         const { frontmatter, body } = parseFrontmatter(raw);
         this.pageMeta = { ...frontmatter, title: frontmatter.title || page.title };
+        this.pageBodyRaw = body;
         this.pageHtml = renderMarkdown(body, (s) => this.resolveWikilink(s));
         this.pageError = "";
       } catch (e) {
@@ -139,6 +187,99 @@ function tomeApp() {
       return Object.entries(meta).filter(
         ([k, v]) => !FM_HIDDEN.has(k) && v !== "" && !(Array.isArray(v) && v.length === 0),
       );
+    },
+
+    // -- page editing ([[page-editing]]) ---------------------------------- //
+    // Body-only editing via a vendored TOAST UI Editor (Markdown <-> WYSIWYG
+    // toggle built in). Frontmatter stays a read-only card above, untouched.
+    // Saves POST to /api/page with the base hash captured at load, so the
+    // server can refuse a write against a page that changed underneath the
+    // client (409) rather than silently clobbering it.
+
+    async enterEdit() {
+      if (this.editorLoading || !this.currentPage) return;
+      this.editorLoading = true;
+      try {
+        await Promise.all([...EDITOR_STYLES.map(loadStyle), ...EDITOR_SCRIPTS.map(loadScript)]);
+      } catch (e) {
+        this.pageError = `Failed to load the editor: ${e.message}`;
+        this.editorLoading = false;
+        return;
+      }
+      this.editorBanner = "";
+      this.editorBannerKind = "";
+      this.editorFindings = [];
+      this.editing = true;
+      this.editorLoading = false;
+      await this.$nextTick();
+      mountedEditor = new toastui.Editor({
+        el: this.$refs.editorMount,
+        height: "60vh",
+        initialEditType: "markdown",
+        previewStyle: "tab",
+        initialValue: this.pageBodyRaw,
+      });
+    },
+
+    // Tears down the editor instance and drops edit-mode state, with no
+    // network call — used both for a plain Cancel and when navigating away.
+    exitEdit() {
+      if (mountedEditor) {
+        mountedEditor.remove(); // TOAST UI Editor v2's teardown method (v3 renamed it destroy())
+        mountedEditor = null;
+      }
+      this.editing = false;
+      this.editorBanner = "";
+      this.editorBannerKind = "";
+      this.editorFindings = [];
+    },
+
+    cancelEdit() {
+      this.exitEdit();
+    },
+
+    // The only path that discards local edits after a conflict, and only on
+    // explicit user action — reloads the canonical page from the server.
+    async reloadAfterConflict() {
+      this.exitEdit();
+      await this.loadPage(this.currentSlug, { push: false });
+    },
+
+    async saveEdit() {
+      if (!mountedEditor || !this.currentPage || this.saving) return;
+      this.saving = true;
+      this.editorBanner = "";
+      this.editorBannerKind = "";
+      this.editorFindings = [];
+      const body = mountedEditor.getMarkdown();
+      try {
+        const res = await fetch("/api/page", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: this.currentPage.path, body, baseHash: this.currentHash }),
+        });
+        const data = await res.json();
+        if (res.status === 200) {
+          this.exitEdit();
+          await this.loadPage(this.currentSlug, { push: false }); // re-fetch: canonical render + new hash
+        } else if (res.status === 409) {
+          this.editorBannerKind = "conflict";
+          this.editorBanner = "This page changed since you opened it — your edits are safe. "
+            + "Copy them out, then Reload to get the new version.";
+        } else if (res.status === 422) {
+          this.editorBannerKind = "lint";
+          this.editorBanner = "Save rejected — lint errors:";
+          this.editorFindings = data.findings || [];
+        } else {
+          this.editorBannerKind = "error";
+          this.editorBanner = data.error || `Save failed (HTTP ${res.status})`;
+        }
+      } catch (e) {
+        this.editorBannerKind = "error";
+        this.editorBanner = `Save failed: ${e.message}`;
+      } finally {
+        this.saving = false;
+      }
     },
 
     // -- sidebar (vault tree) -------------------------------------------- //

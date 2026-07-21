@@ -17,7 +17,11 @@ tome_cli.serve — the local browse host for the no-build frontend.
     `board.json` carries a `writable` flag so the frontend can tell a live
     `tome serve` (true) from a frozen static export (false, see
     export_static() below) and hide drag-to-move accordingly — the static
-    deploy has no server behind it to accept the POST at all.
+    deploy has no server behind it to accept the POST at all;
+  * accepts a second write, `POST /api/page`, editing a page's body through
+    `cli.write_page` + the lint gate ([[page-editing]]) — see `save_page()`
+    below for the conflict/lint contract. Also absent on a static export, and
+    gated on the same `board.writable` flag client-side (no separate flag).
 
 The JSON *schemas* are the deliberate, permanent part of this slice; the
 server internals and the frontend are rough by design and hardened in place by
@@ -27,6 +31,7 @@ static-export path (`--export`) can write them to disk unchanged.
 stdlib only, imports cli lazily to avoid an import cycle (cli dispatches here).
 """
 
+import hashlib
 import importlib.resources
 import json
 import os
@@ -195,9 +200,89 @@ def apply_task_status(vault_root, raw_task_id, status):
     return True, ""
 
 
+def _page_path(vault_root, rel):
+    """Resolve a wiki-relative path to an existing `.md` file under wiki/, or
+    None if it's unsafe, non-.md, or doesn't exist — the same path-safety
+    gate `_send_raw` applies, reused here since both routes accept a
+    client-supplied wiki-relative path."""
+    safe = _safe_join(rel)
+    if safe is None or safe.suffix != ".md":
+        return None
+    wiki_root = (vault_root / "wiki").resolve()
+    target = (wiki_root / str(safe)).resolve()
+    if wiki_root not in target.parents:
+        return None
+    return target if target.is_file() else None
+
+
+def save_page(vault_root, conventions, rel, body, base_hash):
+    """The [[page-editing]] save path: optimistic-concurrency write of one
+    page's body, gated by a lint check scoped to just that page. Returns
+    (http_status, payload_dict) — never raises, so the HTTP handler can pass
+    the pair straight through to `_send_json`.
+
+    1. Pull, so the conflict check below is against the latest remote.
+    2. Hash the file's current bytes; a `base_hash` mismatch means the page
+       changed since the client opened it — refuse, write nothing (409).
+    3. Recombine the on-disk frontmatter with the new body via
+       `cli.write_page` (frontmatter itself is out of scope for this editor).
+    4. Lint the whole vault but gate only on findings whose `path` is this
+       page — an unrelated pre-existing error elsewhere must not block an
+       otherwise-clean save. Any error here restores the original bytes (422).
+    5. Commit + push, scoped to just this file, reusing `cli._push_with_retry`
+       (a scoped `cli.sync_core` call would re-pull and re-lint the whole
+       tree; this only needs its push-retry half).
+    """
+    from tome_cli import cli
+
+    target = _page_path(vault_root, rel)
+    if target is None:
+        return 404, {"error": "no such page"}
+
+    pull = cli.run_git(vault_root, ["pull", "--rebase", "--autostash"])
+    if pull.returncode != 0:
+        return 500, {"error": (pull.stderr or pull.stdout).strip() or "git pull failed"}
+
+    original_bytes = target.read_bytes()
+    current_hash = hashlib.sha256(original_bytes).hexdigest()
+    if base_hash != current_hash:
+        return 409, {"error": "page changed since you opened it",
+                      "currentHash": current_hash}
+
+    fm_lines, _old_body = cli.read_page(target)
+    try:
+        cli.write_page(target, fm_lines, body)
+    except cli.VaultError as e:
+        return 400, {"error": str(e)}
+
+    wiki_root = (vault_root / "wiki").resolve()
+    rel_str = target.relative_to(wiki_root).as_posix()  # lint findings key by this
+    pages, findings = cli.run_all_lint_checks(vault_root, conventions)
+    errors = [f for f in findings if f.severity == cli.ERROR and f.path == rel_str]
+    if errors:
+        target.write_bytes(original_bytes)
+        return 422, {"error": "lint failed", "findings": [f.as_dict() for f in errors]}
+
+    vault_rel_str = target.relative_to(vault_root).as_posix()  # git wants this one
+    add = cli.run_git(vault_root, ["add", "--", vault_rel_str])
+    if add.returncode != 0:
+        target.write_bytes(original_bytes)
+        return 500, {"error": (add.stderr or "git add failed").strip()}
+
+    commit = cli.run_git(vault_root, ["commit", "-m", f"edit: {target.stem}"])
+    if commit.returncode != 0:
+        return 500, {"error": (commit.stderr or commit.stdout).strip() or "git commit failed"}
+
+    push_code = cli._push_with_retry(vault_root)
+    if push_code != 0:
+        return 500, {"error": "commit landed locally but push failed — resolve manually"}
+
+    return 200, {"hash": hashlib.sha256(target.read_bytes()).hexdigest()}
+
+
 # --------------------------------------------------------------------------- #
-# HTTP handler — GET (four route families, path-safe raw reads) plus one
-# POST write route.
+# HTTP handler — GET (four route families, path-safe raw reads) plus two
+# POST write routes.
 # --------------------------------------------------------------------------- #
 
 _TASK_STATUS_RE = re.compile(r"^/api/task/([^/]+)/status$")
@@ -239,28 +324,44 @@ class TomeHandler(BaseHTTPRequestHandler):
         path = unquote(urlparse(self.path).path)
         try:
             m = _TASK_STATUS_RE.match(path)
-            if not m:
-                return self._send_error(404, "not found")
-            length = int(self.headers.get("Content-Length") or 0)
-            raw_body = self.rfile.read(length) if length else b""
-            try:
-                payload = json.loads(raw_body) if raw_body else {}
-            except json.JSONDecodeError:
-                return self._send_json({"error": "malformed JSON body"}, status=400)
-            status = str(payload.get("status") or "").strip()
-            ok, message = apply_task_status(self.vault_root, m.group(1), status)
-            if not ok:
-                return self._send_json({"error": message}, status=400)
-            self._send_json(_board_with_writable(self.vault_root, self.conventions, True))
+            if m:
+                length = int(self.headers.get("Content-Length") or 0)
+                raw_body = self.rfile.read(length) if length else b""
+                try:
+                    payload = json.loads(raw_body) if raw_body else {}
+                except json.JSONDecodeError:
+                    return self._send_json({"error": "malformed JSON body"}, status=400)
+                status = str(payload.get("status") or "").strip()
+                ok, message = apply_task_status(self.vault_root, m.group(1), status)
+                if not ok:
+                    return self._send_json({"error": message}, status=400)
+                return self._send_json(_board_with_writable(self.vault_root, self.conventions, True))
+            if path == "/api/page":
+                length = int(self.headers.get("Content-Length") or 0)
+                raw_body = self.rfile.read(length) if length else b""
+                try:
+                    payload = json.loads(raw_body) if raw_body else {}
+                except json.JSONDecodeError:
+                    return self._send_json({"error": "malformed JSON body"}, status=400)
+                rel = payload.get("path")
+                body = payload.get("body")
+                base_hash = str(payload.get("baseHash") or "")
+                if not rel or body is None:
+                    return self._send_json({"error": "path and body are required"}, status=400)
+                status_code, result = save_page(self.vault_root, self.conventions, rel, body, base_hash)
+                return self._send_json(result, status=status_code)
+            self._send_error(404, "not found")
         except BrokenPipeError:
             pass
 
     # -- responders -------------------------------------------------------- #
 
-    def _send_bytes(self, body, content_type, status=200):
+    def _send_bytes(self, body, content_type, status=200, extra_headers=None):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        for key, value in (extra_headers or {}).items():
+            self.send_header(key, value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -295,7 +396,13 @@ class TomeHandler(BaseHTTPRequestHandler):
             return self._send_error(400, "bad path")
         if not target.is_file():
             return self._send_error(404, "not found")
-        self._send_bytes(target.read_bytes(), _content_type(target.name))
+        content = target.read_bytes()
+        # ETag doubles as the page-editing conflict token ([[page-editing]]):
+        # the frontend echoes it back as `baseHash` on POST /api/page, so a
+        # page edited underneath the client is caught without a separate
+        # client-side hashing round trip.
+        etag = hashlib.sha256(content).hexdigest()
+        self._send_bytes(content, _content_type(target.name), extra_headers={"ETag": etag})
 
 
 def _safe_join(rel):
@@ -404,6 +511,7 @@ def cmd_serve(vault_root, conventions, args):
     print(f"tome serve: {url} (vault: {vault_root})")
     print("  serving  /  /index.json  /board.json  /raw/<page>.md  /app/<file>")
     print("  POST /api/task/<id>/status  (status moves, shelled to backlog.md)")
+    print("  POST /api/page              (body edits, conflict + lint gated)")
 
     idle_minutes = getattr(args, "idle_timeout", 0) or 0
     if idle_minutes > 0:

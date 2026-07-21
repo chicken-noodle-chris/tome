@@ -145,7 +145,8 @@ body {
 }
 .fm-head { display: flex; align-items: baseline; justify-content: space-between; gap: 0.75rem; }
 .fm-card h1 { margin: 0 0 0.75rem; font-size: 1.5rem; }
-.edit-link {
+.fm-head-actions { flex: none; display: flex; align-items: center; gap: 0.4rem; }
+.edit-link, .edit-btn {
   flex: none;
   font-size: 0.78rem;
   color: var(--muted);
@@ -153,8 +154,12 @@ body {
   border-radius: 6px;
   padding: 0.15rem 0.55rem;
   text-decoration: none;
+  background: var(--panel);
+  font-family: inherit;
+  cursor: pointer;
 }
-.edit-link:hover { color: var(--fg); border-color: var(--accent); }
+.edit-link:hover, .edit-btn:hover { color: var(--fg); border-color: var(--accent); }
+.edit-btn:disabled { cursor: default; opacity: 0.6; }
 .fm-card dl { margin: 0; display: grid; gap: 0.15rem; }
 .fm-row { display: flex; gap: 0.5rem; font-size: 0.85rem; }
 .fm-row dt { color: var(--muted); min-width: 6.5rem; }
@@ -191,6 +196,40 @@ body {
 .markdown table { border-collapse: collapse; margin: 1rem 0; width: 100%; font-size: 0.9rem; }
 .markdown th, .markdown td { border: 1px solid var(--border); padding: 0.4rem 0.6rem; text-align: left; }
 .markdown th { background: var(--panel); font-weight: 600; }
+
+/* -- page editing ([[page-editing]]) -- */
+.editor-pane { margin-bottom: 2rem; }
+.editor-banner {
+  margin: 0 0 0.6rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  border: 1px solid var(--border);
+  background: var(--panel);
+}
+.editor-banner--conflict, .editor-banner--error { color: var(--broken); border-color: var(--broken); }
+.editor-banner--lint { color: var(--fg); border-color: var(--accent); }
+.editor-findings {
+  margin: 0 0 0.6rem;
+  padding: 0.5rem 0.75rem 0.5rem 1.5rem;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  font-family: ui-monospace, monospace;
+  background: var(--code-bg);
+}
+.editor-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.75rem; }
+.editor-actions button {
+  font: inherit;
+  font-size: 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.35rem 0.9rem;
+  cursor: pointer;
+  background: var(--panel);
+  color: var(--fg);
+}
+.editor-btn-save { background: var(--accent); color: #fff; border-color: var(--accent); }
+.editor-actions button:disabled { cursor: default; opacity: 0.6; }
 
 /* -- board view (full-width) -- */
 .board-wrap { padding: 1rem 1.25rem 3rem; }
