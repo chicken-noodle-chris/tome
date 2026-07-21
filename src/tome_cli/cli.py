@@ -32,7 +32,7 @@ import shutil
 import subprocess
 import sys
 import tomllib
-from collections import defaultdict
+from collections import defaultdict, namedtuple
 from datetime import date
 from pathlib import Path
 
@@ -798,27 +798,44 @@ def replace_outside_code(text, old, new):
     return "".join(parts)
 
 
-def cmd_mv(vault_root, conventions, args):
+# The reusable core of a slug rename, shared by `tome mv` (cmd_mv) and the
+# serve `/api/rename` endpoint (serve.rename_page) — split out like save_page's
+# and save_frontmatter's cores so the browser write reuses the exact file-move
+# + link-rewrite + index/hub-regen logic instead of re-implementing it. Does no
+# git and no printing: each caller owns its own commit/sync and its own output.
+# `touched_rels` are the wiki-relative paths whose inbound links were rewritten
+# (for the CLI's report); `touched_paths` is the full absolute-path set git must
+# stage — old path (now a deletion), new path, rebuilt index, every rewritten
+# linker, and the project hub for a plan.
+MoveResult = namedtuple("MoveResult", "old_path new_path touched_rels touched_paths")
+
+
+def move_page(vault_root, conventions, slug, new_slug):
+    """Rename a page's slug on disk: move the file, rewrite every inbound
+    `[[wikilink]]` across the wiki, and regenerate the index (and, for a plan,
+    the project hub). Returns a MoveResult; raises VaultError on a bad/unknown/
+    ambiguous slug, a project hub, or a destination collision."""
     wiki_root, pages = collect(vault_root, conventions)
-    page = find_page(pages, args.slug)
+    page = find_page(pages, slug)
     if page["meta"].get("type") == "project":
         raise VaultError(
-            f"'{args.slug}' is a project hub — renaming it would break the "
+            f"'{slug}' is a project hub — renaming it would break the "
             f"wiki/<name>/<name>.md hub convention and silently drop it from "
             f"the index. Hub renames aren't supported."
         )
-    validate_slug(args.new_slug, pages)
+    validate_slug(new_slug, pages)
 
-    new_path = page["path"].parent / f"{args.new_slug}.md"
+    old_path = page["path"]
+    new_path = old_path.parent / f"{new_slug}.md"
     if new_path.exists():
         raise VaultError(f"{new_path} already exists")
-    page["path"].rename(new_path)
+    old_path.rename(new_path)
 
     # Two exact link forms only — a bare prefix match here would also catch
     # (and corrupt) unrelated slugs that happen to start with this one, e.g.
     # renaming "vault" must not touch "[[vault-cli-extras]]".
-    old_bare, new_bare = f"[[{args.slug}]]", f"[[{args.new_slug}]]"
-    old_alias, new_alias = f"[[{args.slug}|", f"[[{args.new_slug}|"
+    old_bare, new_bare = f"[[{slug}]]", f"[[{new_slug}]]"
+    old_alias, new_alias = f"[[{slug}|", f"[[{new_slug}|"
     touched = []
 
     # The renamed page's own body may self-link its old slug; the main loop
@@ -832,7 +849,7 @@ def cmd_mv(vault_root, conventions, args):
         touched.append(new_path.relative_to(wiki_root).as_posix())
 
     for p in pages:
-        if p["path"] == page["path"]:
+        if p["path"] == old_path:
             continue
         if "read_error" in p:
             continue
@@ -847,22 +864,28 @@ def cmd_mv(vault_root, conventions, args):
 
     _, pages = collect(vault_root, conventions)
     index_path = rebuild_index(vault_root, conventions, wiki_root, pages)
-    print(f"Renamed {args.slug} -> {args.new_slug} ({new_path.relative_to(vault_root)})")
-    if touched:
-        print("Rewrote inbound links in:")
-        for t in touched:
-            print(f"  {t}")
-    touched_paths = [new_path, index_path, page["path"]] + [wiki_root / t for t in touched
-                                                             if (wiki_root / t) != new_path]
+    touched_paths = [new_path, index_path, old_path] + [wiki_root / t for t in touched
+                                                        if (wiki_root / t) != new_path]
     if page["meta"].get("type") == "plan":
         project = Path(page["rel_path"]).parts[0]
         hub_path = regenerate_hub(conventions, wiki_root, pages, project)
         if hub_path is not None and hub_path not in touched_paths:
             touched_paths.append(hub_path)
-    result = maybe_sync(vault_root, conventions, args, touched_paths,
-                         f"mv: {args.slug} -> {args.new_slug}")
-    if result is not None:
-        return result
+    return MoveResult(old_path, new_path, touched, touched_paths)
+
+
+def cmd_mv(vault_root, conventions, args):
+    result = move_page(vault_root, conventions, args.slug, args.new_slug)
+    print(f"Renamed {args.slug} -> {args.new_slug} "
+          f"({result.new_path.relative_to(vault_root)})")
+    if result.touched_rels:
+        print("Rewrote inbound links in:")
+        for t in result.touched_rels:
+            print(f"  {t}")
+    sync_result = maybe_sync(vault_root, conventions, args, result.touched_paths,
+                             f"mv: {args.slug} -> {args.new_slug}")
+    if sync_result is not None:
+        return sync_result
     return 0
 
 

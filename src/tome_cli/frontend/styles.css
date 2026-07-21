@@ -223,6 +223,56 @@ body {
 .fm-readonly { margin: 0.75rem 0 0; padding-top: 0.6rem; border-top: 1px solid var(--border); display: grid; gap: 0.15rem; }
 .fm-hint { margin: 0.4rem 0 0; font-size: 0.78rem; color: var(--muted); }
 
+/* -- slug rename ([[slug-rename]]) — deliberately heavier-looking than the
+   other read-only rows: a wiki-wide link rewrite, not a field edit. -- */
+.fm-row--slug { align-items: baseline; }
+.fm-row--slug dd { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.4rem; }
+.rename-btn {
+  font: inherit;
+  font-size: 0.72rem;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0.05rem 0.45rem;
+  cursor: pointer;
+  background: transparent;
+  color: var(--muted);
+}
+.rename-btn:hover { color: var(--fg); border-color: var(--accent); }
+.rename-box {
+  flex: 1 1 100%;
+  margin-top: 0.4rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--broken);
+  border-radius: 6px;
+  background: var(--panel);
+}
+.rename-input {
+  font: inherit;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+}
+.rename-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.5rem; }
+.rename-actions button {
+  font: inherit;
+  font-size: 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.3rem 0.85rem;
+  cursor: pointer;
+  background: var(--panel);
+  color: var(--fg);
+}
+.rename-confirm { background: var(--broken); color: #fff; border-color: var(--broken); }
+.rename-actions button:disabled { cursor: default; opacity: 0.6; }
+.rename-warning { margin: 0.5rem 0 0; font-size: 0.75rem; color: var(--muted); }
+.rename-warning code { background: var(--code-bg); padding: 0.05rem 0.3rem; border-radius: 4px; }
+.rename-box .editor-banner, .rename-box .editor-findings { margin: 0.5rem 0 0; }
+
 /* -- rendered markdown -- */
 .markdown { overflow-wrap: break-word; }
 .markdown h1, .markdown h2, .markdown h3 { line-height: 1.25; margin: 1.6rem 0 0.6rem; }

@@ -119,7 +119,38 @@
                 </div>
 
                 <dl class="fm-readonly">
-                  <div class="fm-row"><dt>slug</dt><dd x-text="currentPage.slug"></dd></div>
+                  <div class="fm-row fm-row--slug">
+                    <dt>slug</dt>
+                    <dd>
+                      <span x-show="!renaming" x-text="currentPage.slug"></span>
+                      <button type="button" class="rename-btn" x-show="!renaming"
+                              @click="enterRename()">Rename…</button>
+                      <div class="rename-box" x-show="renaming">
+                        <input type="text" class="rename-input" x-model="renameSlug"
+                               placeholder="new-slug"
+                               @keydown.enter.prevent="saveRename()" />
+                        <div class="rename-actions">
+                          <button type="button" class="editor-btn-reload"
+                                  x-show="renameBannerKind === 'conflict'"
+                                  @click="reloadAfterFmConflict()">Reload</button>
+                          <button type="button" class="editor-btn-cancel"
+                                  @click="cancelRename()">Cancel</button>
+                          <button type="button" class="rename-confirm"
+                                  @click="saveRename()" :disabled="renameSaving"
+                                  x-text="renameSaving ? 'Renaming…' : 'Rename'"></button>
+                        </div>
+                        <p class="rename-warning">Renames the file and rewrites every inbound
+                          <code>[[wikilink]]</code> across the wiki, then jumps to the new URL.</p>
+                        <p class="editor-banner" :class="'editor-banner--' + renameBannerKind"
+                           x-show="renameBanner" x-text="renameBanner"></p>
+                        <ul class="editor-findings" x-show="renameFindings.length">
+                          <template x-for="f of renameFindings" :key="f.code + f.path + f.message">
+                            <li x-text="f.path + ' — ' + f.code + ': ' + f.message"></li>
+                          </template>
+                        </ul>
+                      </div>
+                    </dd>
+                  </div>
                   <div class="fm-row"><dt>type</dt><dd x-text="pageMeta.type"></dd></div>
                   <div class="fm-row"><dt>project</dt><dd x-text="currentPage.project"></dd></div>
                   <div class="fm-row"><dt>status</dt><dd x-text="pageMeta.status || '—'"></dd></div>

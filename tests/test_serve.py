@@ -526,6 +526,210 @@ def test_save_frontmatter_rejects_missing_page(tmp_path, run_tome):
 
 
 # --------------------------------------------------------------------------- #
+# rename_page — the [[slug-rename]] write: a slug rename through cli.move_page
+# (the tome mv core), conflict-gated like the others, plus a wiki-wide inbound-
+# link rewrite and a new-errors-only lint gate save_page/save_frontmatter don't
+# need. Returns the new slug's in-app URL for the client to redirect to.
+# --------------------------------------------------------------------------- #
+
+def _scaffold_two_ideas(vault, run_tome):
+    """Project tome + ideas alpha & beta, with beta's body linking [[alpha]],
+    all committed + pushed clean — the fixture for exercising the inbound-link
+    rewrite a rename performs."""
+    run_tome("--vault", str(vault), "new", "project", "tome", "--title", "Tome", "--desc", "d")
+    run_tome("--vault", str(vault), "new", "idea", "alpha", "--project", "tome",
+              "--title", "Alpha", "--desc", "d")
+    run_tome("--vault", str(vault), "new", "idea", "beta", "--project", "tome",
+              "--title", "Beta", "--desc", "d")
+    beta = vault / "wiki" / "tome" / "ideas" / "beta.md"
+    fm, body = tome.read_page(beta)
+    tome.write_page(beta, fm, body + "\nSee [[alpha]] for context.\n")
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "scaffold ideas")
+    _git(vault, "push")
+    return vault / "wiki" / "tome" / "ideas" / "alpha.md", beta
+
+
+@pytestmark_git
+def test_rename_page_happy_path_moves_and_rewrites_links(tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    alpha, beta = _scaffold_two_ideas(vault, run_tome)
+    base_hash = hashlib.sha256(alpha.read_bytes()).hexdigest()
+
+    status, result = serve.rename_page(vault, _conv(vault), "tome/ideas/alpha.md",
+                                        "gamma", base_hash)
+
+    assert status == 200
+    assert result["slug"] == "gamma"
+    assert result["url"] == "?page=gamma"
+    gamma = vault / "wiki" / "tome" / "ideas" / "gamma.md"
+    assert gamma.is_file()
+    assert not alpha.exists()
+    beta_text = beta.read_text(encoding="utf-8")
+    assert "[[gamma]]" in beta_text and "[[alpha]]" not in beta_text
+    assert "[[gamma]]" in (vault / "wiki" / "index.md").read_text(encoding="utf-8")
+    log = _git(origin, "log", "--oneline")
+    assert "mv: alpha -> gamma" in log.stdout
+
+
+@pytestmark_git
+def test_rename_page_conflict_on_stale_hash(tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    alpha, _beta = _scaffold_two_ideas(vault, run_tome)
+    original_text = alpha.read_text(encoding="utf-8")
+
+    status, result = serve.rename_page(vault, _conv(vault), "tome/ideas/alpha.md",
+                                        "gamma", "stale-hash")
+
+    assert status == 409
+    assert "currentHash" in result
+    assert alpha.read_text(encoding="utf-8") == original_text  # untouched
+    assert not (vault / "wiki" / "tome" / "ideas" / "gamma.md").exists()
+    assert _git(vault, "status", "--porcelain").stdout.strip() == ""
+
+
+@pytestmark_git
+def test_rename_page_noop_when_same_slug(tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    alpha, _beta = _scaffold_two_ideas(vault, run_tome)
+    base_hash = hashlib.sha256(alpha.read_bytes()).hexdigest()
+
+    status, result = serve.rename_page(vault, _conv(vault), "tome/ideas/alpha.md",
+                                        "alpha", base_hash)
+
+    assert status == 200
+    assert result["slug"] == "alpha"
+    assert _git(vault, "status", "--porcelain").stdout.strip() == ""
+    assert "mv: alpha" not in _git(origin, "log", "--oneline").stdout
+
+
+@pytestmark_git
+def test_rename_page_rejects_invalid_slug(tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    alpha, _beta = _scaffold_two_ideas(vault, run_tome)
+    base_hash = hashlib.sha256(alpha.read_bytes()).hexdigest()
+
+    status, result = serve.rename_page(vault, _conv(vault), "tome/ideas/alpha.md",
+                                        "Not A Slug", base_hash)
+
+    assert status == 400
+    assert "slug" in result["error"]
+    assert alpha.exists()  # nothing moved
+
+
+@pytestmark_git
+def test_rename_page_rejects_taken_slug(tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    alpha, _beta = _scaffold_two_ideas(vault, run_tome)
+    base_hash = hashlib.sha256(alpha.read_bytes()).hexdigest()
+
+    status, result = serve.rename_page(vault, _conv(vault), "tome/ideas/alpha.md",
+                                        "beta", base_hash)
+
+    assert status == 400
+    assert "beta" in result["error"]
+    assert alpha.exists()
+    assert _git(vault, "status", "--porcelain").stdout.strip() == ""
+
+
+@pytestmark_git
+def test_rename_page_rejects_project_hub(tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    _scaffold_two_ideas(vault, run_tome)
+    hub = vault / "wiki" / "tome" / "tome.md"
+    base_hash = hashlib.sha256(hub.read_bytes()).hexdigest()
+
+    status, result = serve.rename_page(vault, _conv(vault), "tome/tome.md",
+                                        "grimoire", base_hash)
+
+    assert status == 400
+    assert "hub" in result["error"]
+    assert hub.exists()
+
+
+@pytestmark_git
+def test_rename_page_regenerates_hub_for_plan(tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    run_tome("--vault", str(vault), "new", "project", "tome", "--title", "Tome", "--desc", "d")
+    run_tome("--vault", str(vault), "new", "plan", "my-plan", "--project", "tome",
+              "--title", "My Plan", "--desc", "a plan")
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "add plan")
+    _git(vault, "push")
+
+    target = vault / "wiki" / "tome" / "plans" / "my-plan.md"
+    base_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+
+    status, result = serve.rename_page(vault, _conv(vault), "tome/plans/my-plan.md",
+                                        "the-plan", base_hash)
+
+    assert status == 200
+    assert (vault / "wiki" / "tome" / "plans" / "the-plan.md").is_file()
+    hub_text = (vault / "wiki" / "tome" / "tome.md").read_text(encoding="utf-8")
+    assert "[[the-plan]]" in hub_text and "[[my-plan]]" not in hub_text
+    assert "mv: my-plan -> the-plan" in _git(origin, "log", "--oneline").stdout
+
+
+@pytestmark_git
+def test_rename_page_lint_failure_resets_move(tmp_path, run_tome, monkeypatch):
+    """A rewrite that leaves a dangling link is caught by the new-errors-only
+    gate even on a page outside the touched set; the whole move is then rolled
+    back from HEAD (no single buffer to restore, unlike the field editors)."""
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    alpha, beta = _scaffold_two_ideas(vault, run_tome)
+    base_hash = hashlib.sha256(alpha.read_bytes()).hexdigest()
+    original_beta = beta.read_text(encoding="utf-8")
+
+    # Force a fabricated *new* error on the post-move lint pass only, so the
+    # gate fires and _reset_move runs — the pre-move pass stays clean.
+    real = tome.run_all_lint_checks
+    calls = {"n": 0}
+
+    def fake(vault_root, conventions):
+        pages, findings = real(vault_root, conventions)
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            findings = findings + [tome.Finding(tome.ERROR, "BROKEN_LINK",
+                                                "tome/ideas/beta.md", "fabricated")]
+        return pages, findings
+
+    monkeypatch.setattr(tome, "run_all_lint_checks", fake)
+
+    status, result = serve.rename_page(vault, _conv(vault), "tome/ideas/alpha.md",
+                                        "gamma", base_hash)
+
+    assert status == 422
+    assert {f["code"] for f in result["findings"]} == {"BROKEN_LINK"}
+    assert alpha.is_file()  # move rolled back
+    assert not (vault / "wiki" / "tome" / "ideas" / "gamma.md").exists()
+    assert beta.read_text(encoding="utf-8") == original_beta  # rewrite reverted
+    assert _git(vault, "status", "--porcelain").stdout.strip() == ""  # tree clean
+    assert "mv: alpha -> gamma" not in _git(origin, "log", "--oneline").stdout
+
+
+@pytestmark_git
+def test_rename_page_rejects_path_traversal(tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+
+    status, result = serve.rename_page(vault, _conv(vault), "../../etc/passwd",
+                                        "pwned", "irrelevant")
+
+    assert status == 404
+    assert "error" in result
+
+
+@pytestmark_git
+def test_rename_page_rejects_missing_page(tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+
+    status, result = serve.rename_page(vault, _conv(vault), "tome/ideas/no-such-page.md",
+                                        "gamma", "irrelevant")
+
+    assert status == 404
+    assert "error" in result
+
+
+# --------------------------------------------------------------------------- #
 # writable flag — live serve vs. static export, layered onto build_board()
 # without changing its own pure-function contract (tested above).
 # --------------------------------------------------------------------------- #

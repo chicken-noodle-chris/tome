@@ -28,7 +28,14 @@ tome_cli.serve — the local browse host for the no-build frontend.
     frontmatter fields (slug, type, project, status, created, updated) are
     read-only: they're either structural (derived from the file's path) or
     owned by another surface (the board, `tome mv`). Same conflict model,
-    same `board.writable` gate, same absence from the static export.
+    same `board.writable` gate, same absence from the static export;
+  * accepts a fourth write, `POST /api/rename`, renaming a page's slug through
+    `cli.move_page` — the `tome mv` core ([[slug-rename]]) — see `rename_page()`
+    below. The slug is the filename, every `[[wikilink]]`'s target, and the
+    page's URL at once, so this moves the file, rewrites inbound links wiki-
+    wide, and returns the new URL for the client to redirect to. Same conflict
+    model and `board.writable` gate, gated harder on lint (new-errors-only, not
+    single-page-scoped), and likewise absent from the static export.
 
 The JSON *schemas* are the deliberate, permanent part of this slice; the
 server internals and the frontend are rough by design and hardened in place by
@@ -453,8 +460,118 @@ def save_frontmatter(vault_root, conventions, rel, fields, base_hash):
     return 200, {"hash": hashlib.sha256(target.read_bytes()).hexdigest()}
 
 
+def _reset_move(vault_root, result):
+    """Undo `cli.move_page`'s on-disk changes when a rename is rejected after
+    the move ran. Unlike save_page/save_frontmatter — which snapshot the one
+    edited file's bytes — a rename spans many files (the renamed page, every
+    rewritten linker, the index, the hub), so the reset is scoped to exactly
+    the paths the move touched: unlink the new (untracked) file, then restore
+    every other touched path from HEAD (the deleted original, the rewritten
+    linkers, the regenerated index/hub). Nothing outside `touched_paths` is
+    reset, so a concurrent unrelated dirty file is left alone."""
+    from tome_cli import cli
+
+    if result.new_path.exists():
+        result.new_path.unlink()
+    rel_paths = [str(p.resolve().relative_to(vault_root)) for p in result.touched_paths
+                 if p != result.new_path]
+    if rel_paths:
+        cli.run_git(vault_root, ["checkout", "HEAD", "--", *rel_paths])
+
+
+def rename_page(vault_root, conventions, rel, new_slug, base_hash):
+    """The [[slug-rename]] save path: rename a page's slug through
+    `cli.move_page` — the same core `tome mv` uses — under the same optimistic-
+    concurrency gate as the body/frontmatter editors. Returns (http_status,
+    payload_dict), never raising, mirroring `save_page`/`save_frontmatter`.
+
+    A slug rename is categorically heavier than a field edit: the slug is the
+    filename, the target every `[[wikilink]]` resolves against, and the page's
+    own URL — so a botched rename dangles links across the whole vault. This
+    path therefore gates harder than save_page's single-page lint scope.
+
+    1. Validate the new slug's shape, then pull so the conflict check is
+       against the latest remote.
+    2. Hash the file's current bytes; a `base_hash` mismatch means the page
+       changed since the client opened it — refuse, rename nothing (409).
+    3. Snapshot the pre-move lint errors, then call `cli.move_page` (file move
+       + wiki-wide link rewrite + index/hub regen). A VaultError from it
+       (bad/taken slug, project hub, collision) is a 400, nothing moved.
+    4. Lint gate: any error present after the move that wasn't there before is
+       a hard failure (422) — this catches a linker the rewrite somehow left
+       dangling even on a page outside the touched set, which a scoped-to-
+       touched-paths gate would miss; pre-existing unrelated errors are
+       ignored. On failure the move is reset (there's no single buffer to
+       restore — the whole touched set is rolled back from HEAD).
+    5. Commit the union of touched paths (old path's deletion, new path, rebuilt
+       index/hub, every rewritten linker) + push, reusing `cli._push_with_retry`
+       like the other write paths. Return the new slug's in-app URL.
+
+    As with every write route, this endpoint is absent from the static export.
+    """
+    from tome_cli import cli
+
+    target = _page_path(vault_root, rel)
+    if target is None:
+        return 404, {"error": "no such page"}
+
+    if not isinstance(new_slug, str) or not cli.SLUG_RE.match(new_slug):
+        return 400, {"error": f"{new_slug!r} is not a valid slug (lowercase kebab-case)"}
+
+    pull = cli.run_git(vault_root, ["pull", "--rebase", "--autostash"])
+    if pull.returncode != 0:
+        return 500, {"error": (pull.stderr or pull.stdout).strip() or "git pull failed"}
+
+    original_bytes = target.read_bytes()
+    current_hash = hashlib.sha256(original_bytes).hexdigest()
+    if base_hash != current_hash:
+        return 409, {"error": "page changed since you opened it",
+                     "currentHash": current_hash}
+
+    slug = target.stem  # the file's stem is its slug (find_page keys on it)
+    if new_slug == slug:
+        return 200, {"slug": slug, "url": f"?page={slug}", "hash": current_hash}
+
+    def _err_sig(findings):
+        return {(f.code, f.path, f.message) for f in findings
+                if f.severity == cli.ERROR}
+
+    _, pre_findings = cli.run_all_lint_checks(vault_root, conventions)
+    pre_errors = _err_sig(pre_findings)
+
+    try:
+        result = cli.move_page(vault_root, conventions, slug, new_slug)
+    except cli.VaultError as e:
+        return 400, {"error": str(e)}
+
+    _, post_findings = cli.run_all_lint_checks(vault_root, conventions)
+    new_errors = [f for f in post_findings
+                  if f.severity == cli.ERROR and (f.code, f.path, f.message) not in pre_errors]
+    if new_errors:
+        _reset_move(vault_root, result)
+        return 422, {"error": "lint failed", "findings": [f.as_dict() for f in new_errors]}
+
+    rel_paths = [str(p.resolve().relative_to(vault_root)) for p in result.touched_paths]
+    add = cli.run_git(vault_root, ["add", "-A", "--", *rel_paths])
+    if add.returncode != 0:
+        _reset_move(vault_root, result)
+        return 500, {"error": (add.stderr or "git add failed").strip()}
+
+    commit = cli.run_git(vault_root, ["commit", "-m", f"mv: {slug} -> {new_slug}"])
+    if commit.returncode != 0:
+        _reset_move(vault_root, result)
+        return 500, {"error": (commit.stderr or commit.stdout).strip() or "git commit failed"}
+
+    push_code = cli._push_with_retry(vault_root)
+    if push_code != 0:
+        return 500, {"error": "commit landed locally but push failed — resolve manually"}
+
+    return 200, {"slug": new_slug, "url": f"?page={new_slug}",
+                 "hash": hashlib.sha256(result.new_path.read_bytes()).hexdigest()}
+
+
 # --------------------------------------------------------------------------- #
-# HTTP handler — GET (four route families, path-safe raw reads) plus three
+# HTTP handler — GET (four route families, path-safe raw reads) plus four
 # POST write routes.
 # --------------------------------------------------------------------------- #
 
@@ -536,6 +653,20 @@ class TomeHandler(BaseHTTPRequestHandler):
                 if not rel or not isinstance(fields, dict):
                     return self._send_json({"error": "path and fields are required"}, status=400)
                 status_code, result = save_frontmatter(self.vault_root, self.conventions, rel, fields, base_hash)
+                return self._send_json(result, status=status_code)
+            if path == "/api/rename":
+                length = int(self.headers.get("Content-Length") or 0)
+                raw_body = self.rfile.read(length) if length else b""
+                try:
+                    payload = json.loads(raw_body) if raw_body else {}
+                except json.JSONDecodeError:
+                    return self._send_json({"error": "malformed JSON body"}, status=400)
+                rel = payload.get("path")
+                new_slug = payload.get("newSlug")
+                base_hash = str(payload.get("baseHash") or "")
+                if not rel or not new_slug:
+                    return self._send_json({"error": "path and newSlug are required"}, status=400)
+                status_code, result = rename_page(self.vault_root, self.conventions, rel, new_slug, base_hash)
                 return self._send_json(result, status=status_code)
             self._send_error(404, "not found")
         except BrokenPipeError:
@@ -700,6 +831,7 @@ def cmd_serve(vault_root, conventions, args):
     print("  POST /api/task/<id>/status  (status moves, shelled to backlog.md)")
     print("  POST /api/page              (body edits, conflict + lint gated)")
     print("  POST /api/frontmatter       (title/tags/description edits, conflict + lint gated)")
+    print("  POST /api/rename            (slug rename via tome mv, conflict + lint gated)")
 
     idle_minutes = getattr(args, "idle_timeout", 0) or 0
     if idle_minutes > 0:

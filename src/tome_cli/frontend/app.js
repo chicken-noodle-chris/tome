@@ -105,6 +105,16 @@ function tomeApp() {
     tagTaxonomy: [], // index.json's controlled vocabulary
     allowProjectTags: false,
 
+    // slug rename ([[slug-rename]]) — a sub-mode of frontmatter editing: the
+    // read-only slug row gains a rename affordance, kept visually distinct
+    // because its blast radius (every inbound wikilink) dwarfs a field edit.
+    renaming: false,
+    renameSaving: false,
+    renameSlug: "",
+    renameBanner: "",
+    renameBannerKind: "", // "conflict" | "lint" | "error"
+    renameFindings: [],
+
     // sidebar
     collapsed: {}, // project name -> true when its section is folded shut
 
@@ -324,6 +334,7 @@ function tomeApp() {
       this.fmBanner = "";
       this.fmBannerKind = "";
       this.fmFindings = [];
+      this.cancelRename();
     },
 
     async reloadAfterFmConflict() {
@@ -392,6 +403,71 @@ function tomeApp() {
         this.fmBanner = `Save failed: ${e.message}`;
       } finally {
         this.fmSaving = false;
+      }
+    },
+
+    // -- slug rename ([[slug-rename]]) ------------------------------------ //
+    // Exposes `tome mv` in the browser via POST /api/rename: renames the file,
+    // rewrites every inbound wikilink wiki-wide, and — because the slug *is*
+    // the URL — hard-navigates to the new page on success. This is the one
+    // write in the whole authoring surface that leaves the page behind.
+
+    enterRename() {
+      if (!this.currentPage) return;
+      this.renaming = true;
+      this.renameSlug = this.currentPage.slug;
+      this.renameBanner = "";
+      this.renameBannerKind = "";
+      this.renameFindings = [];
+    },
+
+    cancelRename() {
+      this.renaming = false;
+      this.renameSlug = "";
+      this.renameBanner = "";
+      this.renameBannerKind = "";
+      this.renameFindings = [];
+    },
+
+    async saveRename() {
+      if (!this.currentPage || this.renameSaving) return;
+      const newSlug = this.renameSlug.trim();
+      if (!newSlug || newSlug === this.currentPage.slug) {
+        this.cancelRename();
+        return;
+      }
+      this.renameSaving = true;
+      this.renameBanner = "";
+      this.renameBannerKind = "";
+      this.renameFindings = [];
+      try {
+        const res = await fetch("/api/rename", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: this.currentPage.path, newSlug, baseHash: this.currentHash }),
+        });
+        const data = await res.json();
+        if (res.status === 200) {
+          // The page's identity changed underneath us — hard-navigate so the
+          // whole app (index.json included) reloads against the new slug.
+          window.location.assign(data.url || `?page=${encodeURIComponent(data.slug)}`);
+        } else if (res.status === 409) {
+          this.renameBannerKind = "conflict";
+          this.renameBanner = "This page changed since you opened it — nothing was renamed. "
+            + "Reload to get the new version, then try again.";
+        } else if (res.status === 422) {
+          this.renameBannerKind = "lint";
+          this.renameBanner = "Rename rejected — lint errors:";
+          this.renameFindings = data.findings || [];
+        } else {
+          this.renameBannerKind = "error";
+          this.renameBanner = data.error || `Rename failed (HTTP ${res.status})`;
+        }
+      } catch (e) {
+        this.renameBannerKind = "error";
+        this.renameBanner = `Rename failed: ${e.message}`;
+      } finally {
+        this.renameSaving = false;
       }
     },
 
