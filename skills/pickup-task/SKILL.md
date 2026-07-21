@@ -10,17 +10,20 @@ This skill executes work that's already been planned. Use `scripts/tome.py` (`to
 to manage status changes — don't hand-execute git or status moves. `tome` is on PATH in
 Bash; if not found, fall back to `python "$TOME_PLUGIN_ROOT/scripts/tome.py" <cmd>`. It
 resolves which vault via `--vault` / walking up from cwd / `VAULT_ROOT`; bare paths like
-`wiki/SCHEMA.md` are relative to the vault root, not the plugin root.
+`wiki/SCHEMA.md` are relative to the vault root, not the plugin root. Run `tome` from
+wherever you already are — it finds the vault itself. Don't `cd` into the vault or `find`
+your way to task/plan files; let the `tome` commands surface them.
 
 **The user is always happy to answer questions.** If intent or scope is unclear — which task,
 how far to take it, an ambiguity in the plan — ask.
 
-1. **Prep on Haiku (gate).** Steps 2–3 are mechanical — a git pull, priming, and a task
-   lookup — and don't need a strong model. If you are **not** running as Haiku, stop and
-   ask whether to switch to Haiku for the prep (the user may decline and stay on their
-   current model — either is fine; you can't switch your own model, only they can).
-   Already Haiku, or once they've answered: continue. The tier that matters for the
-   actual *work* is a separate decision, made at step 4 once the task is known.
+1. **Prep on Haiku (gate).** Steps 2–4 are mechanical — a git pull, priming, locating the
+   task, and marking it started — and don't need a strong model. If you are **not** running
+   as Haiku, stop and ask whether to switch to Haiku for the prep (the user may decline and
+   stay on their current model — either is fine; you can't switch your own model, only they
+   can). Already Haiku, or once they've answered: continue. The tier that matters for the
+   actual *work* is a separate decision, made at step 5 once the task is started and its
+   plan body is in front of you.
 
 2. **Prime yourself on the vault.** Run `tome sync` to pull, then `tome prime --full`
    (skip if already primed this session) — prints SCHEMA.md and the index in one shot.
@@ -36,21 +39,25 @@ how far to take it, an ambiguity in the plan — ask.
    no name given at all, check the board (`tome task task list --plain`) and the project's
    live plans (`plans/`, not `plans/archive/`) and confirm which one they mean.
 
-4. **Check the agent-tier label.** With the task located, read its `agent:<tier>` label
-   (tier: `haiku` < `sonnet` < `opus` < `fable` — the suggested executor for the *work*,
-   not the prep) and compare it against the model you are running as — which, if you took
-   the Haiku prep at step 1, is still Haiku. If the tier *differs in either direction*, or
-   there's a label and you can't tell, **stop before starting the work**: tell the user
-   the suggested tier and your own, and wait. Running below the tier risks the work's
-   quality; running above it wastes capability and money — both are the user's call,
-   they'll switch the model or tell you to continue. No label, or an exact match: proceed.
-
-5. **Mark the work started.** `tome start <task-id-or-slug>` — accepts either, resolving
+4. **Mark the work started.** `tome start <task-id-or-slug>` — accepts either, resolving
    the other half if linked (a plan without a task, or a task without a plan, is normal).
    Sets the plan `active`, moves the task to In Progress (`-a @me`), logs `work-started`,
-   syncs, then prints the task text and the full plan body as your working context — read
-   it in full, follow its `[[wikilinks]]`, and if you have concerns stop and discuss with
-   the user before continuing.
+   syncs, then prints the task text (labels included) and the full plan body as your
+   working context. Run it directly — it's pure bookkeeping, no strong model needed, and it
+   dumps everything the next two steps need, so there's no separate task-lookup step. Read
+   the plan in full and follow its `[[wikilinks]]`; if you have concerns, stop and discuss
+   with the user before going further.
+
+5. **Check the agent-tier label (gate).** The task text `tome start` just printed carries
+   an `agent:<tier>` label (tier: `haiku` < `sonnet` < `opus` < `fable` — the suggested
+   executor for the *work*, not the prep). Compare it against the model you are running as —
+   still Haiku if you took the prep gate at step 1. If the tier *differs in either
+   direction*, or there's a label and you can't tell, **stop before doing the work**: tell
+   the user the suggested tier and your own, and wait. Running below the tier risks the
+   work's quality; running above it wastes capability and money — both are the user's call,
+   they'll switch the model or tell you to continue. No label, or an exact match: proceed.
+   (Starting the task on Haiku and handing the work to a higher tier is an accurate state —
+   the task *is* started; the switch is only about who does step 6.)
 
 6. **Do the task work.** Execute the plan in the relevant code repo (not the vault),
    following that repo's `CLAUDE.md`. Stick to the plan's scope; if you hit a fork it
