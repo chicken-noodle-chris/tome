@@ -21,7 +21,14 @@ tome_cli.serve — the local browse host for the no-build frontend.
   * accepts a second write, `POST /api/page`, editing a page's body through
     `cli.write_page` + the lint gate ([[page-editing]]) — see `save_page()`
     below for the conflict/lint contract. Also absent on a static export, and
-    gated on the same `board.writable` flag client-side (no separate flag).
+    gated on the same `board.writable` flag client-side (no separate flag);
+  * accepts a third write, `POST /api/frontmatter`, editing a page's title,
+    tags, and description through the same `fm_set` + lint-gate machinery
+    ([[frontmatter-editing]]) — see `save_frontmatter()` below. The other
+    frontmatter fields (slug, type, project, status, created, updated) are
+    read-only: they're either structural (derived from the file's path) or
+    owned by another surface (the board, `tome mv`). Same conflict model,
+    same `board.writable` gate, same absence from the static export.
 
 The JSON *schemas* are the deliberate, permanent part of this slice; the
 server internals and the frontend are rough by design and hardened in place by
@@ -96,7 +103,16 @@ def build_index(vault_root, conventions):
             "links": list(dict.fromkeys(p.get("links", []))),
         })
     out.sort(key=lambda e: e["slug"])
-    return {"pages": out}
+    tag_conv = conventions.get("tags", {})
+    return {
+        "pages": out,
+        # The frontmatter editor's tag add-control ([[frontmatter-editing]])
+        # offers this taxonomy plus, if allowed, each page's own project —
+        # already present in `out` above, so only the taxonomy itself needs
+        # to travel from conventions.toml to the client.
+        "tagTaxonomy": sorted(tag_conv.get("taxonomy", [])),
+        "allowProjectTags": bool(tag_conv.get("allow_project_name_tags")),
+    }
 
 
 _STATUSES_RE = re.compile(r"^statuses:\s*(\[.*\])\s*$")
@@ -280,8 +296,165 @@ def save_page(vault_root, conventions, rel, body, base_hash):
     return 200, {"hash": hashlib.sha256(target.read_bytes()).hexdigest()}
 
 
+_FM_EDITABLE_FIELDS = {"title", "tags", "description"}
+
+
+def _rebuild_derived(vault_root, conventions, wiki_root, ptype, project):
+    """Re-run the index (and, for a plan, the hub) generation that title/tags/
+    description feed into — the same always-run step `cmd_describe`/`cmd_new`
+    take after a frontmatter write, done here explicitly since this path has
+    no CLI command to fall through to. Called both after a save (to make the
+    new state current) and to undo a rejected save (regenerating from the
+    just-restored bytes, so a failed edit never leaves index.md/the hub
+    pointing at frontmatter that no longer exists on disk)."""
+    from tome_cli import cli
+
+    _, pages = cli.collect(vault_root, conventions)
+    index_path = cli.rebuild_index(vault_root, conventions, wiki_root, pages)
+    hub_path = cli.regenerate_hub(conventions, wiki_root, pages, project) if ptype == "plan" else None
+    return index_path, hub_path
+
+
+def save_frontmatter(vault_root, conventions, rel, fields, base_hash):
+    """The [[frontmatter-editing]] save path: optimistic-concurrency write of
+    title/tags/description, gated by a lint check scoped to just this page.
+    Returns (http_status, payload_dict), mirroring `save_page()`.
+
+    1. Pull, hash-check `base_hash` exactly as `save_page` does (409 on a
+       stale base, nothing written).
+    2. Diff each editable field against the page's *parsed* frontmatter
+       (`cli.collect`'s dict, not raw fm_lines — tags is a list there, so the
+       comparison doesn't need its own list-vs-string parsing) and reject
+       (400, nothing written) any value that would corrupt the hand-rolled
+       frontmatter subset once quoted/inlined: a literal quote or newline, or
+       — for tags — a comma/bracket that would split a inline-list entry.
+       No changed fields is a no-op 200, not a write.
+    3. Apply changed fields via `fm_set` — the same primitive `cmd_describe`
+       uses — bump `updated`, and write through `cli.write_page`.
+    4. Regenerate the index (+ hub, if this is a plan): unlike `save_page`'s
+       body edits, title/tags/description feed the generated index, so this
+       must happen *before* the lint gate below or every save would trip
+       INDEX_DRIFT against itself.
+    5. Lint gate scoped to this page's `rel_str`, same rule as `save_page`:
+       an unrelated pre-existing error elsewhere must not block an otherwise-
+       clean save. On any error here, restore the original bytes *and*
+       regenerate the index/hub again so they don't keep pointing at
+       frontmatter that no longer exists (422).
+    6. Commit every touched path (page, index, hub) + push, reusing
+       `cli._push_with_retry` like `save_page`.
+    """
+    from tome_cli import cli
+
+    target = _page_path(vault_root, rel)
+    if target is None:
+        return 404, {"error": "no such page"}
+
+    unknown = set(fields) - _FM_EDITABLE_FIELDS
+    if unknown:
+        return 400, {"error": f"unsupported field(s): {', '.join(sorted(unknown))}"}
+
+    pull = cli.run_git(vault_root, ["pull", "--rebase", "--autostash"])
+    if pull.returncode != 0:
+        return 500, {"error": (pull.stderr or pull.stdout).strip() or "git pull failed"}
+
+    original_bytes = target.read_bytes()
+    current_hash = hashlib.sha256(original_bytes).hexdigest()
+    if base_hash != current_hash:
+        return 409, {"error": "page changed since you opened it",
+                      "currentHash": current_hash}
+
+    wiki_root = (vault_root / "wiki").resolve()
+    rel_str = target.relative_to(wiki_root).as_posix()
+    _, pages = cli.collect(vault_root, conventions)
+    page = next((p for p in pages if p["rel_path"] == rel_str and "read_error" not in p), None)
+    if page is None:
+        return 400, {"error": "page frontmatter could not be parsed"}
+
+    changed = {}
+    if "title" in fields:
+        new_title = fields["title"]
+        if not isinstance(new_title, str) or not new_title.strip():
+            return 400, {"error": "title must be a non-empty string"}
+        try:
+            cli.validate_oneline(new_title, "title")
+        except cli.VaultError as e:
+            return 400, {"error": str(e)}
+        if new_title != (page["meta"].get("title") or ""):
+            changed["title"] = new_title
+
+    if "tags" in fields:
+        new_tags = fields["tags"]
+        if not isinstance(new_tags, list) or not all(isinstance(t, str) for t in new_tags):
+            return 400, {"error": "tags must be a list of strings"}
+        new_tags = [t.strip() for t in new_tags]
+        if not all(new_tags):
+            return 400, {"error": "tags must not be empty"}
+        for t in new_tags:
+            if any(ch in t for ch in ',[]"\'\n'):
+                return 400, {"error": f"tag {t!r} contains an unsupported character"}
+        if new_tags != (page["meta"].get("tags") or []):
+            changed["tags"] = new_tags
+
+    if "description" in fields:
+        new_desc = fields["description"]
+        if not isinstance(new_desc, str):
+            return 400, {"error": "description must be a string"}
+        max_chars = conventions.get("description", {}).get("max_chars", 140)
+        try:
+            cli.validate_oneline(new_desc, "description", max_chars)
+        except cli.VaultError as e:
+            return 400, {"error": str(e)}
+        if new_desc != (page["meta"].get("description") or ""):
+            changed["description"] = new_desc
+
+    if not changed:
+        return 200, {"hash": current_hash}
+
+    fm_lines, body = cli.read_page(target)
+    if "title" in changed:
+        cli.fm_set(fm_lines, "title", changed["title"], quote=True)
+    if "tags" in changed:
+        cli.fm_set(fm_lines, "tags", "[" + ", ".join(changed["tags"]) + "]")
+    if "description" in changed:
+        cli.fm_set(fm_lines, "description", changed["description"], quote=True)
+    cli.fm_set(fm_lines, "updated", cli.today())
+    try:
+        cli.write_page(target, fm_lines, body)
+    except cli.VaultError as e:
+        return 400, {"error": str(e)}
+
+    ptype = page["meta"].get("type")
+    project = PurePosixPath(rel_str).parts[0]
+    index_path, hub_path = _rebuild_derived(vault_root, conventions, wiki_root, ptype, project)
+
+    _, findings = cli.run_all_lint_checks(vault_root, conventions)
+    errors = [f for f in findings if f.severity == cli.ERROR and f.path == rel_str]
+    if errors:
+        target.write_bytes(original_bytes)
+        _rebuild_derived(vault_root, conventions, wiki_root, ptype, project)
+        return 422, {"error": "lint failed", "findings": [f.as_dict() for f in errors]}
+
+    touched = [target, index_path] + ([hub_path] if hub_path is not None else [])
+    rel_paths = [str(p.resolve().relative_to(vault_root)) for p in touched]
+    add = cli.run_git(vault_root, ["add", "--", *rel_paths])
+    if add.returncode != 0:
+        target.write_bytes(original_bytes)
+        _rebuild_derived(vault_root, conventions, wiki_root, ptype, project)
+        return 500, {"error": (add.stderr or "git add failed").strip()}
+
+    commit = cli.run_git(vault_root, ["commit", "-m", f"edit frontmatter: {target.stem}"])
+    if commit.returncode != 0:
+        return 500, {"error": (commit.stderr or commit.stdout).strip() or "git commit failed"}
+
+    push_code = cli._push_with_retry(vault_root)
+    if push_code != 0:
+        return 500, {"error": "commit landed locally but push failed — resolve manually"}
+
+    return 200, {"hash": hashlib.sha256(target.read_bytes()).hexdigest()}
+
+
 # --------------------------------------------------------------------------- #
-# HTTP handler — GET (four route families, path-safe raw reads) plus two
+# HTTP handler — GET (four route families, path-safe raw reads) plus three
 # POST write routes.
 # --------------------------------------------------------------------------- #
 
@@ -349,6 +522,20 @@ class TomeHandler(BaseHTTPRequestHandler):
                 if not rel or body is None:
                     return self._send_json({"error": "path and body are required"}, status=400)
                 status_code, result = save_page(self.vault_root, self.conventions, rel, body, base_hash)
+                return self._send_json(result, status=status_code)
+            if path == "/api/frontmatter":
+                length = int(self.headers.get("Content-Length") or 0)
+                raw_body = self.rfile.read(length) if length else b""
+                try:
+                    payload = json.loads(raw_body) if raw_body else {}
+                except json.JSONDecodeError:
+                    return self._send_json({"error": "malformed JSON body"}, status=400)
+                rel = payload.get("path")
+                fields = payload.get("fields")
+                base_hash = str(payload.get("baseHash") or "")
+                if not rel or not isinstance(fields, dict):
+                    return self._send_json({"error": "path and fields are required"}, status=400)
+                status_code, result = save_frontmatter(self.vault_root, self.conventions, rel, fields, base_hash)
                 return self._send_json(result, status=status_code)
             self._send_error(404, "not found")
         except BrokenPipeError:
@@ -512,6 +699,7 @@ def cmd_serve(vault_root, conventions, args):
     print("  serving  /  /index.json  /board.json  /raw/<page>.md  /app/<file>")
     print("  POST /api/task/<id>/status  (status moves, shelled to backlog.md)")
     print("  POST /api/page              (body edits, conflict + lint gated)")
+    print("  POST /api/frontmatter       (title/tags/description edits, conflict + lint gated)")
 
     idle_minutes = getattr(args, "idle_timeout", 0) or 0
     if idle_minutes > 0:

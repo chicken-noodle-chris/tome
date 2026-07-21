@@ -7,8 +7,12 @@
 // `/index.json` and `/board.json`; raw markdown comes from `/raw/…`. The board
 // supports drag-to-move when `board.writable` is true (a live `tome serve`),
 // POSTing to `/api/task/<id>/status`; the page view supports body editing on
-// the same flag, POSTing to `/api/page` ([[page-editing]]) — both absent on a
-// static export, where everything stays read-only. No other writes exist.
+// the same flag, POSTing to `/api/page` ([[page-editing]]), and frontmatter
+// editing (title/tags/description), POSTing to `/api/frontmatter`
+// ([[frontmatter-editing]]) — all absent on a static export, where everything
+// stays read-only. No other writes exist. Body and frontmatter editing share
+// one conflict token (`currentHash`, since both touch the same file) but only
+// one edit mode is active at a time.
 //
 // Alpine is the behaviour layer (vendored, no build). This module registers the
 // component on the `alpine:init` event, which Alpine dispatches when it starts —
@@ -91,6 +95,16 @@ function tomeApp() {
     editorBannerKind: "", // "conflict" | "lint" | "error"
     editorFindings: [],
 
+    // frontmatter editing ([[frontmatter-editing]])
+    fmEditing: false,
+    fmSaving: false,
+    fmBanner: "",
+    fmBannerKind: "", // "conflict" | "lint" | "error"
+    fmFindings: [],
+    fmForm: { title: "", tags: [], description: "" },
+    tagTaxonomy: [], // index.json's controlled vocabulary
+    allowProjectTags: false,
+
     // sidebar
     collapsed: {}, // project name -> true when its section is folded shut
 
@@ -109,6 +123,8 @@ function tomeApp() {
         ]);
         this.pages = index.pages || [];
         this.bySlug = new Map(this.pages.map((p) => [p.slug, p]));
+        this.tagTaxonomy = index.tagTaxonomy || [];
+        this.allowProjectTags = !!index.allowProjectTags;
         this.board = board;
       } catch (e) {
         this.pageError = "Failed to load vault data: " + e.message;
@@ -129,6 +145,7 @@ function tomeApp() {
 
     async loadPage(slug, { push = true } = {}) {
       if (this.editing) this.exitEdit(); // navigating away discards any in-progress edit
+      if (this.fmEditing) this.cancelFmEdit();
       const page = this.bySlug.get(slug);
       this.view = "page";
       this.currentSlug = slug;
@@ -197,7 +214,7 @@ function tomeApp() {
     // client (409) rather than silently clobbering it.
 
     async enterEdit() {
-      if (this.editorLoading || !this.currentPage) return;
+      if (this.editorLoading || !this.currentPage || this.fmEditing) return;
       this.editorLoading = true;
       try {
         await Promise.all([...EDITOR_STYLES.map(loadStyle), ...EDITOR_SCRIPTS.map(loadScript)]);
@@ -279,6 +296,102 @@ function tomeApp() {
         this.editorBanner = `Save failed: ${e.message}`;
       } finally {
         this.saving = false;
+      }
+    },
+
+    // -- frontmatter editing ([[frontmatter-editing]]) -------------------- //
+    // A form over title/tags/description — the fields with a `tome` op that
+    // owns writing them, unlike the read-only structural/board-owned fields
+    // (slug, type, project, status, created, updated). Saves POST to
+    // /api/frontmatter with the same base hash the body editor uses, so a
+    // page edited underneath the client is caught the same way (409).
+
+    enterFmEdit() {
+      if (!this.currentPage || !this.pageMeta || this.editing) return;
+      this.fmForm = {
+        title: this.pageMeta.title || "",
+        tags: Array.isArray(this.pageMeta.tags) ? [...this.pageMeta.tags] : [],
+        description: this.pageMeta.description || "",
+      };
+      this.fmBanner = "";
+      this.fmBannerKind = "";
+      this.fmFindings = [];
+      this.fmEditing = true;
+    },
+
+    cancelFmEdit() {
+      this.fmEditing = false;
+      this.fmBanner = "";
+      this.fmBannerKind = "";
+      this.fmFindings = [];
+    },
+
+    async reloadAfterFmConflict() {
+      this.cancelFmEdit();
+      await this.loadPage(this.currentSlug, { push: false });
+    },
+
+    // Taxonomy tags plus, if the vault allows it, every known project name —
+    // minus whatever's already on the form, so the add-control only ever
+    // offers a tag that would actually add something.
+    tagSuggestions() {
+      const projectTags = this.allowProjectTags
+        ? [...new Set(this.pages.map((p) => p.project).filter(Boolean))]
+        : [];
+      const all = [...new Set([...this.tagTaxonomy, ...projectTags])].sort();
+      return all.filter((t) => !this.fmForm.tags.includes(t));
+    },
+
+    addFmTag(tag) {
+      if (!tag || this.fmForm.tags.includes(tag)) return;
+      this.fmForm.tags = [...this.fmForm.tags, tag];
+    },
+
+    removeFmTag(i) {
+      this.fmForm.tags = this.fmForm.tags.filter((_, idx) => idx !== i);
+    },
+
+    async saveFmEdit() {
+      if (!this.currentPage || this.fmSaving) return;
+      this.fmSaving = true;
+      this.fmBanner = "";
+      this.fmBannerKind = "";
+      this.fmFindings = [];
+      try {
+        const res = await fetch("/api/frontmatter", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            path: this.currentPage.path,
+            fields: {
+              title: this.fmForm.title,
+              tags: this.fmForm.tags,
+              description: this.fmForm.description,
+            },
+            baseHash: this.currentHash,
+          }),
+        });
+        const data = await res.json();
+        if (res.status === 200) {
+          this.cancelFmEdit();
+          await this.loadPage(this.currentSlug, { push: false }); // re-fetch: canonical render + new hash
+        } else if (res.status === 409) {
+          this.fmBannerKind = "conflict";
+          this.fmBanner = "This page changed since you opened it — your edits are safe. "
+            + "Copy them out, then Reload to get the new version.";
+        } else if (res.status === 422) {
+          this.fmBannerKind = "lint";
+          this.fmBanner = "Save rejected — lint errors:";
+          this.fmFindings = data.findings || [];
+        } else {
+          this.fmBannerKind = "error";
+          this.fmBanner = data.error || `Save failed (HTTP ${res.status})`;
+        }
+      } catch (e) {
+        this.fmBannerKind = "error";
+        this.fmBanner = `Save failed: ${e.message}`;
+      } finally {
+        this.fmSaving = false;
       }
     },
 

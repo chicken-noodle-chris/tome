@@ -332,6 +332,200 @@ def test_save_page_rejects_non_markdown_path(tmp_path, run_tome):
 
 
 # --------------------------------------------------------------------------- #
+# save_frontmatter — the [[frontmatter-editing]] write: title/tags/description
+# through fm_set, conflict- and lint-gated like save_page, plus an index (and,
+# for a plan, hub) regeneration step save_page never needs.
+# --------------------------------------------------------------------------- #
+
+@pytestmark_git
+def test_save_frontmatter_happy_path_commits_and_pushes(tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    target = _scaffold_idea(vault, run_tome)
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "add alpha")
+    _git(vault, "push")
+
+    base_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+    fields = {"title": "Alpha Renamed", "tags": ["tome", "personal"], "description": "New desc."}
+
+    status, result = serve.save_frontmatter(vault, _conv(vault), "tome/ideas/alpha.md",
+                                             fields, base_hash)
+
+    assert status == 200
+    assert result["hash"] == hashlib.sha256(target.read_bytes()).hexdigest()
+    text = target.read_text(encoding="utf-8")
+    assert 'title: "Alpha Renamed"' in text
+    assert "tags: [tome, personal]" in text
+    assert 'description: "New desc."' in text
+    index_text = (vault / "wiki" / "index.md").read_text(encoding="utf-8")
+    assert "New desc." in index_text
+    log = _git(origin, "log", "--oneline")
+    assert "edit frontmatter: alpha" in log.stdout
+
+
+@pytestmark_git
+def test_save_frontmatter_noop_when_nothing_changed(tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    target = _scaffold_idea(vault, run_tome)
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "add alpha")
+    _git(vault, "push")
+
+    original_text = target.read_text(encoding="utf-8")
+    base_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+
+    status, result = serve.save_frontmatter(vault, _conv(vault), "tome/ideas/alpha.md",
+                                             {"title": "Alpha", "description": "d"}, base_hash)
+
+    assert status == 200
+    assert result["hash"] == base_hash
+    assert target.read_text(encoding="utf-8") == original_text  # untouched, no `updated` bump
+    log_before = _git(origin, "log", "--oneline").stdout
+    assert "edit frontmatter" not in log_before  # nothing committed
+
+
+@pytestmark_git
+def test_save_frontmatter_conflict_on_stale_hash(tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    target = _scaffold_idea(vault, run_tome)
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "add alpha")
+    _git(vault, "push")
+
+    original_text = target.read_text(encoding="utf-8")
+
+    status, result = serve.save_frontmatter(vault, _conv(vault), "tome/ideas/alpha.md",
+                                             {"title": "New Title"}, "stale-hash")
+
+    assert status == 409
+    assert "currentHash" in result
+    assert target.read_text(encoding="utf-8") == original_text
+    status_out = _git(vault, "status", "--porcelain")
+    assert status_out.stdout.strip() == ""
+
+
+@pytestmark_git
+def test_save_frontmatter_lint_failure_restores_file_and_index(tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    target = _scaffold_idea(vault, run_tome)
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "add alpha")
+    _git(vault, "push")
+
+    original_text = target.read_text(encoding="utf-8")
+    original_index = (vault / "wiki" / "index.md").read_text(encoding="utf-8")
+    base_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+
+    status, result = serve.save_frontmatter(vault, _conv(vault), "tome/ideas/alpha.md",
+                                             {"tags": ["not-a-real-tag"]}, base_hash)
+
+    assert status == 422
+    codes = {f["code"] for f in result["findings"]}
+    assert "BAD_TAG" in codes
+    assert target.read_text(encoding="utf-8") == original_text  # restored
+    assert (vault / "wiki" / "index.md").read_text(encoding="utf-8") == original_index  # index restored too
+    status_out = _git(vault, "status", "--porcelain")
+    assert status_out.stdout.strip() == ""
+    log = _git(origin, "log", "--oneline")
+    assert "edit frontmatter: alpha" not in log.stdout
+
+
+@pytestmark_git
+def test_save_frontmatter_regenerates_hub_for_plan(tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    run_tome("--vault", str(vault), "new", "project", "tome", "--title", "Tome", "--desc", "d")
+    run_tome("--vault", str(vault), "new", "plan", "my-plan", "--project", "tome",
+              "--title", "My Plan", "--desc", "old desc")
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "add plan")
+    _git(vault, "push")
+
+    target = vault / "wiki" / "tome" / "plans" / "my-plan.md"
+    base_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+
+    status, result = serve.save_frontmatter(vault, _conv(vault), "tome/plans/my-plan.md",
+                                             {"description": "new desc"}, base_hash)
+
+    assert status == 200
+    hub_text = (vault / "wiki" / "tome" / "tome.md").read_text(encoding="utf-8")
+    assert "new desc" in hub_text
+    log = _git(origin, "log", "--oneline")
+    assert "edit frontmatter: my-plan" in log.stdout
+
+
+@pytestmark_git
+def test_save_frontmatter_rejects_unknown_field(tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    target = _scaffold_idea(vault, run_tome)
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "add alpha")
+    _git(vault, "push")
+
+    status, result = serve.save_frontmatter(vault, _conv(vault), "tome/ideas/alpha.md",
+                                             {"status": "done"}, "irrelevant")
+
+    assert status == 400
+    assert "status" in result["error"]
+
+
+@pytestmark_git
+def test_save_frontmatter_rejects_quote_in_title(tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    target = _scaffold_idea(vault, run_tome)
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "add alpha")
+    _git(vault, "push")
+
+    original_text = target.read_text(encoding="utf-8")
+    base_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+
+    status, result = serve.save_frontmatter(vault, _conv(vault), "tome/ideas/alpha.md",
+                                             {"title": 'Bad "Title"'}, base_hash)
+
+    assert status == 400
+    assert target.read_text(encoding="utf-8") == original_text  # untouched
+
+
+@pytestmark_git
+def test_save_frontmatter_rejects_tag_with_comma(tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    target = _scaffold_idea(vault, run_tome)
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "add alpha")
+    _git(vault, "push")
+
+    base_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+
+    status, result = serve.save_frontmatter(vault, _conv(vault), "tome/ideas/alpha.md",
+                                             {"tags": ["a,b"]}, base_hash)
+
+    assert status == 400
+    assert "tag" in result["error"]
+
+
+@pytestmark_git
+def test_save_frontmatter_rejects_path_traversal(tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+
+    status, result = serve.save_frontmatter(vault, _conv(vault), "../../etc/passwd",
+                                             {"title": "pwned"}, "irrelevant")
+
+    assert status == 404
+    assert "error" in result
+
+
+@pytestmark_git
+def test_save_frontmatter_rejects_missing_page(tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+
+    status, result = serve.save_frontmatter(vault, _conv(vault), "tome/ideas/no-such-page.md",
+                                             {"title": "x"}, "irrelevant")
+
+    assert status == 404
+    assert "error" in result
+
+
+# --------------------------------------------------------------------------- #
 # writable flag — live serve vs. static export, layered onto build_board()
 # without changing its own pure-function contract (tested above).
 # --------------------------------------------------------------------------- #

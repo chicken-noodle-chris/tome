@@ -63,15 +63,20 @@
           <article>
             <div class="fm-card">
               <div class="fm-head">
-                <h1 x-text="pageMeta.title || currentSlug"></h1>
+                <h1 x-show="!fmEditing" x-text="pageMeta.title || currentSlug"></h1>
+                <input x-show="fmEditing" class="fm-title-input" type="text"
+                       x-model="fmForm.title" placeholder="Title" />
                 <div class="fm-head-actions">
-                  <button class="edit-btn" x-show="board.writable && !editing"
+                  <button class="edit-btn" x-show="board.writable && !editing && !fmEditing"
+                          @click="enterFmEdit()">Edit frontmatter</button>
+                  <button class="edit-btn" x-show="board.writable && !fmEditing"
                           @click="enterEdit()" x-text="editorLoading ? 'Loading…' : 'Edit'"
                           :disabled="editorLoading"></button>
                   <a class="edit-link" :href="editUrl()" title="Open in VS Code">VS Code</a>
                 </div>
               </div>
-              <dl>
+
+              <dl x-show="!fmEditing">
                 <template x-for="[k, v] of fmRows(pageMeta)" :key="k">
                   <div class="fm-row">
                     <dt x-text="k"></dt>
@@ -79,6 +84,58 @@
                   </div>
                 </template>
               </dl>
+
+              <div class="fm-form" x-show="fmEditing">
+                <p class="editor-banner" :class="'editor-banner--' + fmBannerKind"
+                   x-show="fmBanner" x-text="fmBanner"></p>
+                <ul class="editor-findings" x-show="fmFindings.length">
+                  <template x-for="f of fmFindings" :key="f.code + f.path + f.message">
+                    <li x-text="f.path + ' — ' + f.code + ': ' + f.message"></li>
+                  </template>
+                </ul>
+
+                <div class="fm-field">
+                  <label>Description</label>
+                  <input type="text" x-model="fmForm.description" maxlength="140" />
+                  <span class="fm-counter" x-text="fmForm.description.length + '/140'"></span>
+                </div>
+
+                <div class="fm-field">
+                  <label>Tags</label>
+                  <div class="fm-tags">
+                    <template x-for="(tag, i) of fmForm.tags" :key="tag">
+                      <span class="fm-tag-chip">
+                        <span x-text="tag"></span>
+                        <button type="button" class="fm-tag-remove" @click="removeFmTag(i)">&times;</button>
+                      </span>
+                    </template>
+                  </div>
+                  <select @change="addFmTag($event.target.value); $event.target.value = ''">
+                    <option value="" disabled selected>Add a tag…</option>
+                    <template x-for="t of tagSuggestions()" :key="t">
+                      <option :value="t" x-text="t"></option>
+                    </template>
+                  </select>
+                </div>
+
+                <dl class="fm-readonly">
+                  <div class="fm-row"><dt>slug</dt><dd x-text="currentPage.slug"></dd></div>
+                  <div class="fm-row"><dt>type</dt><dd x-text="pageMeta.type"></dd></div>
+                  <div class="fm-row"><dt>project</dt><dd x-text="currentPage.project"></dd></div>
+                  <div class="fm-row"><dt>status</dt><dd x-text="pageMeta.status || '—'"></dd></div>
+                  <div class="fm-row"><dt>created</dt><dd x-text="pageMeta.created"></dd></div>
+                  <div class="fm-row"><dt>updated</dt><dd x-text="pageMeta.updated"></dd></div>
+                </dl>
+                <p class="fm-hint" x-show="pageMeta.status">Status is managed from the board / at the task level.</p>
+
+                <div class="editor-actions">
+                  <button class="editor-btn-reload" x-show="fmBannerKind === 'conflict'"
+                          @click="reloadAfterFmConflict()">Reload</button>
+                  <button class="editor-btn-cancel" @click="cancelFmEdit()">Cancel</button>
+                  <button class="editor-btn-save" @click="saveFmEdit()" :disabled="fmSaving"
+                          x-text="fmSaving ? 'Saving…' : 'Save'"></button>
+                </div>
+              </div>
             </div>
 
             <template x-if="!editing">
