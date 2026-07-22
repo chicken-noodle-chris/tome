@@ -24,6 +24,8 @@
     <!-- Page view: sidebar (vault tree) + content area -->
     <div class="layout" x-show="view === 'page'">
       <aside class="sidebar">
+        <button type="button" class="new-page-btn" x-show="board.writable"
+                @click="openNewPageModal()">+ New page</button>
         <nav class="tree">
           <template x-for="group of tree()" :key="group.project">
             <section class="tree-project">
@@ -67,6 +69,8 @@
                 <input x-show="fmEditing" class="fm-title-input" type="text"
                        x-model="fmForm.title" placeholder="Title" />
                 <div class="fm-head-actions">
+                  <button class="edit-btn" x-show="board.writable && pageMeta.type === 'project' && !editing && !fmEditing"
+                          @click="openNewPageModal(currentPage.slug)">New in project</button>
                   <button class="edit-btn" x-show="board.writable && !editing && !fmEditing"
                           @click="enterFmEdit()">Edit frontmatter</button>
                   <button class="edit-btn" x-show="board.writable && !fmEditing"
@@ -195,6 +199,69 @@
           </article>
         </template>
       </main>
+    </div>
+
+    <!-- New page modal ([[page-creation]]) -->
+    <div class="modal-overlay" x-show="newPageOpen" x-cloak @click.self="closeNewPageModal()"
+         @keydown.escape.window="if (newPageOpen) closeNewPageModal()">
+      <div class="modal" role="dialog" aria-modal="true" aria-label="New page">
+        <div class="modal-head">
+          <h2>New page</h2>
+          <button type="button" class="modal-close" @click="closeNewPageModal()">&times;</button>
+        </div>
+
+        <p class="editor-banner" :class="'editor-banner--' + newPageBannerKind"
+           x-show="newPageBanner" x-text="newPageBanner"></p>
+        <ul class="editor-findings" x-show="newPageFindings.length">
+          <template x-for="f of newPageFindings" :key="f.code + f.path + f.message">
+            <li x-text="f.path + ' — ' + f.code + ': ' + f.message"></li>
+          </template>
+        </ul>
+
+        <div class="fm-field">
+          <label>Type</label>
+          <select x-model="newPageForm.type">
+            <option value="" disabled>Choose a type…</option>
+            <template x-for="t of typeEnum" :key="t">
+              <option :value="t" x-text="t"></option>
+            </template>
+          </select>
+        </div>
+
+        <div class="fm-field" x-show="newPageForm.type !== 'project'">
+          <label>Project</label>
+          <select x-model="newPageForm.project">
+            <option value="" disabled>Choose a project…</option>
+            <template x-for="p of projectOptions()" :key="p.slug">
+              <option :value="p.slug" x-text="p.title"></option>
+            </template>
+          </select>
+        </div>
+
+        <div class="fm-field">
+          <label>Title</label>
+          <input type="text" x-model="newPageForm.title" @input="onNewPageTitleInput()" placeholder="Title" />
+        </div>
+
+        <div class="fm-field">
+          <label>Slug</label>
+          <input type="text" x-model="newPageForm.slug" @input="newPageSlugTouched = true" placeholder="slug" />
+          <span class="field-error" x-show="newPageSlugError()" x-text="newPageSlugError()"></span>
+        </div>
+
+        <div class="fm-field">
+          <label>Description</label>
+          <input type="text" x-model="newPageForm.description" maxlength="140" />
+          <span class="fm-counter" x-text="newPageForm.description.length + '/140'"></span>
+        </div>
+
+        <div class="editor-actions">
+          <button type="button" class="editor-btn-cancel" @click="closeNewPageModal()">Cancel</button>
+          <button type="button" class="editor-btn-save" @click="saveNewPage()"
+                  :disabled="newPageSaving || !newPageValid()"
+                  x-text="newPageSaving ? 'Creating…' : 'Create'"></button>
+        </div>
+      </div>
     </div>
 
     <!-- Board view (full-width) -->

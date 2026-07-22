@@ -273,6 +273,58 @@ body {
 .rename-warning code { background: var(--code-bg); padding: 0.05rem 0.3rem; border-radius: 4px; }
 .rename-box .editor-banner, .rename-box .editor-findings { margin: 0.5rem 0 0; }
 
+/* -- new page creation ([[page-creation]]) -- */
+.new-page-btn {
+  display: block;
+  width: calc(100% - 0.8rem);
+  margin: 0 0.4rem 0.75rem;
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 0.4rem 0.6rem;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+.new-page-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+.field-error { display: block; font-size: 0.75rem; color: var(--broken); margin-top: 0.25rem; }
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 4rem 1rem;
+  z-index: 100;
+}
+.modal {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.25rem 1.5rem 1.5rem;
+  width: 100%;
+  max-width: 28rem;
+  max-height: calc(100vh - 8rem);
+  overflow-y: auto;
+}
+.modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.75rem; }
+.modal-head h2 { margin: 0; font-size: 1.15rem; }
+.modal-close {
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 1.3rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0.1rem 0.3rem;
+}
+.modal-close:hover { color: var(--fg); }
+
 /* -- rendered markdown -- */
 .markdown { overflow-wrap: break-word; }
 .markdown h1, .markdown h2, .markdown h3 { line-height: 1.25; margin: 1.6rem 0 0.6rem; }

@@ -45,7 +45,7 @@ def test_new_rejects_missing_project_for_non_project_type(make_vault, run_tome, 
     code = run_tome("--vault", str(vault), "new", "plan", "p1",
                      "--title", "T", "--desc", "d")
     assert code == 1
-    assert "--project is required" in capsys.readouterr().err
+    assert "project is required" in capsys.readouterr().err
 
 
 def test_new_rejects_nonexistent_project_dir(make_vault, run_tome, capsys):

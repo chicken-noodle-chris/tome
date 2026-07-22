@@ -591,6 +591,80 @@ def cmd_lint(vault_root, conventions, args):
 # Lifecycle commands
 # --------------------------------------------------------------------------- #
 
+# The reusable core of `tome new`, shared by cmd_new and the serve `/api/new`
+# endpoint (serve.create_page) — split out like move_page's, so the browser
+# write reuses the exact placement + frontmatter-scaffold + index/hub-regen
+# logic instead of reimplementing it in JavaScript. Does no git, task
+# creation, or printing: each caller owns its own commit/sync and output.
+NewPageResult = namedtuple("NewPageResult", "path touched_paths slug")
+
+
+def new_page(vault_root, conventions, type_, project, slug, title, desc):
+    """Scaffold a new page on disk: validate type/project/slug, write the
+    frontmatter + body scaffold, and regenerate the index (and, for a plan
+    or project, the project hub). Returns a NewPageResult; raises VaultError
+    on a bad type, missing/unknown project, bad/taken slug, or a path that
+    already exists."""
+    wiki_root, pages = collect(vault_root, conventions)
+    type_enum = set(conventions["types"]["enum"])
+    if type_ not in type_enum:
+        raise VaultError(f"type '{type_}' not in {sorted(type_enum)}")
+    max_chars = conventions.get("description", {}).get("max_chars", 140)
+    validate_oneline(desc, "description", max_chars)
+    validate_oneline(title, "title")
+
+    if type_ == "project":
+        project = slug
+        validate_slug(project, pages)
+        path = wiki_root / project / f"{project}.md"
+    else:
+        if not project:
+            raise VaultError("project is required for non-project types")
+        if not (wiki_root / project).is_dir():
+            raise VaultError(f"no such project: wiki/{project}/ does not exist "
+                              f"(create it first with `tome new project {project} ...`)")
+        validate_slug(slug, pages)
+        folders = conventions["folders"]
+        if type_ not in folders:
+            raise VaultError(f"no [folders] mapping for type '{type_}'")
+        path = wiki_root / project / folders[type_] / f"{slug}.md"
+
+    if path.exists():
+        raise VaultError(f"{path} already exists")
+
+    tag_kind = TYPE_TAG.get(type_, "project")
+    fm_lines = [
+        f"type: {type_}",
+        f'title: "{title}"',
+        f"tags: [{project}, {tag_kind}]",
+        f'description: "{desc}"',
+        f"created: {today()}",
+        f"updated: {today()}",
+    ]
+    if type_ in ("plan", "decision"):
+        fm_lines.append("status: proposed")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if type_ == "project":
+        body = (f"\n# {title}\n\n{desc}\n\n"
+                f"## Plans\n\n{HUB_MARKER_START}\n{HUB_MARKER_END}\n")
+    else:
+        body = f"\n# {title}\n\nTBD.\n"
+    write_page(path, fm_lines, body)
+
+    _, pages = collect(vault_root, conventions)
+    index_path = rebuild_index(vault_root, conventions, wiki_root, pages)
+
+    result_slug = project if type_ == "project" else slug
+    touched_paths = [path, index_path]
+    if type_ in ("plan", "project"):
+        hub_path = regenerate_hub(conventions, wiki_root, pages, project)
+        if hub_path is not None and hub_path not in touched_paths:
+            touched_paths.append(hub_path)
+
+    return NewPageResult(path, touched_paths, result_slug)
+
+
 def cmd_new(vault_root, conventions, args):
     with_task = getattr(args, "with_task", None)
     priority = getattr(args, "priority", None)
@@ -601,71 +675,16 @@ def cmd_new(vault_root, conventions, args):
     if (priority or acs or milestone) and not with_task:
         raise VaultError("--priority/--ac/--milestone only apply alongside --with-task")
 
-    wiki_root, pages = collect(vault_root, conventions)
-    type_enum = set(conventions["types"]["enum"])
-    if args.type not in type_enum:
-        raise VaultError(f"type '{args.type}' not in {sorted(type_enum)}")
-    max_chars = conventions.get("description", {}).get("max_chars", 140)
-    validate_oneline(args.desc, "--desc", max_chars)
-    validate_oneline(args.title, "--title")
+    result = new_page(vault_root, conventions, args.type, args.project, args.slug,
+                       args.title, args.desc)
+    print(f"Created {result.path.relative_to(vault_root)}")
 
-    if args.type == "project":
-        project = args.slug
-        validate_slug(project, pages)
-        path = wiki_root / project / f"{project}.md"
-    else:
-        if not args.project:
-            raise VaultError("--project is required for non-project types")
-        project = args.project
-        if not (wiki_root / project).is_dir():
-            raise VaultError(f"no such project: wiki/{project}/ does not exist "
-                              f"(create it first with `tome new project {project} ...`)")
-        validate_slug(args.slug, pages)
-        folders = conventions["folders"]
-        if args.type not in folders:
-            raise VaultError(f"no [folders] mapping for type '{args.type}'")
-        path = wiki_root / project / folders[args.type] / f"{args.slug}.md"
-
-    if path.exists():
-        raise VaultError(f"{path} already exists")
-
-    title = args.title
-    tag_kind = TYPE_TAG.get(args.type, "project")
-    fm_lines = [
-        f"type: {args.type}",
-        f'title: "{title}"',
-        f"tags: [{project}, {tag_kind}]",
-        f'description: "{args.desc}"',
-        f"created: {today()}",
-        f"updated: {today()}",
-    ]
-    if args.type in ("plan", "decision"):
-        fm_lines.append("status: proposed")
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if args.type == "project":
-        body = (f"\n# {title}\n\n{args.desc}\n\n"
-                f"## Plans\n\n{HUB_MARKER_START}\n{HUB_MARKER_END}\n")
-    else:
-        body = f"\n# {title}\n\nTBD.\n"
-    write_page(path, fm_lines, body)
-
-    _, pages = collect(vault_root, conventions)
-    index_path = rebuild_index(vault_root, conventions, wiki_root, pages)
-
-    slug = project if args.type == "project" else args.slug
-    touched = [path, index_path]
-    if args.type in ("plan", "project"):
-        hub_path = regenerate_hub(conventions, wiki_root, pages, project)
-        if hub_path is not None and hub_path not in touched:
-            touched.append(hub_path)
-
-    print(f"Created {path.relative_to(vault_root)}")
-
+    touched = list(result.touched_paths)
     if with_task:
-        plan_ref = f"wiki/{path.relative_to(wiki_root).as_posix()}"
+        wiki_root = vault_root / "wiki"
+        plan_ref = f"wiki/{result.path.relative_to(wiki_root).as_posix()}"
         task_argv = ["task", "create", with_task, "-d", args.desc,
-                     "-l", f"project:{project}", "--ref", plan_ref, "--plain"]
+                     "-l", f"project:{args.project}", "--ref", plan_ref, "--plain"]
         if priority:
             task_argv += ["--priority", priority]
         if milestone:
@@ -683,11 +702,11 @@ def cmd_new(vault_root, conventions, args):
         else:
             print("Created backlog task (couldn't parse its file path for --sync scoping).")
 
-    result = maybe_sync(vault_root, conventions, args, touched, f"new: {slug}")
-    if result is not None:
-        return result
+    sync_result = maybe_sync(vault_root, conventions, args, touched, f"new: {result.slug}")
+    if sync_result is not None:
+        return sync_result
     print("Next: edit the body, link it from the project hub, then:")
-    print(f'  python scripts/tome.py log author "authored {slug}"')
+    print(f'  python scripts/tome.py log author "authored {result.slug}"')
     print('  python scripts/tome.py sync -m "..."')
     return 0
 

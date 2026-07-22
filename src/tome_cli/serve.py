@@ -35,7 +35,15 @@ tome_cli.serve — the local browse host for the no-build frontend.
     page's URL at once, so this moves the file, rewrites inbound links wiki-
     wide, and returns the new URL for the client to redirect to. Same conflict
     model and `board.writable` gate, gated harder on lint (new-errors-only, not
-    single-page-scoped), and likewise absent from the static export.
+    single-page-scoped), and likewise absent from the static export;
+  * accepts a fifth write, `POST /api/new`, scaffolding a brand-new page
+    through `cli.new_page` — the `tome new` core ([[page-creation]]) — see
+    `create_page()` below. Unlike the other three writes, creation has no
+    prior version to race against, so there's no `baseHash`: its guard is
+    slug uniqueness, re-checked after a pull. Same `board.writable` gate and
+    single-page-scoped lint gate as `save_page`; on rejection the just-
+    scaffolded file (and any regenerated index/hub) are rolled back, never
+    left half-created. Also absent from the static export.
 
 The JSON *schemas* are the deliberate, permanent part of this slice; the
 server internals and the frontend are rough by design and hardened in place by
@@ -119,6 +127,10 @@ def build_index(vault_root, conventions):
         # to travel from conventions.toml to the client.
         "tagTaxonomy": sorted(tag_conv.get("taxonomy", [])),
         "allowProjectTags": bool(tag_conv.get("allow_project_name_tags")),
+        # The new-page form's ([[page-creation]]) type dropdown — the same
+        # enum `cli.new_page`/`tome new` validate against, so the client
+        # never hardcodes it separately.
+        "typeEnum": sorted(conventions.get("types", {}).get("enum", [])),
     }
 
 
@@ -570,8 +582,88 @@ def rename_page(vault_root, conventions, rel, new_slug, base_hash):
                  "hash": hashlib.sha256(result.new_path.read_bytes()).hexdigest()}
 
 
+def _reset_create(vault_root, result):
+    """Undo `cli.new_page`'s on-disk changes when a create is rejected after
+    scaffolding ran — mirrors `_reset_move`: unlink the new (untracked) page,
+    then restore every other touched path from HEAD (the regenerated index
+    and, for a plan/project, the hub)."""
+    from tome_cli import cli
+
+    if result.path.exists():
+        result.path.unlink()
+    rel_paths = [str(p.resolve().relative_to(vault_root)) for p in result.touched_paths
+                 if p != result.path]
+    if rel_paths:
+        cli.run_git(vault_root, ["checkout", "HEAD", "--", *rel_paths])
+
+
+def create_page(vault_root, conventions, type_, project, slug, title, desc):
+    """The [[page-creation]] save path: scaffold a new page through
+    `cli.new_page` — the same core `tome new` uses. Returns (http_status,
+    payload_dict), never raising, mirroring save_page/save_frontmatter/
+    rename_page.
+
+    Creation has no `baseHash` — there's no prior version to race against.
+    Its analogous guard is slug uniqueness, checked fresh against the vault
+    state after the pull below rather than against a client-supplied hash.
+
+    1. Pull, so the uniqueness check inside `cli.new_page` runs against the
+       latest remote — a slug someone else just created elsewhere is caught
+       here, not after the write.
+    2. Call `cli.new_page`. A VaultError (bad type, missing/unknown project,
+       bad/taken slug, path collision) is a 422 with the reason, not a CLI
+       traceback — nothing is written.
+    3. Lint gate scoped to the new page's path — a freshly scaffolded page is
+       valid by construction, so this rarely fires. On failure there's no
+       prior buffer to restore (unlike save_page/save_frontmatter): the
+       just-created file is deleted and the index/hub reset from HEAD via
+       `_reset_create`, never leaving a half-created page (422).
+    4. Commit the touched set (new page, index, and hub for a plan/project) +
+       push, reusing `cli._push_with_retry`. Returns the new page's in-app
+       URL for the client to redirect to.
+
+    As with every write route, this endpoint is absent from the static
+    export.
+    """
+    from tome_cli import cli
+
+    pull = cli.run_git(vault_root, ["pull", "--rebase", "--autostash"])
+    if pull.returncode != 0:
+        return 500, {"error": (pull.stderr or pull.stdout).strip() or "git pull failed"}
+
+    try:
+        result = cli.new_page(vault_root, conventions, type_, project, slug, title, desc)
+    except cli.VaultError as e:
+        return 422, {"error": str(e)}
+
+    wiki_root = (vault_root / "wiki").resolve()
+    rel_str = result.path.relative_to(wiki_root).as_posix()
+    _, findings = cli.run_all_lint_checks(vault_root, conventions)
+    errors = [f for f in findings if f.severity == cli.ERROR and f.path == rel_str]
+    if errors:
+        _reset_create(vault_root, result)
+        return 422, {"error": "lint failed", "findings": [f.as_dict() for f in errors]}
+
+    rel_paths = [str(p.resolve().relative_to(vault_root)) for p in result.touched_paths]
+    add = cli.run_git(vault_root, ["add", "--", *rel_paths])
+    if add.returncode != 0:
+        _reset_create(vault_root, result)
+        return 500, {"error": (add.stderr or "git add failed").strip()}
+
+    commit = cli.run_git(vault_root, ["commit", "-m", f"new: {result.slug}"])
+    if commit.returncode != 0:
+        _reset_create(vault_root, result)
+        return 500, {"error": (commit.stderr or commit.stdout).strip() or "git commit failed"}
+
+    push_code = cli._push_with_retry(vault_root)
+    if push_code != 0:
+        return 500, {"error": "commit landed locally but push failed — resolve manually"}
+
+    return 200, {"slug": result.slug, "url": f"?page={result.slug}"}
+
+
 # --------------------------------------------------------------------------- #
-# HTTP handler — GET (four route families, path-safe raw reads) plus four
+# HTTP handler — GET (four route families, path-safe raw reads) plus five
 # POST write routes.
 # --------------------------------------------------------------------------- #
 
@@ -667,6 +759,24 @@ class TomeHandler(BaseHTTPRequestHandler):
                 if not rel or not new_slug:
                     return self._send_json({"error": "path and newSlug are required"}, status=400)
                 status_code, result = rename_page(self.vault_root, self.conventions, rel, new_slug, base_hash)
+                return self._send_json(result, status=status_code)
+            if path == "/api/new":
+                length = int(self.headers.get("Content-Length") or 0)
+                raw_body = self.rfile.read(length) if length else b""
+                try:
+                    payload = json.loads(raw_body) if raw_body else {}
+                except json.JSONDecodeError:
+                    return self._send_json({"error": "malformed JSON body"}, status=400)
+                type_ = payload.get("type")
+                project = payload.get("project")
+                slug = payload.get("slug")
+                title = payload.get("title")
+                desc = payload.get("description")
+                if not type_ or not slug or not title or desc is None:
+                    return self._send_json({"error": "type, slug, title, and description are required"},
+                                            status=400)
+                status_code, result = create_page(self.vault_root, self.conventions,
+                                                   type_, project, slug, title, desc)
                 return self._send_json(result, status=status_code)
             self._send_error(404, "not found")
         except BrokenPipeError:
@@ -832,6 +942,7 @@ def cmd_serve(vault_root, conventions, args):
     print("  POST /api/page              (body edits, conflict + lint gated)")
     print("  POST /api/frontmatter       (title/tags/description edits, conflict + lint gated)")
     print("  POST /api/rename            (slug rename via tome mv, conflict + lint gated)")
+    print("  POST /api/new                (scaffold via tome new, uniqueness + lint gated)")
 
     idle_minutes = getattr(args, "idle_timeout", 0) or 0
     if idle_minutes > 0:

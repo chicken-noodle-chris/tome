@@ -76,6 +76,7 @@ function tomeApp() {
     // index.json
     pages: [],
     bySlug: new Map(),
+    typeEnum: [], // index.json's type enum — feeds the new-page form's dropdown
 
     // current page
     currentSlug: null,
@@ -115,6 +116,15 @@ function tomeApp() {
     renameBannerKind: "", // "conflict" | "lint" | "error"
     renameFindings: [],
 
+    // new page creation ([[page-creation]])
+    newPageOpen: false,
+    newPageSaving: false,
+    newPageBanner: "",
+    newPageBannerKind: "", // "lint" | "error"
+    newPageFindings: [],
+    newPageForm: { type: "", project: "", slug: "", title: "", description: "" },
+    newPageSlugTouched: false, // true once the user hand-edits the slug, so title input stops re-deriving it
+
     // sidebar
     collapsed: {}, // project name -> true when its section is folded shut
 
@@ -135,6 +145,7 @@ function tomeApp() {
         this.bySlug = new Map(this.pages.map((p) => [p.slug, p]));
         this.tagTaxonomy = index.tagTaxonomy || [];
         this.allowProjectTags = !!index.allowProjectTags;
+        this.typeEnum = index.typeEnum || [];
         this.board = board;
       } catch (e) {
         this.pageError = "Failed to load vault data: " + e.message;
@@ -149,8 +160,14 @@ function tomeApp() {
     // -- page view ------------------------------------------------------- //
 
     async syncFromUrl() {
-      const slug = new URLSearchParams(location.search).get("page") || DEFAULT_PAGE;
+      const params = new URLSearchParams(location.search);
+      const slug = params.get("page") || DEFAULT_PAGE;
+      const justCreated = params.get("new") === "1"; // set by saveNewPage()'s redirect
       await this.loadPage(slug, { push: false });
+      if (justCreated) {
+        history.replaceState({ slug }, "", `?page=${encodeURIComponent(slug)}`); // drop the one-shot marker
+        if (this.board.writable && !this.editing) await this.enterEdit();
+      }
     },
 
     async loadPage(slug, { push = true } = {}) {
@@ -468,6 +485,105 @@ function tomeApp() {
         this.renameBanner = `Rename failed: ${e.message}`;
       } finally {
         this.renameSaving = false;
+      }
+    },
+
+    // -- new page creation ([[page-creation]]) ---------------------------- //
+    // A type-driven scaffold form routed through POST /api/new (`cli.new_page`,
+    // the same core `tome new` uses). Creation has no baseHash to race
+    // against — the guard is slug uniqueness, checked live here against
+    // index.json (bySlug) and re-checked server-side after a pull. On success
+    // this hard-navigates rather than routing client-side: index.json is
+    // stale the instant the new page exists, so a full reload is the
+    // simplest way to make the sidebar/board/everything see it, matching
+    // slug-rename's identity-changed navigation. The `new=1` marker on that
+    // URL tells syncFromUrl() to auto-open the body editor once the freshly
+    // scaffolded TBD page loads.
+
+    openNewPageModal(project) {
+      this.newPageOpen = true;
+      this.newPageBanner = "";
+      this.newPageBannerKind = "";
+      this.newPageFindings = [];
+      this.newPageSlugTouched = false;
+      this.newPageForm = { type: "", project: project || "", slug: "", title: "", description: "" };
+    },
+
+    closeNewPageModal() {
+      this.newPageOpen = false;
+    },
+
+    slugify(text) {
+      return text.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    },
+
+    onNewPageTitleInput() {
+      if (!this.newPageSlugTouched) this.newPageForm.slug = this.slugify(this.newPageForm.title);
+    },
+
+    // Every known project (a page of type "project"), for the Project
+    // dropdown — hidden entirely in the template when the form's own type is
+    // "project", since a project has no parent.
+    projectOptions() {
+      return this.pages
+        .filter((p) => p.type === "project")
+        .map((p) => ({ slug: p.slug, title: p.title }))
+        .sort((a, b) => a.title.localeCompare(b.title));
+    },
+
+    // Live client-side slug feedback so a collision surfaces before submit;
+    // the server re-validates the same shape + uniqueness after its own pull.
+    newPageSlugError() {
+      const slug = this.newPageForm.slug.trim();
+      if (!slug) return "";
+      if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug)) return "Slug must be lowercase kebab-case.";
+      if (this.bySlug.has(slug)) return `"${slug}" is already taken.`;
+      return "";
+    },
+
+    newPageValid() {
+      const f = this.newPageForm;
+      if (!f.type || !f.title.trim() || !f.slug.trim() || !f.description.trim()) return false;
+      if (f.type !== "project" && !f.project) return false;
+      return !this.newPageSlugError();
+    },
+
+    async saveNewPage() {
+      if (this.newPageSaving || !this.newPageValid()) return;
+      this.newPageSaving = true;
+      this.newPageBanner = "";
+      this.newPageBannerKind = "";
+      this.newPageFindings = [];
+      const f = this.newPageForm;
+      try {
+        const res = await fetch("/api/new", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            type: f.type,
+            project: f.type === "project" ? null : f.project,
+            slug: f.slug.trim(),
+            title: f.title.trim(),
+            description: f.description.trim(),
+          }),
+        });
+        const data = await res.json();
+        if (res.status === 200) {
+          const url = data.url || `?page=${encodeURIComponent(data.slug)}`;
+          window.location.assign(url + (url.includes("?") ? "&" : "?") + "new=1");
+        } else if (res.status === 422 && data.findings) {
+          this.newPageBannerKind = "lint";
+          this.newPageBanner = "Create rejected — lint errors:";
+          this.newPageFindings = data.findings;
+        } else {
+          this.newPageBannerKind = "error";
+          this.newPageBanner = data.error || `Create failed (HTTP ${res.status})`;
+        }
+      } catch (e) {
+        this.newPageBannerKind = "error";
+        this.newPageBanner = `Create failed: ${e.message}`;
+      } finally {
+        this.newPageSaving = false;
       }
     },
 

@@ -91,6 +91,13 @@ def test_build_index_sorted_by_slug(make_vault, make_page):
     assert slugs == sorted(slugs)
 
 
+def test_build_index_exposes_type_enum(make_vault):
+    vault = make_vault()
+    index = serve.build_index(vault, _conv(vault))
+    assert index["typeEnum"] == sorted(_conv(vault)["types"]["enum"])
+    assert "plan" in index["typeEnum"] and "project" in index["typeEnum"]
+
+
 def test_build_board_reads_config_and_tasks(make_vault, make_task):
     vault = make_vault()
     (vault / "backlog").mkdir(exist_ok=True)
@@ -727,6 +734,158 @@ def test_rename_page_rejects_missing_page(tmp_path, run_tome):
 
     assert status == 404
     assert "error" in result
+
+
+# --------------------------------------------------------------------------- #
+# create_page — the [[page-creation]] write: scaffolding a brand-new page
+# through cli.new_page (the tome new core). No baseHash — the guard is slug
+# uniqueness, re-checked after a pull — and on rejection there's no single
+# buffer to restore, so a rejected create rolls the whole scaffold back via
+# _reset_create instead.
+# --------------------------------------------------------------------------- #
+
+@pytestmark_git
+def test_create_page_happy_path_commits_and_pushes(tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    run_tome("--vault", str(vault), "new", "project", "tome", "--title", "Tome", "--desc", "d")
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "add project")
+    _git(vault, "push")
+
+    status, result = serve.create_page(vault, _conv(vault), "idea", "tome", "my-idea",
+                                        "My Idea", "a fresh idea")
+
+    assert status == 200
+    assert result["slug"] == "my-idea"
+    assert result["url"] == "?page=my-idea"
+    created = vault / "wiki" / "tome" / "ideas" / "my-idea.md"
+    assert created.is_file()
+    assert "[[my-idea]]" in (vault / "wiki" / "index.md").read_text(encoding="utf-8")
+    log = _git(origin, "log", "--oneline")
+    assert "new: my-idea" in log.stdout
+
+
+@pytestmark_git
+def test_create_page_project_type_creates_hub(tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+
+    status, result = serve.create_page(vault, _conv(vault), "project", None, "artikindle",
+                                        "Artikindle", "a read-it-later tool")
+
+    assert status == 200
+    assert result["slug"] == "artikindle"
+    hub = vault / "wiki" / "artikindle" / "artikindle.md"
+    assert hub.is_file()
+    assert "tome:plans" in hub.read_text(encoding="utf-8")
+    assert "new: artikindle" in _git(origin, "log", "--oneline").stdout
+
+
+@pytestmark_git
+def test_create_page_regenerates_hub_for_plan(tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    run_tome("--vault", str(vault), "new", "project", "tome", "--title", "Tome", "--desc", "d")
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "add project")
+    _git(vault, "push")
+
+    status, result = serve.create_page(vault, _conv(vault), "plan", "tome", "my-plan",
+                                        "My Plan", "a plan")
+
+    assert status == 200
+    hub_text = (vault / "wiki" / "tome" / "tome.md").read_text(encoding="utf-8")
+    assert "[[my-plan]]" in hub_text
+    fm, _body = tome.read_page(vault / "wiki" / "tome" / "plans" / "my-plan.md")
+    assert tome.fm_get(fm, "status") == "proposed"
+
+
+@pytestmark_git
+def test_create_page_rejects_taken_slug(tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    _scaffold_two_ideas(vault, run_tome)
+
+    status, result = serve.create_page(vault, _conv(vault), "idea", "tome", "alpha",
+                                        "Alpha Again", "d")
+
+    assert status == 422
+    assert "alpha" in result["error"]
+    assert _git(vault, "status", "--porcelain").stdout.strip() == ""
+
+
+@pytestmark_git
+def test_create_page_rejects_missing_project(tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+
+    status, result = serve.create_page(vault, _conv(vault), "idea", None, "orphan-idea",
+                                        "Orphan", "d")
+
+    assert status == 422
+    assert "project" in result["error"]
+
+
+@pytestmark_git
+def test_create_page_rejects_unknown_project_dir(tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+
+    status, result = serve.create_page(vault, _conv(vault), "idea", "ghost", "an-idea",
+                                        "Idea", "d")
+
+    assert status == 422
+    assert "ghost" in result["error"]
+
+
+@pytestmark_git
+def test_create_page_rejects_bad_type(tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+
+    status, result = serve.create_page(vault, _conv(vault), "not-a-type", "tome",
+                                        "an-idea", "Idea", "d")
+
+    assert status == 422
+    assert "not-a-type" in result["error"]
+
+
+@pytestmark_git
+def test_create_page_rejects_quote_in_title(tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    run_tome("--vault", str(vault), "new", "project", "tome", "--title", "Tome", "--desc", "d")
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "add project")
+    _git(vault, "push")
+
+    status, result = serve.create_page(vault, _conv(vault), "idea", "tome", "my-idea",
+                                        'Bad "Title"', "d")
+
+    assert status == 422
+    assert 'literal "' in result["error"]
+    assert not (vault / "wiki" / "tome" / "ideas" / "my-idea.md").exists()
+
+
+@pytestmark_git
+def test_create_page_lint_failure_removes_scaffolded_file(tmp_path, run_tome, monkeypatch):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    run_tome("--vault", str(vault), "new", "project", "tome", "--title", "Tome", "--desc", "d")
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "add project")
+    _git(vault, "push")
+
+    real = tome.run_all_lint_checks
+
+    def fake(vault_root, conventions):
+        pages, findings = real(vault_root, conventions)
+        findings = findings + [tome.Finding(tome.ERROR, "BROKEN_LINK",
+                                            "tome/ideas/my-idea.md", "fabricated")]
+        return pages, findings
+
+    monkeypatch.setattr(tome, "run_all_lint_checks", fake)
+
+    status, result = serve.create_page(vault, _conv(vault), "idea", "tome", "my-idea",
+                                        "My Idea", "d")
+
+    assert status == 422
+    assert {f["code"] for f in result["findings"]} == {"BROKEN_LINK"}
+    assert not (vault / "wiki" / "tome" / "ideas" / "my-idea.md").exists()
+    assert _git(vault, "status", "--porcelain").stdout.strip() == ""
+    assert "new: my-idea" not in _git(origin, "log", "--oneline").stdout
 
 
 # --------------------------------------------------------------------------- #
