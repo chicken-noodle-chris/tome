@@ -758,8 +758,12 @@ function tomeApp() {
       this.resolver.hunks = textHunks(file.mine, file.base, file.theirs);
     },
 
+    // Line rows, for the two text modes. Frontmatter has its own per-field
+    // renderer below, so this stays empty there rather than building a second,
+    // hidden copy of the same hunks.
     resolverRows() {
-      return this.resolver ? displayRows(this.resolver.hunks) : [];
+      if (!this.resolver || this.resolver.mode === "frontmatter") return [];
+      return displayRows(this.resolver.hunks);
     },
 
     // Frontmatter shows one row per field, and only the fields that differ —
@@ -776,6 +780,37 @@ function tomeApp() {
     chooseHunk(hunk, choice) {
       if (choice === "edit" && !hunk.editText) hunk.editText = hunk.mine.join("\n");
       hunk.choice = choice;
+    },
+
+    // A one-sided hunk is already answered — that's what an auto-merge *is* —
+    // so it gets shown, not asked. A full keep-mine/keep-theirs/both/edit row
+    // on each one reads as outstanding work, and three of those four are
+    // meaningless here: two name the side it already holds, and "both" would
+    // duplicate the line. What's left that's genuinely useful is one toggle:
+    // include this change, or drop it.
+    oneSidedIncluded(hunk) {
+      return hunk.choice === hunk.kind;
+    },
+
+    toggleOneSided(hunk) {
+      const other = hunk.kind === "mine" ? "theirs" : "mine"; // the untouched side *is* base
+      hunk.choice = this.oneSidedIncluded(hunk) ? other : hunk.kind;
+    },
+
+    // The lines that side added — paired with hunk.base (what was there
+    // before) to render a plain -/+ diff instead of a two-pane picker whose
+    // other pane is usually "(nothing)".
+    oneSidedAdded(hunk) {
+      return hunk.kind === "mine" ? hunk.mine : hunk.theirs;
+    },
+
+    oneSidedSource(hunk) {
+      if (hunk.kind === "mine") return "Your edit";
+      return this.resolver.mode === "git" ? "From the remote commit" : "From disk";
+    },
+
+    prefixed(lines, sign) {
+      return lines.map((line) => `${sign} ${line}`).join("\n");
     },
 
     // Bulk answer for the undecided conflicts — the escape hatch when a fork

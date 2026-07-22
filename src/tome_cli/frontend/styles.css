@@ -539,7 +539,6 @@ body {
 /* An undecided conflict is the only thing that blocks Apply, so it's the only
    thing that shouts. */
 .resolver-hunk--conflict { border-left-color: var(--broken); }
-.resolver-hunk--mine, .resolver-hunk--theirs { border-left-color: var(--accent); }
 .resolver-hunk-label {
   padding: 0.25rem 0.5rem;
   font-size: 0.72rem;
@@ -596,3 +595,46 @@ body {
 }
 .resolver-empty { color: var(--muted); font-size: 0.85rem; }
 .resolver-warning { font-size: 0.8rem; color: var(--muted); margin: 0.75rem 0 0; }
+
+/* One-sided changes: already merged, so they report rather than ask. A -/+
+   diff and a single include/exclude toggle, quiet enough to scan past. */
+.resolver-aside {
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  background: var(--panel);
+  margin: 0.5rem 0;
+  padding: 0.1rem 0 0.3rem;
+}
+.resolver-aside.excluded { border-left-color: var(--border); opacity: 0.55; }
+.resolver-aside.excluded .resolver-add { text-decoration: line-through; }
+.resolver-aside-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+.resolver-aside-field { font-family: ui-monospace, monospace; color: var(--fg); }
+.resolver-aside-state { margin-left: auto; font-style: italic; }
+.resolver-aside-toggle {
+  font: inherit;
+  font-size: 0.72rem;
+  padding: 0.1rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+.resolver-del, .resolver-add {
+  margin: 0;
+  padding: 0.1rem 0.5rem;
+  font-family: ui-monospace, monospace;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.resolver-del { color: var(--muted); }
+.resolver-add { color: var(--fg); }

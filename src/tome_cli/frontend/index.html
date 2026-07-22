@@ -311,30 +311,52 @@
               <p class="resolver-empty" x-show="!resolverFields().length">
                 Nothing differs — both sides agree on every field.</p>
               <template x-for="hunk of resolverFields()" :key="hunk.id">
-                <div class="resolver-hunk" :class="'resolver-hunk--' + hunk.kind">
-                  <div class="resolver-hunk-label" x-text="hunk.label"></div>
-                  <div class="resolver-sides">
-                    <button type="button" class="resolver-side resolver-side--mine"
-                            :class="{ chosen: hunk.choice === 'mine' }"
-                            @click="chooseHunk(hunk, 'mine')">
-                      <pre x-text="hunk.mine.join('\n') || '(empty)'"></pre>
-                    </button>
-                    <button type="button" class="resolver-side resolver-side--theirs"
-                            :class="{ chosen: hunk.choice === 'theirs' }"
-                            @click="chooseHunk(hunk, 'theirs')">
-                      <pre x-text="hunk.theirs.join('\n') || '(empty)'"></pre>
-                    </button>
+                <div>
+                  <!-- Same split as the body: only a field both sides touched
+                       is a question. -->
+                  <template x-if="hunk.kind === 'conflict'">
+                  <div class="resolver-hunk resolver-hunk--conflict">
+                    <div class="resolver-hunk-label" x-text="hunk.label"></div>
+                    <div class="resolver-sides">
+                      <button type="button" class="resolver-side resolver-side--mine"
+                              :class="{ chosen: hunk.choice === 'mine' }"
+                              @click="chooseHunk(hunk, 'mine')">
+                        <pre x-text="hunk.mine.join('\n') || '(empty)'"></pre>
+                      </button>
+                      <button type="button" class="resolver-side resolver-side--theirs"
+                              :class="{ chosen: hunk.choice === 'theirs' }"
+                              @click="chooseHunk(hunk, 'theirs')">
+                        <pre x-text="hunk.theirs.join('\n') || '(empty)'"></pre>
+                      </button>
+                    </div>
+                    <div class="resolver-actions-row">
+                      <button type="button" :class="{ chosen: hunk.choice === 'mine' }"
+                              @click="chooseHunk(hunk, 'mine')">Keep mine</button>
+                      <button type="button" :class="{ chosen: hunk.choice === 'theirs' }"
+                              @click="chooseHunk(hunk, 'theirs')">Keep theirs</button>
+                      <button type="button" :class="{ chosen: hunk.choice === 'edit' }"
+                              @click="chooseHunk(hunk, 'edit')">Edit…</button>
+                    </div>
+                    <input type="text" class="resolver-edit" x-show="hunk.choice === 'edit'"
+                           x-model="hunk.editText" />
                   </div>
-                  <div class="resolver-actions-row">
-                    <button type="button" :class="{ chosen: hunk.choice === 'mine' }"
-                            @click="chooseHunk(hunk, 'mine')">Keep mine</button>
-                    <button type="button" :class="{ chosen: hunk.choice === 'theirs' }"
-                            @click="chooseHunk(hunk, 'theirs')">Keep theirs</button>
-                    <button type="button" :class="{ chosen: hunk.choice === 'edit' }"
-                            @click="chooseHunk(hunk, 'edit')">Edit…</button>
+                  </template>
+
+                  <template x-if="hunk.kind !== 'conflict'">
+                  <div class="resolver-aside" :class="{ excluded: !oneSidedIncluded(hunk) }">
+                    <div class="resolver-aside-head">
+                      <span class="resolver-aside-field" x-text="hunk.label"></span>
+                      <span x-text="oneSidedSource(hunk)"></span>
+                      <span class="resolver-aside-state"
+                            x-text="oneSidedIncluded(hunk) ? 'included' : 'excluded'"></span>
+                      <button type="button" class="resolver-aside-toggle"
+                              @click="toggleOneSided(hunk)"
+                              x-text="oneSidedIncluded(hunk) ? 'Exclude' : 'Include'"></button>
+                    </div>
+                    <pre class="resolver-del" x-text="prefixed(hunk.base, '-')"></pre>
+                    <pre class="resolver-add" x-text="prefixed(oneSidedAdded(hunk), '+')"></pre>
                   </div>
-                  <input type="text" class="resolver-edit" x-show="hunk.choice === 'edit'"
-                         x-model="hunk.editText" />
+                  </template>
                 </div>
               </template>
             </div>
@@ -350,12 +372,11 @@
                     <div class="resolver-gap" x-text="'⋯ ' + row.elided + ' unchanged lines ⋯'"></div>
                   </template>
 
-                  <template x-if="row.part === 'hunk'">
-                  <div class="resolver-hunk" :class="'resolver-hunk--' + row.hunk.kind">
-                    <div class="resolver-hunk-label"
-                         x-text="row.hunk.kind === 'conflict' ? 'Both sides changed this'
-                               : row.hunk.kind === 'mine' ? 'Only you changed this'
-                               : 'Only the other side changed this'"></div>
+                  <!-- A true conflict: both sides changed it, so it gets the
+                       full picker and blocks Apply until answered. -->
+                  <template x-if="row.part === 'hunk' && row.hunk.kind === 'conflict'">
+                  <div class="resolver-hunk resolver-hunk--conflict">
+                    <div class="resolver-hunk-label">Both sides changed this</div>
                     <div class="resolver-sides">
                       <button type="button" class="resolver-side resolver-side--mine"
                               :class="{ chosen: row.hunk.choice === 'mine' }"
@@ -380,6 +401,25 @@
                     </div>
                     <textarea class="resolver-edit" rows="4" x-show="row.hunk.choice === 'edit'"
                               x-model="row.hunk.editText"></textarea>
+                  </div>
+                  </template>
+
+                  <!-- Only one side changed it: already answered, so this
+                       reports rather than asks — a -/+ diff and one toggle. -->
+                  <template x-if="row.part === 'hunk' && row.hunk.kind !== 'conflict'">
+                  <div class="resolver-aside" :class="{ excluded: !oneSidedIncluded(row.hunk) }">
+                    <div class="resolver-aside-head">
+                      <span x-text="oneSidedSource(row.hunk)"></span>
+                      <span class="resolver-aside-state"
+                            x-text="oneSidedIncluded(row.hunk) ? 'included' : 'excluded'"></span>
+                      <button type="button" class="resolver-aside-toggle"
+                              @click="toggleOneSided(row.hunk)"
+                              x-text="oneSidedIncluded(row.hunk) ? 'Exclude' : 'Include'"></button>
+                    </div>
+                    <pre class="resolver-del" x-show="row.hunk.base.length"
+                         x-text="prefixed(row.hunk.base, '-')"></pre>
+                    <pre class="resolver-add" x-show="oneSidedAdded(row.hunk).length"
+                         x-text="prefixed(oneSidedAdded(row.hunk), '+')"></pre>
                   </div>
                   </template>
                 </div>
