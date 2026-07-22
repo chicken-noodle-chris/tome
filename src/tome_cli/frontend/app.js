@@ -208,6 +208,10 @@ function tomeApp() {
 
     async syncFromUrl() {
       const params = new URLSearchParams(location.search);
+      if (params.get("view") === "board") {
+        this.view = "board";
+        return;
+      }
       const slug = params.get("page") || DEFAULT_PAGE;
       const justCreated = params.get("new") === "1"; // set by saveNewPage()'s redirect
       await this.loadPage(slug, { push: false });
@@ -215,6 +219,25 @@ function tomeApp() {
         history.replaceState({ slug }, "", `?page=${encodeURIComponent(slug)}`); // drop the one-shot marker
         if (this.board.writable && !this.editing) await this.enterEdit();
       }
+    },
+
+    // Enters the board as a real URL state (?view=board), a sibling of
+    // `?page=<slug>` in the same router — see [[board-route]].
+    showBoard({ push = true } = {}) {
+      this.view = "board";
+      if (push) history.pushState({ view: "board" }, "", "?view=board");
+    },
+
+    // Returns to the page view. If a page is already loaded, this is just a
+    // view flip + URL push; if the board was entered directly (no page ever
+    // loaded), falls through to loadPage() for the lazy first load.
+    async showPage({ push = true } = {}) {
+      if (this.currentSlug) {
+        this.view = "page";
+        if (push) history.pushState({ slug: this.currentSlug }, "", `?page=${encodeURIComponent(this.currentSlug)}`);
+        return;
+      }
+      await this.loadPage(DEFAULT_PAGE, { push });
     },
 
     async loadPage(slug, { push = true } = {}) {
@@ -249,6 +272,14 @@ function tomeApp() {
         const url = `?page=${encodeURIComponent(slug)}`;
         history.pushState({ slug }, "", url);
       }
+    },
+
+    // The topbar's "Page" link target: the current page, or the default if
+    // none has loaded yet (e.g. landing straight on the board). DEFAULT_PAGE
+    // is a module-level const, not reachable from the template's expression
+    // scope, hence this wrapper.
+    pageHref() {
+      return `?page=${encodeURIComponent(this.currentSlug || DEFAULT_PAGE)}`;
     },
 
     // A known slug -> the in-app query link; unknown -> null (broken wikilink).

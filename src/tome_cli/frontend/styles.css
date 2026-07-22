@@ -55,15 +55,17 @@ body {
 }
 .brand { font-weight: 700; letter-spacing: 0.02em; }
 .views { display: flex; gap: 0.25rem; }
-.views button {
+.views a {
   border: 1px solid var(--border);
   background: var(--panel);
   color: var(--fg);
   padding: 0.3rem 0.8rem;
   border-radius: 6px;
   cursor: pointer;
+  text-decoration: none;
+  line-height: 1.4;
 }
-.views button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.views a.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 .hint { color: var(--muted); font-size: 0.8rem; margin-left: auto; }
 
 /* -- page view: sidebar + content -- */

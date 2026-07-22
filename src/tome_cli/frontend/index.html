@@ -15,8 +15,8 @@
     <header class="topbar">
       <span class="brand">tome</span>
       <nav class="views">
-        <button :class="{ active: view === 'page' }" @click="view = 'page'">Page</button>
-        <button :class="{ active: view === 'board' }" @click="view = 'board'">Board</button>
+        <a :class="{ active: view === 'page' }" :href="pageHref()" @click.prevent="showPage()">Page</a>
+        <a :class="{ active: view === 'board' }" href="?view=board" @click.prevent="showBoard()">Board</a>
       </nav>
       <span class="hint" x-show="view === 'page'" x-text="pages.length + ' pages'"></span>
     </header>
