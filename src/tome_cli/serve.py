@@ -153,6 +153,13 @@ def build_index(vault_root, conventions):
 _STATUSES_RE = re.compile(r"^statuses:\s*(\[.*\])\s*$")
 _DEFAULT_STATUS_RE = re.compile(r"^default_status:\s*(.+?)\s*$")
 
+# The reserved off-board status ([[deferred-backlog]]): tasks carrying it are
+# real tasks with a writable ordinal, just excluded from board columns and
+# surfaced instead by the backlog list view. Stays a valid entry in
+# config.yml's statuses (the move endpoint's `-s` must resolve against
+# backlog.md's known set) — only the board's column derivation skips it.
+BACKLOG_STATUS = "Backlog"
+
 
 def _read_board_config(backlog_dir):
     """Backlog.md's config.yml holds the canonical status ordering. Only two
@@ -213,7 +220,12 @@ def build_board(vault_root, conventions):
                 "labels": labels,
                 "references": cli.task_block_list(fm_lines, "references"),
             })
-    return {"statuses": statuses, "defaultStatus": default_status, "cards": cards}
+    return {
+        "statuses": statuses,
+        "defaultStatus": default_status,
+        "backlogStatus": BACKLOG_STATUS,
+        "cards": cards,
+    }
 
 
 def _board_with_writable(vault_root, conventions, writable):

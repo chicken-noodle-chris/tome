@@ -103,7 +103,7 @@ def test_build_board_reads_config_and_tasks(make_vault, make_task):
     (vault / "backlog").mkdir(exist_ok=True)
     (vault / "backlog" / "config.yml").write_text(
         'default_status: "To Do"\n'
-        'statuses: ["Too Soon", "To Do", "In Progress", "Done"]\n',
+        'statuses: ["Backlog", "To Do", "In Progress", "Done"]\n',
         encoding="utf-8", newline="\n",
     )
     make_task(vault, 1, "First task", status="In Progress", ordinal=1000,
@@ -114,8 +114,9 @@ def test_build_board_reads_config_and_tasks(make_vault, make_task):
 
     board = serve.build_board(vault, _conv(vault))
 
-    assert board["statuses"] == ["Too Soon", "To Do", "In Progress", "Done"]
+    assert board["statuses"] == ["Backlog", "To Do", "In Progress", "Done"]
     assert board["defaultStatus"] == "To Do"
+    assert board["backlogStatus"] == "Backlog"
 
     cards = {c["id"]: c for c in board["cards"]}
     assert set(cards) == {"task-1", "task-2"}
@@ -135,7 +136,9 @@ def test_build_board_reads_config_and_tasks(make_vault, make_task):
 def test_build_board_empty_without_backlog(make_vault):
     vault = make_vault()
     board = serve.build_board(vault, _conv(vault))
-    assert board == {"statuses": [], "defaultStatus": "", "cards": []}
+    assert board == {
+        "statuses": [], "defaultStatus": "", "backlogStatus": "Backlog", "cards": [],
+    }
 
 
 # --------------------------------------------------------------------------- #

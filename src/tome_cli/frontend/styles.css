@@ -469,6 +469,22 @@ body {
 .card-prio[data-prio="high"] { background: #fee2e2; color: #b91c1c; }
 .card-title { font-size: 0.9rem; line-height: 1.4; }
 .card-chips { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.45rem; }
+.card-action {
+  display: block;
+  margin-top: 0.5rem;
+  font: inherit;
+  font-size: 0.72rem;
+  padding: 0.2rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--muted);
+  cursor: pointer;
+}
+.card-action:hover { border-color: var(--accent); color: var(--accent); }
+
+/* -- backlog view ([[deferred-backlog]]) -- */
+.backlog-list { max-width: 32rem; }
 .chip {
   font-size: 0.7rem;
   padding: 0.08rem 0.45rem;

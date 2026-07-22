@@ -193,7 +193,7 @@ function tomeApp() {
     collapsed: {}, // project name -> true when its section is folded shut
 
     // board.json
-    board: { statuses: [], defaultStatus: "", cards: [], writable: false },
+    board: { statuses: [], defaultStatus: "", backlogStatus: "", cards: [], writable: false },
     projectFilter: "__all__",
     sortMode: "manual", // "manual" | "priority" | "title" — localStorage-only, never touches board.json
     draggingId: null, // card.id currently being dragged
@@ -246,8 +246,13 @@ function tomeApp() {
 
     async syncFromUrl() {
       const params = new URLSearchParams(location.search);
-      if (params.get("view") === "board") {
+      const viewParam = params.get("view");
+      if (viewParam === "board") {
         this.view = "board";
+        return;
+      }
+      if (viewParam === "backlog") {
+        this.view = "backlog";
         return;
       }
       const slug = params.get("page") || DEFAULT_PAGE;
@@ -264,6 +269,13 @@ function tomeApp() {
     showBoard({ push = true } = {}) {
       this.view = "board";
       if (push) history.pushState({ view: "board" }, "", "?view=board");
+    },
+
+    // The backlog list's route — [[deferred-backlog]]'s sibling to
+    // ?view=board, same router, same history-push pattern.
+    showBacklog({ push = true } = {}) {
+      this.view = "backlog";
+      if (push) history.pushState({ view: "backlog" }, "", "?view=backlog");
     },
 
     // Returns to the page view. If a page is already loaded, this is just a
@@ -1136,14 +1148,18 @@ function tomeApp() {
     },
 
     // Configured statuses first, then any status present on a card but not
-    // configured.
+    // configured — excluding backlogStatus either way, since that status
+    // lives in the backlog list view instead ([[deferred-backlog]]).
     columns() {
+      const backlogStatus = this.board.backlogStatus;
       const known = new Set(this.board.statuses);
       const extras = [];
       for (const c of this.board.cards) {
-        if (c.status && !known.has(c.status) && !extras.includes(c.status)) extras.push(c.status);
+        if (c.status && c.status !== backlogStatus && !known.has(c.status) && !extras.includes(c.status)) {
+          extras.push(c.status);
+        }
       }
-      return [...this.board.statuses, ...extras];
+      return [...this.board.statuses, ...extras].filter((s) => s !== backlogStatus);
     },
 
     visibleCards() {
@@ -1254,6 +1270,17 @@ function tomeApp() {
       } finally {
         this.movingCardId = null;
       }
+    },
+
+    // Defer/promote ([[deferred-backlog]]) are plain status moves — same
+    // moveCard() write path drag-and-drop uses, just triggered by a button
+    // instead of a drop, and always landing at the top of the target list.
+    deferCard(card) {
+      this.moveCard(card, this.board.backlogStatus, null);
+    },
+
+    promoteCard(card) {
+      this.moveCard(card, this.board.defaultStatus, null);
     },
   };
 }
