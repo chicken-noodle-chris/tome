@@ -18,6 +18,10 @@ tome_cli.serve — the local browse host for the no-build frontend.
     `tome serve` (true) from a frozen static export (false, see
     export_static() below) and hide drag-to-move accordingly — the static
     deploy has no server behind it to accept the POST at all;
+  * accepts a sibling write, `POST /api/task`, filing a brand-new bare task —
+    a kanban card with no wiki page — the same way, via `cli.run_backlog`
+    (see `create_task()` below). Same uncommitted-until-`tome sync` contract
+    as the status write, and the same `board.writable` gate;
   * accepts a second write, `POST /api/page`, editing a page's body through
     `cli.write_page` + the lint gate ([[page-editing]]) — see `save_page()`
     below for the conflict/lint contract. Also absent on a static export, and
@@ -241,6 +245,43 @@ def apply_task_status(vault_root, raw_task_id, status):
         message = (proc.stderr or proc.stdout).strip() or "backlog task edit failed"
         return False, message
     return True, ""
+
+
+def create_task(vault_root, title, status, project, priority, description):
+    """Files a bare backlog task — a kanban card with no wiki page — via
+    `backlog task create` ([[in-ui-creation]]'s New Task form). Matches
+    apply_task_status's writes-through-CLI discipline: no page, no lint gate,
+    and (like a drag-to-move) no commit here either — task writes stay
+    uncommitted, picked up by the next `tome sync`. Returns (ok, message);
+    on success message is the new card's board id (e.g. "task-79")."""
+    from tome_cli import cli
+
+    title = (title or "").strip()
+    if not title:
+        return False, "title is required"
+    if not status:
+        return False, "status is required"
+
+    argv = ["task", "create", title, "-s", status, "--plain"]
+    if description:
+        argv += ["-d", description]
+    if project:
+        argv += ["-l", f"project:{project}"]
+    if priority:
+        argv += ["--priority", priority]
+
+    proc = cli.run_backlog(vault_root, argv, capture=True)
+    if proc.returncode != 0:
+        return False, (proc.stderr or proc.stdout).strip() or "backlog task create failed"
+
+    m = re.search(r"^File: (.+)$", proc.stdout, re.MULTILINE)
+    if not m:
+        return False, "task created but its file path could not be parsed"
+    fm_lines, _ = cli.read_page(Path(m.group(1).strip()))
+    raw_id = cli.fm_get(fm_lines, "id") or ""
+    if not raw_id:
+        return False, "task created but its id could not be read"
+    return True, raw_id.lower()
 
 
 def _page_path(vault_root, rel):
@@ -847,7 +888,7 @@ def _reset_create(vault_root, result):
         cli.run_git(vault_root, ["checkout", "HEAD", "--", *rel_paths])
 
 
-def create_page(vault_root, conventions, type_, project, slug, title, desc):
+def create_page(vault_root, conventions, type_, project, slug, title, desc, link_task=None):
     """The [[page-creation]] save path: scaffold a new page through
     `cli.new_page` — the same core `tome new` uses. Returns (http_status,
     payload_dict), never raising, mirroring save_page/save_frontmatter/
@@ -868,9 +909,18 @@ def create_page(vault_root, conventions, type_, project, slug, title, desc):
        prior buffer to restore (unlike save_page/save_frontmatter): the
        just-created file is deleted and the index/hub reset from HEAD via
        `_reset_create`, never leaving a half-created page (422).
-    4. Commit the touched set (new page, index, and hub for a plan/project) +
-       push, reusing `cli._push_with_retry`. Returns the new page's in-app
-       URL for the client to redirect to.
+    4. When `link_task` names an existing backlog task (the New Task form's
+       "Save & create plan" handoff, [[in-ui-creation]]), add the new page to
+       that task's `references` — the same task<->plan link `tome new plan
+       --with-task` writes, minted the other direction since the task already
+       exists. Existing references are preserved: `task edit --ref` sets the
+       whole list, so this reads them first and re-passes every one alongside
+       the new page. A bad task id rolls the scaffold back like a lint
+       failure; a failed edit rolls back both the scaffold and, if the task
+       file was already touched, restores it from HEAD too.
+    5. Commit the touched set (new page, index, hub for a plan/project, and
+       the linked task if any) + push, reusing `cli._push_with_retry`.
+       Returns the new page's in-app URL for the client to redirect to.
 
     As with every write route, this endpoint is absent from the static
     export.
@@ -894,15 +944,45 @@ def create_page(vault_root, conventions, type_, project, slug, title, desc):
         _reset_create(vault_root, result)
         return 422, {"error": "lint failed", "findings": [f.as_dict() for f in errors]}
 
+    task_path = None
+    if link_task:
+        task_num = str(link_task).strip()
+        if task_num.upper().startswith("TASK-"):
+            task_num = task_num[len("TASK-"):]
+        task_path = cli.find_task_file(vault_root, task_num)
+        if task_path is None:
+            _reset_create(vault_root, result)
+            return 400, {"error": f"no such task: {link_task}"}
+
+        plan_ref = f"wiki/{rel_str}"
+        fm_lines, _ = cli.read_page(task_path)
+        refs = cli.task_references(fm_lines)
+        task_id = cli.task_id_from_path(task_path)
+        edit_argv = ["task", "edit", task_id]
+        for r in refs:
+            edit_argv += ["--ref", r]
+        edit_argv += ["--ref", plan_ref]
+        proc = cli.run_backlog(vault_root, edit_argv, capture=True)
+        if proc.returncode != 0:
+            _reset_create(vault_root, result)
+            return 400, {"error": (proc.stderr or proc.stdout).strip() or "linking task failed"}
+
     rel_paths = [str(p.resolve().relative_to(vault_root)) for p in result.touched_paths]
+    if task_path is not None:
+        rel_paths.append(str(task_path.resolve().relative_to(vault_root)))
     add = cli.run_git(vault_root, ["add", "--", *rel_paths])
     if add.returncode != 0:
         _reset_create(vault_root, result)
+        if task_path is not None:
+            cli.run_git(vault_root, ["checkout", "HEAD", "--", str(task_path.resolve().relative_to(vault_root))])
         return 500, {"error": (add.stderr or "git add failed").strip()}
 
-    commit = cli.run_git(vault_root, ["commit", "-m", f"new: {result.slug}"])
+    commit_msg = f"new: {result.slug}" + (f" (linked {link_task})" if task_path is not None else "")
+    commit = cli.run_git(vault_root, ["commit", "-m", commit_msg])
     if commit.returncode != 0:
         _reset_create(vault_root, result)
+        if task_path is not None:
+            cli.run_git(vault_root, ["checkout", "HEAD", "--", str(task_path.resolve().relative_to(vault_root))])
         return 500, {"error": (commit.stderr or commit.stdout).strip() or "git commit failed"}
 
     push_conflict = _push_or_conflict(vault_root)
@@ -985,6 +1065,17 @@ class TomeHandler(BaseHTTPRequestHandler):
                 if not ok:
                     return self._send_json({"error": message}, status=400)
                 return self._send_json(_board_with_writable(self.vault_root, self.conventions, True))
+            if path == "/api/task":
+                payload = self._json_body()
+                if payload is None:
+                    return
+                ok, result = create_task(self.vault_root, payload.get("title"), payload.get("status"),
+                                          payload.get("project"), payload.get("priority"),
+                                          payload.get("description"))
+                if not ok:
+                    return self._send_json({"error": result}, status=400)
+                board = _board_with_writable(self.vault_root, self.conventions, True)
+                return self._send_json({**board, "taskId": result})
             if path == "/api/page":
                 payload = self._json_body()
                 if payload is None:
@@ -1027,11 +1118,12 @@ class TomeHandler(BaseHTTPRequestHandler):
                 slug = payload.get("slug")
                 title = payload.get("title")
                 desc = payload.get("description")
+                link_task = payload.get("linkTask")
                 if not type_ or not slug or not title or desc is None:
                     return self._send_json({"error": "type, slug, title, and description are required"},
                                             status=400)
                 status_code, result = create_page(self.vault_root, self.conventions,
-                                                   type_, project, slug, title, desc)
+                                                   type_, project, slug, title, desc, link_task)
                 return self._send_json(result, status=status_code)
             if path == "/api/conflict/resolve":
                 payload = self._json_body()
@@ -1210,6 +1302,7 @@ def cmd_serve(vault_root, conventions, args):
     print(f"tome serve: {url} (vault: {vault_root})")
     print("  serving  /  /index.json  /board.json  /raw/<page>.md  /app/<file>")
     print("  POST /api/task/<id>/status  (status moves, shelled to backlog.md)")
+    print("  POST /api/task              (new bare task, shelled to backlog.md)")
     print("  POST /api/page              (body edits, conflict + lint gated)")
     print("  POST /api/frontmatter       (title/tags/description edits, conflict + lint gated)")
     print("  POST /api/rename            (slug rename via tome mv, conflict + lint gated)")

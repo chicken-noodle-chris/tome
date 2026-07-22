@@ -9,10 +9,13 @@
 // POSTing to `/api/task/<id>/status`; the page view supports body editing on
 // the same flag, POSTing to `/api/page` ([[page-editing]]), and frontmatter
 // editing (title/tags/description), POSTing to `/api/frontmatter`
-// ([[frontmatter-editing]]) — all absent on a static export, where everything
-// stays read-only. No other writes exist. Body and frontmatter editing share
-// one conflict token (`currentHash`, since both touch the same file) but only
-// one edit mode is active at a time.
+// ([[frontmatter-editing]]). Creation POSTs to `/api/new` (a page,
+// [[page-creation]]) and `/api/task` (a bare kanban card, [[in-ui-creation]])
+// — the latter's "Save & create plan" action chains into the former, linking
+// the new plan back to the task via `linkTask`. All absent on a static
+// export, where everything stays read-only. Body and frontmatter editing
+// share one conflict token (`currentHash`, since both touch the same file)
+// but only one edit mode is active at a time.
 //
 // A rejected write doesn't dead-end: whichever way the page moved underneath
 // the client — a local write, or a git history that forked — the server hands
@@ -151,6 +154,16 @@ function tomeApp() {
     newPageFindings: [],
     newPageForm: { type: "", project: "", slug: "", title: "", description: "" },
     newPageSlugTouched: false, // true once the user hand-edits the slug, so title input stops re-deriving it
+    newPageLinkTask: null, // set by the New Task "Save & create plan" handoff ([[in-ui-creation]])
+
+    // new task creation ([[in-ui-creation]]) — a bare kanban card, no page.
+    // "Save & create plan" is the handoff into the New Page modal above,
+    // pre-set to type "plan" and carrying this task's id as newPageLinkTask.
+    newTaskOpen: false,
+    newTaskSaving: false,
+    newTaskBanner: "",
+    newTaskBannerKind: "", // "error"
+    newTaskForm: { title: "", status: "", project: "", priority: "medium", description: "" },
 
     // conflict resolution ([[conflict-resolution]]) — one object for all
     // three entry points; null whenever the resolver is closed. See the
@@ -588,13 +601,16 @@ function tomeApp() {
     // URL tells syncFromUrl() to auto-open the body editor once the freshly
     // scaffolded TBD page loads.
 
-    openNewPageModal(project) {
+    openNewPageModal(project, { linkTask = null } = {}) {
       this.newPageOpen = true;
       this.newPageBanner = "";
       this.newPageBannerKind = "";
       this.newPageFindings = [];
       this.newPageSlugTouched = false;
-      this.newPageForm = { type: "", project: project || "", slug: "", title: "", description: "" };
+      this.newPageLinkTask = linkTask;
+      this.newPageForm = {
+        type: linkTask ? "plan" : "", project: project || "", slug: "", title: "", description: "",
+      };
     },
 
     closeNewPageModal() {
@@ -643,17 +659,19 @@ function tomeApp() {
       this.newPageBannerKind = "";
       this.newPageFindings = [];
       const f = this.newPageForm;
+      const payload = {
+        type: f.type,
+        project: f.type === "project" ? null : f.project,
+        slug: f.slug.trim(),
+        title: f.title.trim(),
+        description: f.description.trim(),
+      };
+      if (this.newPageLinkTask) payload.linkTask = this.newPageLinkTask;
       try {
         const res = await fetch("/api/new", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            type: f.type,
-            project: f.type === "project" ? null : f.project,
-            slug: f.slug.trim(),
-            title: f.title.trim(),
-            description: f.description.trim(),
-          }),
+          body: JSON.stringify(payload),
         });
         const data = await res.json();
         if (res.status === 200) {
@@ -675,6 +693,71 @@ function tomeApp() {
         this.newPageBanner = `Create failed: ${e.message}`;
       } finally {
         this.newPageSaving = false;
+      }
+    },
+
+    // -- new task creation ([[in-ui-creation]]) ----------------------------
+    // A bare kanban card via POST /api/task — no page, no lint gate, no
+    // conflict resolver (task writes are uncommitted, same as a drag-to-move,
+    // so there's nothing to fork against). "Save & create plan" is the
+    // handoff: create the task, then reopen the New Page modal above,
+    // pre-set to type "plan" and linked to the task just filed.
+
+    openNewTaskModal() {
+      this.newTaskOpen = true;
+      this.newTaskBanner = "";
+      this.newTaskBannerKind = "";
+      this.newTaskForm = {
+        title: "",
+        status: this.board.defaultStatus || this.board.statuses[0] || "",
+        project: this.projectFilter !== "__all__" ? this.projectFilter : "",
+        priority: "medium",
+        description: "",
+      };
+    },
+
+    closeNewTaskModal() {
+      this.newTaskOpen = false;
+    },
+
+    newTaskValid() {
+      const f = this.newTaskForm;
+      return !!(f.title.trim() && f.status);
+    },
+
+    async saveNewTask({ thenCreatePlan = false } = {}) {
+      if (this.newTaskSaving || !this.newTaskValid()) return;
+      this.newTaskSaving = true;
+      this.newTaskBanner = "";
+      this.newTaskBannerKind = "";
+      const f = this.newTaskForm;
+      try {
+        const res = await fetch("/api/task", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: f.title.trim(),
+            status: f.status,
+            project: f.project || null,
+            priority: f.priority || null,
+            description: f.description.trim() || null,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          this.newTaskBannerKind = "error";
+          this.newTaskBanner = data.error || `Create failed (HTTP ${res.status})`;
+          return;
+        }
+        const { taskId, ...board } = data;
+        this.board = board;
+        this.newTaskOpen = false;
+        if (thenCreatePlan) this.openNewPageModal(f.project, { linkTask: taskId });
+      } catch (e) {
+        this.newTaskBannerKind = "error";
+        this.newTaskBanner = `Create failed: ${e.message}`;
+      } finally {
+        this.newTaskSaving = false;
       }
     },
 

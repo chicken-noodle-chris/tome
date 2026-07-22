@@ -206,7 +206,7 @@
          @keydown.escape.window="if (newPageOpen) closeNewPageModal()">
       <div class="modal" role="dialog" aria-modal="true" aria-label="New page">
         <div class="modal-head">
-          <h2>New page</h2>
+          <h2 x-text="newPageLinkTask ? 'New plan · linked to ' + newPageLinkTask.toUpperCase() : 'New page'"></h2>
           <button type="button" class="modal-close" @click="closeNewPageModal()">&times;</button>
         </div>
 
@@ -218,7 +218,7 @@
           </template>
         </ul>
 
-        <div class="fm-field">
+        <div class="fm-field" x-show="!newPageLinkTask">
           <label>Type</label>
           <select x-model="newPageForm.type">
             <option value="" disabled>Choose a type…</option>
@@ -260,6 +260,71 @@
           <button type="button" class="editor-btn-save" @click="saveNewPage()"
                   :disabled="newPageSaving || !newPageValid()"
                   x-text="newPageSaving ? 'Creating…' : 'Create'"></button>
+        </div>
+      </div>
+    </div>
+
+    <!-- New Task modal ([[in-ui-creation]]) — a bare kanban card via POST
+         /api/task, no wiki page. "Save & create plan" hands off into the
+         New Page modal above, pre-linked to the task just filed. -->
+    <div class="modal-overlay" x-show="newTaskOpen" x-cloak @click.self="closeNewTaskModal()"
+         @keydown.escape.window="if (newTaskOpen) closeNewTaskModal()">
+      <div class="modal" role="dialog" aria-modal="true" aria-label="New task">
+        <div class="modal-head">
+          <h2>New task</h2>
+          <button type="button" class="modal-close" @click="closeNewTaskModal()">&times;</button>
+        </div>
+
+        <p class="editor-banner" :class="'editor-banner--' + newTaskBannerKind"
+           x-show="newTaskBanner" x-text="newTaskBanner"></p>
+
+        <div class="fm-field">
+          <label>Title</label>
+          <input type="text" x-model="newTaskForm.title" placeholder="Title" />
+        </div>
+
+        <div class="fm-field">
+          <label>Status</label>
+          <select x-model="newTaskForm.status">
+            <template x-for="s of board.statuses" :key="s">
+              <option :value="s" x-text="s"></option>
+            </template>
+          </select>
+        </div>
+
+        <div class="fm-field">
+          <label>Project</label>
+          <select x-model="newTaskForm.project">
+            <option value="">No project</option>
+            <template x-for="p of projectOptions()" :key="p.slug">
+              <option :value="p.slug" x-text="p.title"></option>
+            </template>
+          </select>
+        </div>
+
+        <div class="fm-field">
+          <label>Priority</label>
+          <select x-model="newTaskForm.priority">
+            <option value="high">high</option>
+            <option value="medium">medium</option>
+            <option value="low">low</option>
+          </select>
+        </div>
+
+        <div class="fm-field">
+          <label>Description</label>
+          <input type="text" x-model="newTaskForm.description" maxlength="140" />
+          <span class="fm-counter" x-text="newTaskForm.description.length + '/140'"></span>
+        </div>
+
+        <div class="editor-actions">
+          <button type="button" class="editor-btn-cancel" @click="closeNewTaskModal()">Cancel</button>
+          <button type="button" class="editor-btn-cancel" @click="saveNewTask({ thenCreatePlan: true })"
+                  :disabled="newTaskSaving || !newTaskValid()"
+                  x-text="newTaskSaving ? 'Saving…' : 'Save & create plan'"></button>
+          <button type="button" class="editor-btn-save" @click="saveNewTask()"
+                  :disabled="newTaskSaving || !newTaskValid()"
+                  x-text="newTaskSaving ? 'Creating…' : 'Create'"></button>
         </div>
       </div>
     </div>
@@ -466,6 +531,8 @@
             </template>
           </select>
         </label>
+        <button type="button" class="new-page-btn" x-show="board.writable"
+                @click="openNewTaskModal()">+ New task</button>
         <span class="chip chip--readonly" x-show="!board.writable">read-only</span>
         <span class="total" x-text="visibleCards().length + ' tasks'"></span>
       </div>
