@@ -287,7 +287,7 @@
         <div class="fm-field">
           <label>Status</label>
           <select x-model="newTaskForm.status">
-            <template x-for="s of board.statuses" :key="s">
+            <template x-for="s of newTaskStatusOptions()" :key="s">
               <option :value="s" x-text="s"></option>
             </template>
           </select>
@@ -601,6 +601,8 @@
             <option value="title">Title</option>
           </select>
         </label>
+        <button type="button" class="new-page-btn" x-show="board.writable"
+                @click="openNewTaskModal({ fromBacklog: true })">+ New item</button>
         <span class="chip chip--readonly" x-show="!board.writable">read-only</span>
         <span class="total" x-text="cardsFor(board.backlogStatus).length + ' tasks'"></span>
       </div>

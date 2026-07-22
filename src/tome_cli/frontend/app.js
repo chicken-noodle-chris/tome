@@ -183,6 +183,10 @@ function tomeApp() {
     newTaskBanner: "",
     newTaskBannerKind: "", // "error"
     newTaskForm: { title: "", status: "", project: "", priority: "medium", description: "" },
+    // true when opened from the backlog view's "New item" ([[backlog-creation]]):
+    // status defaults to backlogStatus and the select offers every status
+    // (including Backlog) rather than the board's own columns.
+    newTaskFromBacklog: false,
 
     // conflict resolution ([[conflict-resolution]]) — one object for all
     // three entry points; null whenever the resolver is closed. See the
@@ -740,13 +744,16 @@ function tomeApp() {
     // handoff: create the task, then reopen the New Page modal above,
     // pre-set to type "plan" and linked to the task just filed.
 
-    openNewTaskModal() {
+    openNewTaskModal({ fromBacklog = false } = {}) {
       this.newTaskOpen = true;
+      this.newTaskFromBacklog = fromBacklog;
       this.newTaskBanner = "";
       this.newTaskBannerKind = "";
       this.newTaskForm = {
         title: "",
-        status: this.board.defaultStatus || this.board.statuses[0] || "",
+        status: fromBacklog
+          ? this.board.backlogStatus
+          : this.board.defaultStatus || this.board.statuses[0] || "",
         project: this.projectFilter !== "__all__" ? this.projectFilter : "",
         priority: "medium",
         description: "",
@@ -760,6 +767,13 @@ function tomeApp() {
     newTaskValid() {
       const f = this.newTaskForm;
       return !!(f.title.trim() && f.status);
+    },
+
+    // Board-opened form excludes backlogStatus (mirrors columns()) so you
+    // can't file an off-board item from the board; backlog-opened form shows
+    // every status so a user can redirect elsewhere mid-file ([[backlog-creation]]).
+    newTaskStatusOptions() {
+      return this.newTaskFromBacklog ? this.board.statuses : this.columns();
     },
 
     async saveNewTask({ thenCreatePlan = false } = {}) {
