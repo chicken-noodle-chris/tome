@@ -221,7 +221,9 @@ tome doctor
 - **Sync races**: two writers sharing a vault (a headless remote and a local
   session, say) will eventually collide on `tome sync`'s push. On rejection,
   sync retries once (`pull --rebase` + push); a second rejection fails loud
-  with the rebase state left intact rather than guessing further.
+  with the rebase state left intact rather than guessing further — and points
+  at `tome serve`, whose conflict resolver can finish exactly that state
+  (see [Browse view](#browse-view)).
 
 ## Browse view
 
@@ -229,17 +231,30 @@ tome doctor
 dependency) that serves the frontend's static files, the vault's raw `.md`
 under `/raw/`, and two generated JSON contracts — `/index.json` (the wiki
 catalogue + wikilink graph) and `/board.json` (the Backlog.md kanban) —
-rebuilt fresh on every request. One write route, `POST
-/api/task/<id>/status`, moves a board card by shelling out to backlog.md
-(never a direct YAML write) — drag a card to a new column in the board view
-to use it.
+rebuilt fresh on every request. Its write routes move a board card (`POST
+/api/task/<id>/status`, shelled out to backlog.md — never a direct YAML
+write; drag a card to a new column to use it), edit a page's body or
+frontmatter, rename its slug, and scaffold a new page — each one routed
+through the same `tome` command a terminal would run, then lint-gated,
+committed, and pushed.
+
+Every one of those writes is optimistic: it carries the hash of the version
+you opened, and the server refuses to write over a page that moved
+underneath you. When that happens — or when a `git pull --rebase` finds the
+history itself has forked — a **three-way resolver** opens in place, showing
+your buffer beside the external version with the differences as pickable
+hunks (keep mine / keep theirs / both / hand-edit; frontmatter resolves per
+field). Resolving assembles one merged buffer and re-saves it through the
+normal path; for a forked history it stages the merge, continues the rebase,
+and then retries whatever save you were making. Nothing is discarded without
+you choosing it, and **Abort** always returns the tree to its pre-pull state.
 
 `tome serve --export DIR` writes the same frontend plus a point-in-time
 snapshot of `index.json`, `board.json`, and the vault's raw markdown to
 `DIR` instead of starting a server — a static, read-only deploy (no write
-route; `board.json`'s `writable` is `false`, so the frontend drops the drag
-affordance) that any static host (GitHub Pages, `python -m http.server`,
-etc.) can serve as-is.
+or conflict routes; `board.json`'s `writable` is `false`, so the frontend
+drops the drag affordance and every editing one) that any static host
+(GitHub Pages, `python -m http.server`, etc.) can serve as-is.
 
 ### Desktop launcher
 

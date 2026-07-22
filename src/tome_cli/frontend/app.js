@@ -14,11 +14,21 @@
 // one conflict token (`currentHash`, since both touch the same file) but only
 // one edit mode is active at a time.
 //
+// A rejected write doesn't dead-end: whichever way the page moved underneath
+// the client — a local write, or a git history that forked — the server hands
+// back the three sides and the conflict resolver ([[conflict-resolution]])
+// opens over the top, merges hunk by hunk, and re-saves through the very same
+// endpoint. See the resolver section below; the merge itself lives in
+// merge.js.
+//
 // Alpine is the behaviour layer (vendored, no build). This module registers the
 // component on the `alpine:init` event, which Alpine dispatches when it starts —
 // the module is loaded before alpine.min.js, so the listener is always in place.
 
 import { parseFrontmatter, renderMarkdown } from "/app/render.js";
+import {
+  assemble, assembleFields, displayRows, fieldHunks, textHunks, undecidedCount,
+} from "/app/merge.js";
 
 // The page shown on first load when the URL names none. A stable, link-rich
 // vault page so the slice demonstrates wikilink resolution out of the box.
@@ -60,6 +70,23 @@ function loadStyle(href) {
 // class instance for Alpine to recursively proxy. Only one editor is ever
 // mounted at a time, matching this app's single-component design.
 let mountedEditor = null;
+
+/** "5 min ago" / "2 hours ago" for a Date-able value, or "" if it isn't one.
+ *  The resolver's *when*: a conflict the user can date is one they can weigh. */
+function timeAgo(value) {
+  const then = value instanceof Date ? value : new Date(value);
+  if (isNaN(then.getTime())) return "";
+  const seconds = Math.max(0, Math.round((Date.now() - then.getTime()) / 1000));
+  const units = [
+    ["second", 60], ["minute", 60], ["hour", 24], ["day", 30], ["month", 12],
+  ];
+  let n = seconds;
+  for (const [name, span] of units) {
+    if (n < span) return `${n} ${name}${n === 1 ? "" : "s"} ago`;
+    n = Math.round(n / span);
+  }
+  return `${n} year${n === 1 ? "" : "s"} ago`;
+}
 
 // Sidebar folder ordering — mirrors how the wiki index reads a project: the hub
 // page first (folder ""), then plans (live before archived), then the rest.
@@ -125,6 +152,11 @@ function tomeApp() {
     newPageForm: { type: "", project: "", slug: "", title: "", description: "" },
     newPageSlugTouched: false, // true once the user hand-edits the slug, so title input stops re-deriving it
 
+    // conflict resolution ([[conflict-resolution]]) — one object for all
+    // three entry points; null whenever the resolver is closed. See the
+    // section below for its shape.
+    resolver: null,
+
     // sidebar
     collapsed: {}, // project name -> true when its section is folded shut
 
@@ -155,6 +187,21 @@ function tomeApp() {
       // React to back/forward navigation.
       window.addEventListener("popstate", () => this.syncFromUrl());
       await this.syncFromUrl();
+      await this.checkGitConflicts();
+    },
+
+    // A `tome sync` that hit a forked history exits leaving the tree stopped
+    // mid-rebase, with no browser open to notice. Asking once on load means
+    // the user finds the resolver by opening tome, not by tripping their next
+    // save into it. Static exports have no such endpoint — hence the flag.
+    async checkGitConflicts() {
+      if (!this.board.writable || this.resolver) return;
+      try {
+        const state = await fetch("/api/conflicts").then((r) => (r.ok ? r.json() : null));
+        if (state && state.rebase && state.files.length) this.openGitResolver(state);
+      } catch (e) {
+        /* no server behind this build, or it's gone — nothing to resolve */
+      }
     },
 
     // -- page view ------------------------------------------------------- //
@@ -306,7 +353,12 @@ function tomeApp() {
         if (res.status === 200) {
           this.exitEdit();
           await this.loadPage(this.currentSlug, { push: false }); // re-fetch: canonical render + new hash
+        } else if (this.openConflict(data, "body", () => this.saveEdit())) {
+          // The resolver has the buffer, the base, and the external version —
+          // nothing to say in a banner.
         } else if (res.status === 409) {
+          // No sides to merge (an older server, say) — the pre-resolver
+          // fallback, which still never discards the buffer.
           this.editorBannerKind = "conflict";
           this.editorBanner = "This page changed since you opened it — your edits are safe. "
             + "Copy them out, then Reload to get the new version.";
@@ -403,6 +455,8 @@ function tomeApp() {
         if (res.status === 200) {
           this.cancelFmEdit();
           await this.loadPage(this.currentSlug, { push: false }); // re-fetch: canonical render + new hash
+        } else if (this.openConflict(data, "frontmatter", () => this.saveFmEdit())) {
+          // resolver open — see saveEdit()
         } else if (res.status === 409) {
           this.fmBannerKind = "conflict";
           this.fmBanner = "This page changed since you opened it — your edits are safe. "
@@ -468,6 +522,9 @@ function tomeApp() {
           // The page's identity changed underneath us — hard-navigate so the
           // whole app (index.json included) reloads against the new slug.
           window.location.assign(data.url || `?page=${encodeURIComponent(data.slug)}`);
+        } else if (this.openConflict(data, "rename", () => this.saveRename())) {
+          // Only a git fork reaches here; a stale-hash rename stays
+          // refuse-and-reload below.
         } else if (res.status === 409) {
           this.renameBannerKind = "conflict";
           this.renameBanner = "This page changed since you opened it — nothing was renamed. "
@@ -571,6 +628,9 @@ function tomeApp() {
         if (res.status === 200) {
           const url = data.url || `?page=${encodeURIComponent(data.slug)}`;
           window.location.assign(url + (url.includes("?") ? "&" : "?") + "new=1");
+        } else if (this.openConflict(data, "new", () => this.saveNewPage())) {
+          // The form stays as it is behind the resolver; resolving the fork
+          // retries the create rather than making the user retype it.
         } else if (res.status === 422 && data.findings) {
           this.newPageBannerKind = "lint";
           this.newPageBanner = "Create rejected — lint errors:";
@@ -584,6 +644,270 @@ function tomeApp() {
         this.newPageBanner = `Create failed: ${e.message}`;
       } finally {
         this.newPageSaving = false;
+      }
+    },
+
+    // -- conflict resolution ([[conflict-resolution]]) --------------------- //
+    // One resolver, three entry points, always the same three sides: a common
+    // base, the user's buffer (mine), and the external version (theirs).
+    //
+    //   mode "body"        base = the body at load, theirs = the body on disk
+    //   mode "frontmatter" the same, but per *field* — a schema field is one
+    //                      decision, not a diff of YAML lines
+    //   mode "git"         base/mine/theirs = a stopped rebase's :1:/:3:/:2:
+    //
+    // `this.resolver` is that state: {mode, source, hunks, ...} plus the
+    // per-mode extras noted below; null whenever the resolver is closed.
+    // Nothing here writes: a resolution assembles a merged buffer and hands it
+    // to the same save path the user would have used ([[kanban-render-side]]).
+
+    // Every save path funnels its rejection through here. Returns true if the
+    // rejection was a conflict this can open, so the caller knows to skip its
+    // own banner. `resume` is the save that was refused: a fork is resolved
+    // *underneath* a pending edit, so once the rebase lands the save is
+    // retried rather than the page reloaded out from under the buffer.
+    openConflict(data, mode, resume) {
+      const conflict = data && data.conflict;
+      if (!conflict) return false;
+      if (conflict.type === "git-fork") {
+        this.openGitResolver(conflict, resume);
+        return true;
+      }
+      // Local drift is only mergeable on the two surfaces that have hunks;
+      // two different names for one page, or a taken slug, don't.
+      if (mode !== "body" && mode !== "frontmatter") return false;
+      this.openDriftResolver(mode, conflict, data.currentHash);
+      return true;
+    },
+
+    // Adapter A. The page changed on disk under an open editor: `theirs` is
+    // the current file, whole, so both modes read what they need out of it.
+    openDriftResolver(mode, conflict, currentHash) {
+      const { frontmatter: theirsMeta, body: theirsBody } = parseFrontmatter(conflict.theirs);
+      const tagText = (tags) => (Array.isArray(tags) ? tags : []).join(", ");
+      const hunks = mode === "frontmatter"
+        ? fieldHunks([
+            { field: "title", label: "title",
+              base: this.pageMeta.title || "", mine: this.fmForm.title,
+              theirs: theirsMeta.title || "" },
+            { field: "description", label: "description",
+              base: this.pageMeta.description || "", mine: this.fmForm.description,
+              theirs: theirsMeta.description || "" },
+            { field: "tags", label: "tags",
+              base: tagText(this.pageMeta.tags), mine: tagText(this.fmForm.tags),
+              theirs: tagText(theirsMeta.tags) },
+          ])
+        : textHunks(mountedEditor.getMarkdown(), this.pageBodyRaw, theirsBody);
+
+      this.resolver = {
+        mode,
+        hunks,
+        source: {
+          headline: "Changed on disk",
+          // An uncommitted local write has no author to name — it was VS
+          // Code, an agent, or a tome command — so say when, not who, rather
+          // than inventing a who.
+          detail: [timeAgo(conflict.mtime * 1000), "a local edit"].filter(Boolean).join(" · "),
+        },
+        // The version we're merging against becomes the base the resolved
+        // buffer saves against — and, if it races again, the ancestor of the
+        // next merge.
+        baseHash: currentHash,
+        theirsMeta,
+        theirsBody,
+        busy: false,
+        banner: "",
+        bannerKind: "",
+      };
+    },
+
+    // Adapter B. Committed histories forked and the rebase stopped; git holds
+    // the three sides itself, one file at a time.
+    openGitResolver(state, resume = null) {
+      this.resolver = {
+        mode: "git",
+        state,
+        hunks: [],
+        path: "",
+        source: this.gitSource(state),
+        resume,
+        busy: false,
+        banner: "",
+        bannerKind: "",
+      };
+      this.loadGitFile();
+    },
+
+    gitSource(state) {
+      const commit = state.theirsCommit;
+      return {
+        headline: "Diverged from remote",
+        // Unlike a local write, a commit knows exactly who and when.
+        detail: commit
+          ? `${commit.author}, ${timeAgo(commit.date)} · ${commit.sha} “${commit.subject}”`
+          : "",
+      };
+    },
+
+    // Always the head of the server's unmerged list: resolving a file stages
+    // it, so the next state simply doesn't carry it any more.
+    loadGitFile() {
+      const file = this.resolver.state.files[0];
+      if (!file) return;
+      this.resolver.path = file.path;
+      this.resolver.hunks = textHunks(file.mine, file.base, file.theirs);
+    },
+
+    resolverRows() {
+      return this.resolver ? displayRows(this.resolver.hunks) : [];
+    },
+
+    // Frontmatter shows one row per field, and only the fields that differ —
+    // a field both sides left alone is not a decision.
+    resolverFields() {
+      if (!this.resolver || this.resolver.mode !== "frontmatter") return [];
+      return this.resolver.hunks.filter((h) => h.kind !== "context");
+    },
+
+    resolverUndecided() {
+      return this.resolver ? undecidedCount(this.resolver.hunks) : 0;
+    },
+
+    chooseHunk(hunk, choice) {
+      if (choice === "edit" && !hunk.editText) hunk.editText = hunk.mine.join("\n");
+      hunk.choice = choice;
+    },
+
+    // Bulk answer for the undecided conflicts — the escape hatch when a fork
+    // has dozens of hunks and the user's answer is the same for all of them.
+    chooseAll(choice) {
+      for (const hunk of this.resolver.hunks) {
+        if (hunk.kind === "conflict") this.chooseHunk(hunk, choice);
+      }
+    },
+
+    closeResolver() {
+      this.resolver = null;
+    },
+
+    async applyResolution() {
+      const resolver = this.resolver;
+      if (!resolver || resolver.busy || this.resolverUndecided()) return;
+      resolver.busy = true;
+      resolver.banner = "";
+      resolver.bannerKind = "";
+      try {
+        if (resolver.mode === "git") await this.applyGitResolution();
+        else if (resolver.mode === "frontmatter") await this.applyFmResolution();
+        else await this.applyBodyResolution();
+      } catch (e) {
+        resolver.banner = `Resolve failed: ${e.message}`;
+        resolver.bannerKind = "error";
+      } finally {
+        if (this.resolver === resolver) resolver.busy = false;
+      }
+    },
+
+    // A-mode apply: feed the merged buffer back to the editor and re-save
+    // through the normal path. `theirs` becomes the new base, so a second
+    // racing write conflicts against the right ancestor rather than replaying
+    // the first merge.
+    async applyBodyResolution() {
+      const { hunks, baseHash, theirsBody } = this.resolver;
+      const merged = assemble(hunks);
+      this.resolver = null;
+      this.pageBodyRaw = theirsBody;
+      this.currentHash = baseHash;
+      mountedEditor.setMarkdown(merged);
+      await this.saveEdit();
+    },
+
+    async applyFmResolution() {
+      const { hunks, baseHash, theirsMeta } = this.resolver;
+      const fields = assembleFields(hunks);
+      this.resolver = null;
+      this.pageMeta = { ...this.pageMeta, ...theirsMeta };
+      this.currentHash = baseHash;
+      this.fmForm = {
+        title: fields.title,
+        description: fields.description,
+        tags: fields.tags.split(",").map((t) => t.trim()).filter(Boolean),
+      };
+      await this.saveFmEdit();
+    },
+
+    // B-mode apply: write + stage this file, then either move to the next
+    // unmerged file or continue the rebase.
+    async applyGitResolution() {
+      const resolver = this.resolver;
+      const res = await fetch("/api/conflict/resolve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: resolver.path, content: assemble(resolver.hunks) }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        resolver.banner = data.error || `Resolve failed (HTTP ${res.status})`;
+        resolver.bannerKind = "error";
+        return;
+      }
+      resolver.state = data.conflict;
+      if (resolver.state.files.length) {
+        this.loadGitFile();
+        return;
+      }
+      await this.continueRebase();
+    },
+
+    // Continuing replays the *next* commit, which can stop on its own
+    // conflict — that's the rebase working, not a failure, so the fresh state
+    // reloads the resolver rather than erroring out.
+    async continueRebase() {
+      const resolver = this.resolver;
+      const res = await fetch("/api/conflict/continue", { method: "POST" });
+      const data = await res.json();
+      if (res.ok && data.done) {
+        const resume = resolver.resume;
+        this.resolver = null;
+        // The fork is gone; the save it interrupted is not. Retrying it beats
+        // reloading, which would take the open buffer with it — and if the
+        // rebase moved this very page, that retry lands in the local-drift
+        // resolver, exactly as a save after any other outside change would.
+        if (resume) await resume();
+        else window.location.reload(); // nothing pending: history moved, re-read everything
+        return;
+      }
+      if (res.ok && data.conflict) {
+        resolver.state = data.conflict;
+        resolver.source = this.gitSource(data.conflict);
+        this.loadGitFile();
+        resolver.banner = "Resolved — the rebase stopped again on the next commit.";
+        resolver.bannerKind = "conflict";
+        return;
+      }
+      resolver.banner = data.error || `Continue failed (HTTP ${res.status})`;
+      resolver.bannerKind = "error";
+    },
+
+    // The cancel path for a fork: back to the tree as it was before the pull,
+    // rather than a half-resolved one no one can reason about. No reload —
+    // that state is the one the app is already showing, and reloading would
+    // cost the user the buffer their refused save is still holding.
+    async abortRebase() {
+      const resolver = this.resolver;
+      if (!resolver || resolver.busy) return;
+      resolver.busy = true;
+      try {
+        const res = await fetch("/api/conflict/abort", { method: "POST" });
+        const data = await res.json();
+        if (!res.ok) {
+          resolver.banner = data.error || `Abort failed (HTTP ${res.status})`;
+          resolver.bannerKind = "error";
+          return;
+        }
+        this.resolver = null;
+      } finally {
+        if (this.resolver === resolver) resolver.busy = false;
       }
     },
 

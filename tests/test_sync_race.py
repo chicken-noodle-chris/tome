@@ -105,6 +105,9 @@ def test_sync_fails_loud_when_retry_rebase_conflicts(tmp_path, run_tome, monkeyp
     assert raced["done"], "the race wasn't actually injected"
     assert code == 1
     err = capsys.readouterr().err
-    assert "resolve manually" in err
+    assert "push rejected and the retry rebase failed" in err
+    # …and the dead end now has an exit: the browser resolver
+    # ([[conflict-resolution]]) can finish exactly this state.
+    assert "tome serve" in err
     # the rebase state is left intact for a human, not silently aborted
     assert (vault / ".git" / "rebase-merge").exists() or (vault / ".git" / "rebase-apply").exists()

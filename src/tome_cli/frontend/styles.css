@@ -467,3 +467,132 @@ body {
   color: var(--muted);
 }
 .chip--milestone { font-family: ui-monospace, monospace; }
+
+/* -- conflict resolver ([[conflict-resolution]]) --
+   Reuses .modal-overlay/.modal; only the width and the hunk table are new.
+   Left column is always the user's side, right always the external one. */
+.modal--wide { max-width: 60rem; }
+.resolver-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+.resolver-head h2 { margin: 0; font-size: 1.15rem; }
+.resolver-source { margin: 0.2rem 0 0; font-size: 0.82rem; color: var(--muted); }
+.resolver-source-kind { color: var(--fg); font-weight: 600; }
+.resolver-progress { font-size: 0.8rem; color: var(--broken); white-space: nowrap; }
+.resolver-ready { color: var(--muted); }
+.resolver-file { margin: 0 0 0.6rem; font-size: 0.82rem; color: var(--muted); }
+.resolver-file code { font-family: ui-monospace, monospace; color: var(--fg); }
+.resolver-legend {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.resolver-col-label { flex: 1; }
+.resolver-bulk {
+  font: inherit;
+  font-size: 0.7rem;
+  text-transform: none;
+  letter-spacing: 0;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel);
+  color: var(--fg);
+  cursor: pointer;
+}
+.resolver-body { max-height: 55vh; overflow-y: auto; padding: 0.5rem 0; }
+.resolver-context, .resolver-side pre {
+  margin: 0;
+  padding: 0.25rem 0.5rem;
+  font-family: ui-monospace, monospace;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.resolver-context { color: var(--muted); }
+.resolver-gap {
+  padding: 0.2rem 0.5rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+  background: var(--panel);
+  border-radius: 5px;
+  margin: 0.25rem 0;
+}
+.resolver-hunk {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: 6px;
+  margin: 0.5rem 0;
+  overflow: hidden;
+}
+/* An undecided conflict is the only thing that blocks Apply, so it's the only
+   thing that shouts. */
+.resolver-hunk--conflict { border-left-color: var(--broken); }
+.resolver-hunk--mine, .resolver-hunk--theirs { border-left-color: var(--accent); }
+.resolver-hunk-label {
+  padding: 0.25rem 0.5rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+  background: var(--panel);
+}
+.resolver-sides { display: flex; align-items: stretch; }
+.resolver-side {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  font: inherit;
+  border: none;
+  border-top: 1px solid var(--border);
+  background: none;
+  color: var(--fg);
+  cursor: pointer;
+  padding: 0.2rem 0;
+}
+.resolver-side--theirs { border-left: 1px solid var(--border); }
+.resolver-side.chosen { background: var(--chip); }
+.resolver-actions-row {
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.4rem 0.5rem;
+  border-top: 1px solid var(--border);
+}
+.resolver-actions-row button {
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 0.15rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel);
+  color: var(--fg);
+  cursor: pointer;
+}
+.resolver-actions-row button.chosen {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.resolver-edit {
+  display: block;
+  width: 100%;
+  font-family: ui-monospace, monospace;
+  font-size: 0.78rem;
+  padding: 0.4rem 0.5rem;
+  border: none;
+  border-top: 1px solid var(--border);
+  background: var(--code-bg);
+  color: var(--fg);
+  box-sizing: border-box;
+}
+.resolver-empty { color: var(--muted); font-size: 0.85rem; }
+.resolver-warning { font-size: 0.8rem; color: var(--muted); margin: 0.75rem 0 0; }

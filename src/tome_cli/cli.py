@@ -1400,6 +1400,20 @@ def run_git(vault_root, args):
                            capture_output=True, text=True, env=_git_env())
 
 
+def _mid_rebase_hint(vault_root):
+    """Printed wherever a git step can leave the tree stopped mid-rebase.
+    'Resolve manually' used to be the whole answer; the browser now has a
+    three-way resolver for exactly this ([[conflict-resolution]]), so point
+    at it instead of leaving the user alone with git."""
+    from tome_cli import serve
+
+    if not serve.rebase_in_progress(vault_root):
+        return
+    print("tome: the tree is stopped mid-rebase. Run `tome serve` to resolve "
+          "the conflicted files in the browser, or finish it by hand with "
+          "git.", file=sys.stderr)
+
+
 def _push_with_retry(vault_root):
     """Push; on rejection — another writer landed a commit on the remote
     since our pull, guaranteed eventually once a headless remote and a local
@@ -1417,8 +1431,8 @@ def _push_with_retry(vault_root):
     if retry_pull.returncode != 0:
         print(push.stderr, file=sys.stderr)
         print(retry_pull.stderr, file=sys.stderr)
-        print("tome: push rejected and the retry rebase failed — tree is "
-              "mid-rebase; resolve manually.", file=sys.stderr)
+        print("tome: push rejected and the retry rebase failed.", file=sys.stderr)
+        _mid_rebase_hint(vault_root)
         return 1
 
     push_retry = run_git(vault_root, ["push"])
@@ -1452,6 +1466,7 @@ def sync_core(vault_root, conventions, message, no_verify, pathspec=None):
     print(pull.stdout, end="")
     if pull.returncode != 0:
         print(pull.stderr, file=sys.stderr)
+        _mid_rebase_hint(vault_root)
         return 1
 
     status = run_git(vault_root, ["status", "--porcelain"])

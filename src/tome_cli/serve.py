@@ -43,7 +43,14 @@ tome_cli.serve — the local browse host for the no-build frontend.
     slug uniqueness, re-checked after a pull. Same `board.writable` gate and
     single-page-scoped lint gate as `save_page`; on rejection the just-
     scaffolded file (and any regenerated index/hub) are rolled back, never
-    left half-created. Also absent from the static export.
+    left half-created. Also absent from the static export;
+  * serves the conflict surface ([[conflict-resolution]]): `GET
+    /api/conflicts` reports a stopped rebase and the three sides of each
+    unmerged file, and `POST /api/conflict/resolve|continue|abort` finish or
+    unwind it. These exist because a forked history is the one conflict the
+    write paths above can't answer alone — the rest they answer by returning
+    the current text in their 409 so the client can merge it in place. Absent
+    from the static export like every other write route.
 
 The JSON *schemas* are the deliberate, permanent part of this slice; the
 server internals and the frontend are rough by design and hardened in place by
@@ -58,6 +65,7 @@ import importlib.resources
 import json
 import os
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -250,15 +258,255 @@ def _page_path(vault_root, rel):
     return target if target.is_file() else None
 
 
+# --------------------------------------------------------------------------- #
+# Conflicts ([[conflict-resolution]]). Two triggers, one three-way model: a
+# save racing a local write (A), and a `git pull --rebase` whose history forked
+# (B). Both hand the resolver a base, the user's buffer, and an external
+# version — only the *sources* differ, so both are described by the same
+# `conflict` object on the wire:
+#
+#   {"type": "local-drift"|"git-fork", ...provenance..., + sides}
+#
+# A is the workhorse: every write path pulls before its conflict gate, so a
+# remote change that rebases cleanly arrives looking like plain disk drift. B
+# is the residual — committed histories that genuinely conflict — and is the
+# only case that leaves the tree mid-rebase, which the endpoints below exist
+# to get it back out of.
+# --------------------------------------------------------------------------- #
+
+def _local_drift_conflict(target, current_hash):
+    """The 409 body for a stale `baseHash`: the sides the resolver needs plus
+    who/when provenance. There's no author for an uncommitted local write —
+    it was VS Code, an agent, or a `tome` command — so the *who* is honestly
+    omitted rather than guessed, and mtime carries the *when*."""
+    return {
+        "error": "page changed since you opened it",
+        "currentHash": current_hash,
+        "conflict": {
+            "type": "local-drift",
+            "source": "disk",
+            "theirs": target.read_text(encoding="utf-8"),
+            "mtime": target.stat().st_mtime,
+        },
+    }
+
+
+def _git_bytes(vault_root, args):
+    """`cli.run_git` decodes with the locale codec (cp1252 on Windows), which
+    would mangle any non-ASCII page. Blob reads must be byte-exact, so this
+    runs git itself and decodes UTF-8 explicitly."""
+    from tome_cli import cli
+
+    return subprocess.run(["git", *args], cwd=str(vault_root),
+                          capture_output=True, env=cli._git_env())
+
+
+def _git_text(vault_root, args):
+    """The stdout of `args` as UTF-8 text, or None if git failed."""
+    proc = _git_bytes(vault_root, args)
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.decode("utf-8", "replace")
+
+
+_COMMIT_FORMAT = "%an%x00%ae%x00%aI%x00%h%x00%s"
+
+
+def _commit_meta(vault_root, rev):
+    """{author, email, date, sha, subject} for `rev`, or None if it doesn't
+    resolve (REBASE_HEAD only exists mid-rebase, for instance)."""
+    out = _git_text(vault_root, ["log", "-1", f"--format={_COMMIT_FORMAT}", rev])
+    if out is None:
+        return None
+    parts = out.rstrip("\n").split("\0")
+    if len(parts) < 5:
+        return None
+    return {"author": parts[0], "email": parts[1], "date": parts[2],
+            "sha": parts[3], "subject": parts[4]}
+
+
+def rebase_in_progress(vault_root):
+    """True while a rebase is stopped part-way — the state a conflicted
+    `git pull --rebase` leaves behind. Public because cli.py checks it too,
+    to point a failed `tome sync` at the browser resolver."""
+    from tome_cli import cli
+
+    for name in ("rebase-merge", "rebase-apply"):
+        probe = cli.run_git(vault_root, ["rev-parse", "--git-path", name])
+        if probe.returncode != 0:
+            continue
+        path = Path(probe.stdout.strip())
+        if not path.is_absolute():
+            path = vault_root / path
+        if path.exists():
+            return True
+    return False
+
+
+def git_conflict_state(vault_root):
+    """The `git-fork` conflict object: every file the stopped rebase left
+    unmerged, each with the three sides the resolver wants, plus provenance
+    for both.
+
+    The stage-to-side mapping is the one thing here that is easy to get
+    backwards. During a rebase git replays *your* commits onto the upstream,
+    so HEAD is the upstream side: stage `:2:` ("ours") is the **remote**, and
+    stage `:3:` ("theirs") is **your** commit being replayed. The resolver's
+    `mine`/`theirs` therefore come from `:3:`/`:2:` respectively — inverted
+    from the raw git labels, and named from the user's point of view.
+
+    Returns {"rebase": False} when no rebase is in flight.
+    """
+    if not rebase_in_progress(vault_root):
+        return {"rebase": False, "files": []}
+
+    listing = _git_text(vault_root, ["diff", "--name-only", "--diff-filter=U"]) or ""
+    files = []
+    for rel in [line for line in listing.splitlines() if line.strip()]:
+        base = _git_text(vault_root, ["show", f":1:{rel}"])
+        remote = _git_text(vault_root, ["show", f":2:{rel}"])
+        local = _git_text(vault_root, ["show", f":3:{rel}"])
+        files.append({
+            "path": rel,
+            # An add/add conflict has no stage 1; the resolver treats a missing
+            # ancestor as an empty one, which makes every line a conflict —
+            # honest, since there genuinely is no common ancestor.
+            "base": base or "",
+            "mine": local or "",
+            "theirs": remote or "",
+        })
+
+    return {
+        "rebase": True,
+        "files": files,
+        # HEAD mid-rebase is the upstream tip the replay is landing on: the
+        # remote commit whose lines the user is being asked to weigh.
+        "theirsCommit": _commit_meta(vault_root, "HEAD"),
+        # REBASE_HEAD is the commit currently being replayed — the user's own.
+        "mineCommit": _commit_meta(vault_root, "REBASE_HEAD"),
+    }
+
+
+def _pull_or_conflict(vault_root):
+    """Every write path's first step. Returns None when the pull landed, else
+    the (status, payload) the caller should return: a 409 carrying the
+    `git-fork` conflict when the rebase stopped on one — the resolver's cue,
+    replacing the old dead-end 'resolve manually' — or a plain 500."""
+    from tome_cli import cli
+
+    pull = cli.run_git(vault_root, ["pull", "--rebase", "--autostash"])
+    if pull.returncode == 0:
+        return None
+    state = git_conflict_state(vault_root)
+    if state["rebase"]:
+        return 409, {"error": "the vault's history diverged from the remote",
+                     "conflict": {"type": "git-fork", **state}}
+    return 500, {"error": (pull.stderr or pull.stdout).strip() or "git pull failed"}
+
+
+def _push_or_conflict(vault_root):
+    """The tail of every write path. `cli._push_with_retry` re-pulls on a
+    rejected push, so its failure can also be a stopped rebase — same 409, so
+    a fork that shows up at push time lands in the resolver instead of the
+    same dead end."""
+    from tome_cli import cli
+
+    if cli._push_with_retry(vault_root) == 0:
+        return None
+    state = git_conflict_state(vault_root)
+    if state["rebase"]:
+        return 409, {"error": "your commit landed locally, but the vault's "
+                              "history diverged from the remote",
+                     "conflict": {"type": "git-fork", **state}}
+    return 500, {"error": "commit landed locally but push failed — resolve manually"}
+
+
+def resolve_conflict_file(vault_root, rel, content):
+    """Write one resolved file from the resolver's merged buffer and stage it.
+    Scoped hard to the paths git itself reports as unmerged: the resolver is
+    only ever allowed to finish a conflict git handed it, never to write an
+    arbitrary path."""
+    from tome_cli import cli
+
+    state = git_conflict_state(vault_root)
+    if not state["rebase"]:
+        return 409, {"error": "no rebase is in progress"}
+    if rel not in [f["path"] for f in state["files"]]:
+        return 400, {"error": f"{rel!r} is not an unmerged file in this rebase"}
+    if not isinstance(content, str):
+        return 400, {"error": "content must be a string"}
+
+    (vault_root / rel).write_text(content, encoding="utf-8", newline="\n")
+    add = cli.run_git(vault_root, ["add", "--", rel])
+    if add.returncode != 0:
+        return 500, {"error": (add.stderr or "git add failed").strip()}
+    return 200, {"conflict": git_conflict_state(vault_root)}
+
+
+def continue_rebase(vault_root):
+    """`git rebase --continue` once every conflicted file is resolved, then
+    push. A rebase replays commit by commit, so continuing can stop again on
+    the *next* commit — that's not an error, it's the next thing to resolve,
+    so the fresh state goes back to the client either way.
+
+    `-c core.editor=true` keeps git from opening an editor for the replayed
+    commit's message: there is no terminal behind this server to host one.
+    """
+    from tome_cli import cli
+
+    state = git_conflict_state(vault_root)
+    if not state["rebase"]:
+        return 409, {"error": "no rebase is in progress"}
+    if state["files"]:
+        return 400, {"error": f"{len(state['files'])} file(s) still unmerged",
+                     "conflict": state}
+
+    cont = cli.run_git(vault_root, ["-c", "core.editor=true", "rebase", "--continue"])
+    after = git_conflict_state(vault_root)
+    if after["rebase"]:
+        if after["files"]:
+            return 200, {"done": False, "conflict": after}
+        return 500, {"error": (cont.stderr or cont.stdout).strip()
+                              or "git rebase --continue failed",
+                     "conflict": after}
+    if cont.returncode != 0:
+        return 500, {"error": (cont.stderr or cont.stdout).strip()
+                              or "git rebase --continue failed"}
+
+    push = cli._push_with_retry(vault_root)
+    if push != 0:
+        return 500, {"done": True, "error": "rebase finished but the push failed — "
+                                            "run `tome sync` to retry"}
+    return 200, {"done": True}
+
+
+def abort_rebase(vault_root):
+    """The cancel path: `git rebase --abort` returns the tree to the known
+    state it had before the pull, rather than leaving it half-resolved."""
+    from tome_cli import cli
+
+    if not rebase_in_progress(vault_root):
+        return 409, {"error": "no rebase is in progress"}
+    proc = cli.run_git(vault_root, ["rebase", "--abort"])
+    if proc.returncode != 0:
+        return 500, {"error": (proc.stderr or proc.stdout).strip()
+                              or "git rebase --abort failed"}
+    return 200, {"aborted": True}
+
+
 def save_page(vault_root, conventions, rel, body, base_hash):
     """The [[page-editing]] save path: optimistic-concurrency write of one
     page's body, gated by a lint check scoped to just that page. Returns
     (http_status, payload_dict) — never raises, so the HTTP handler can pass
     the pair straight through to `_send_json`.
 
-    1. Pull, so the conflict check below is against the latest remote.
+    1. Pull, so the conflict check below is against the latest remote. A pull
+       that stops on a forked history is itself a conflict (409, `git-fork`).
     2. Hash the file's current bytes; a `base_hash` mismatch means the page
-       changed since the client opened it — refuse, write nothing (409).
+       changed since the client opened it — refuse, write nothing, and return
+       the current text plus its provenance (409, `local-drift`) so the client
+       can open the three-way resolver instead of asking the user to
+       copy-and-reload ([[conflict-resolution]]).
     3. Recombine the on-disk frontmatter with the new body via
        `cli.write_page` (frontmatter itself is out of scope for this editor).
     4. Lint the whole vault but gate only on findings whose `path` is this
@@ -274,15 +522,14 @@ def save_page(vault_root, conventions, rel, body, base_hash):
     if target is None:
         return 404, {"error": "no such page"}
 
-    pull = cli.run_git(vault_root, ["pull", "--rebase", "--autostash"])
-    if pull.returncode != 0:
-        return 500, {"error": (pull.stderr or pull.stdout).strip() or "git pull failed"}
+    conflict = _pull_or_conflict(vault_root)
+    if conflict is not None:
+        return conflict
 
     original_bytes = target.read_bytes()
     current_hash = hashlib.sha256(original_bytes).hexdigest()
     if base_hash != current_hash:
-        return 409, {"error": "page changed since you opened it",
-                      "currentHash": current_hash}
+        return 409, _local_drift_conflict(target, current_hash)
 
     fm_lines, _old_body = cli.read_page(target)
     try:
@@ -308,9 +555,9 @@ def save_page(vault_root, conventions, rel, body, base_hash):
     if commit.returncode != 0:
         return 500, {"error": (commit.stderr or commit.stdout).strip() or "git commit failed"}
 
-    push_code = cli._push_with_retry(vault_root)
-    if push_code != 0:
-        return 500, {"error": "commit landed locally but push failed — resolve manually"}
+    push_conflict = _push_or_conflict(vault_root)
+    if push_conflict is not None:
+        return push_conflict
 
     return 200, {"hash": hashlib.sha256(target.read_bytes()).hexdigest()}
 
@@ -372,15 +619,14 @@ def save_frontmatter(vault_root, conventions, rel, fields, base_hash):
     if unknown:
         return 400, {"error": f"unsupported field(s): {', '.join(sorted(unknown))}"}
 
-    pull = cli.run_git(vault_root, ["pull", "--rebase", "--autostash"])
-    if pull.returncode != 0:
-        return 500, {"error": (pull.stderr or pull.stdout).strip() or "git pull failed"}
+    conflict = _pull_or_conflict(vault_root)
+    if conflict is not None:
+        return conflict
 
     original_bytes = target.read_bytes()
     current_hash = hashlib.sha256(original_bytes).hexdigest()
     if base_hash != current_hash:
-        return 409, {"error": "page changed since you opened it",
-                      "currentHash": current_hash}
+        return 409, _local_drift_conflict(target, current_hash)
 
     wiki_root = (vault_root / "wiki").resolve()
     rel_str = target.relative_to(wiki_root).as_posix()
@@ -465,9 +711,9 @@ def save_frontmatter(vault_root, conventions, rel, fields, base_hash):
     if commit.returncode != 0:
         return 500, {"error": (commit.stderr or commit.stdout).strip() or "git commit failed"}
 
-    push_code = cli._push_with_retry(vault_root)
-    if push_code != 0:
-        return 500, {"error": "commit landed locally but push failed — resolve manually"}
+    push_conflict = _push_or_conflict(vault_root)
+    if push_conflict is not None:
+        return push_conflict
 
     return 200, {"hash": hashlib.sha256(target.read_bytes()).hexdigest()}
 
@@ -530,13 +776,17 @@ def rename_page(vault_root, conventions, rel, new_slug, base_hash):
     if not isinstance(new_slug, str) or not cli.SLUG_RE.match(new_slug):
         return 400, {"error": f"{new_slug!r} is not a valid slug (lowercase kebab-case)"}
 
-    pull = cli.run_git(vault_root, ["pull", "--rebase", "--autostash"])
-    if pull.returncode != 0:
-        return 500, {"error": (pull.stderr or pull.stdout).strip() or "git pull failed"}
+    conflict = _pull_or_conflict(vault_root)
+    if conflict is not None:
+        return conflict
 
     original_bytes = target.read_bytes()
     current_hash = hashlib.sha256(original_bytes).hexdigest()
     if base_hash != current_hash:
+        # No resolver payload here, unlike save_page/save_frontmatter: two
+        # different names for one page is not a thing three-way merge has an
+        # answer to, so a slug conflict stays refuse-and-reload
+        # ([[conflict-resolution]]).
         return 409, {"error": "page changed since you opened it",
                      "currentHash": current_hash}
 
@@ -574,9 +824,9 @@ def rename_page(vault_root, conventions, rel, new_slug, base_hash):
         _reset_move(vault_root, result)
         return 500, {"error": (commit.stderr or commit.stdout).strip() or "git commit failed"}
 
-    push_code = cli._push_with_retry(vault_root)
-    if push_code != 0:
-        return 500, {"error": "commit landed locally but push failed — resolve manually"}
+    push_conflict = _push_or_conflict(vault_root)
+    if push_conflict is not None:
+        return push_conflict
 
     return 200, {"slug": new_slug, "url": f"?page={new_slug}",
                  "hash": hashlib.sha256(result.new_path.read_bytes()).hexdigest()}
@@ -627,9 +877,9 @@ def create_page(vault_root, conventions, type_, project, slug, title, desc):
     """
     from tome_cli import cli
 
-    pull = cli.run_git(vault_root, ["pull", "--rebase", "--autostash"])
-    if pull.returncode != 0:
-        return 500, {"error": (pull.stderr or pull.stdout).strip() or "git pull failed"}
+    conflict = _pull_or_conflict(vault_root)
+    if conflict is not None:
+        return conflict
 
     try:
         result = cli.new_page(vault_root, conventions, type_, project, slug, title, desc)
@@ -655,9 +905,9 @@ def create_page(vault_root, conventions, type_, project, slug, title, desc):
         _reset_create(vault_root, result)
         return 500, {"error": (commit.stderr or commit.stdout).strip() or "git commit failed"}
 
-    push_code = cli._push_with_retry(vault_root)
-    if push_code != 0:
-        return 500, {"error": "commit landed locally but push failed — resolve manually"}
+    push_conflict = _push_or_conflict(vault_root)
+    if push_conflict is not None:
+        return push_conflict
 
     return 200, {"slug": result.slug, "url": f"?page={result.slug}"}
 
@@ -693,6 +943,11 @@ class TomeHandler(BaseHTTPRequestHandler):
                 return self._send_json(build_index(self.vault_root, self.conventions))
             if path == "/board.json":
                 return self._send_json(_board_with_writable(self.vault_root, self.conventions, True))
+            if path == "/api/conflicts":
+                # Polled once on load so a tree left mid-rebase by a failed
+                # `tome sync` surfaces in the resolver on its own, without
+                # waiting for the user's next save to trip it.
+                return self._send_json(git_conflict_state(self.vault_root))
             if path.startswith("/raw/"):
                 return self._send_raw(path[len("/raw/"):])
             if path.startswith("/app/"):
@@ -701,30 +956,39 @@ class TomeHandler(BaseHTTPRequestHandler):
         except BrokenPipeError:
             pass  # client navigated away mid-response — nothing to report
 
+    def _json_body(self):
+        """The POST body as a dict — or None, having already sent the 400,
+        when it isn't one. Every write route takes the same shape of body, so
+        they all read it through here."""
+        length = int(self.headers.get("Content-Length") or 0)
+        raw_body = self.rfile.read(length) if length else b""
+        try:
+            payload = json.loads(raw_body) if raw_body else {}
+        except json.JSONDecodeError:
+            payload = None
+        if not isinstance(payload, dict):
+            self._send_json({"error": "malformed JSON body"}, status=400)
+            return None
+        return payload
+
     def do_POST(self):
         TomeHandler.last_activity = time.monotonic()
         path = unquote(urlparse(self.path).path)
         try:
             m = _TASK_STATUS_RE.match(path)
             if m:
-                length = int(self.headers.get("Content-Length") or 0)
-                raw_body = self.rfile.read(length) if length else b""
-                try:
-                    payload = json.loads(raw_body) if raw_body else {}
-                except json.JSONDecodeError:
-                    return self._send_json({"error": "malformed JSON body"}, status=400)
+                payload = self._json_body()
+                if payload is None:
+                    return
                 status = str(payload.get("status") or "").strip()
                 ok, message = apply_task_status(self.vault_root, m.group(1), status)
                 if not ok:
                     return self._send_json({"error": message}, status=400)
                 return self._send_json(_board_with_writable(self.vault_root, self.conventions, True))
             if path == "/api/page":
-                length = int(self.headers.get("Content-Length") or 0)
-                raw_body = self.rfile.read(length) if length else b""
-                try:
-                    payload = json.loads(raw_body) if raw_body else {}
-                except json.JSONDecodeError:
-                    return self._send_json({"error": "malformed JSON body"}, status=400)
+                payload = self._json_body()
+                if payload is None:
+                    return
                 rel = payload.get("path")
                 body = payload.get("body")
                 base_hash = str(payload.get("baseHash") or "")
@@ -733,12 +997,9 @@ class TomeHandler(BaseHTTPRequestHandler):
                 status_code, result = save_page(self.vault_root, self.conventions, rel, body, base_hash)
                 return self._send_json(result, status=status_code)
             if path == "/api/frontmatter":
-                length = int(self.headers.get("Content-Length") or 0)
-                raw_body = self.rfile.read(length) if length else b""
-                try:
-                    payload = json.loads(raw_body) if raw_body else {}
-                except json.JSONDecodeError:
-                    return self._send_json({"error": "malformed JSON body"}, status=400)
+                payload = self._json_body()
+                if payload is None:
+                    return
                 rel = payload.get("path")
                 fields = payload.get("fields")
                 base_hash = str(payload.get("baseHash") or "")
@@ -747,12 +1008,9 @@ class TomeHandler(BaseHTTPRequestHandler):
                 status_code, result = save_frontmatter(self.vault_root, self.conventions, rel, fields, base_hash)
                 return self._send_json(result, status=status_code)
             if path == "/api/rename":
-                length = int(self.headers.get("Content-Length") or 0)
-                raw_body = self.rfile.read(length) if length else b""
-                try:
-                    payload = json.loads(raw_body) if raw_body else {}
-                except json.JSONDecodeError:
-                    return self._send_json({"error": "malformed JSON body"}, status=400)
+                payload = self._json_body()
+                if payload is None:
+                    return
                 rel = payload.get("path")
                 new_slug = payload.get("newSlug")
                 base_hash = str(payload.get("baseHash") or "")
@@ -761,12 +1019,9 @@ class TomeHandler(BaseHTTPRequestHandler):
                 status_code, result = rename_page(self.vault_root, self.conventions, rel, new_slug, base_hash)
                 return self._send_json(result, status=status_code)
             if path == "/api/new":
-                length = int(self.headers.get("Content-Length") or 0)
-                raw_body = self.rfile.read(length) if length else b""
-                try:
-                    payload = json.loads(raw_body) if raw_body else {}
-                except json.JSONDecodeError:
-                    return self._send_json({"error": "malformed JSON body"}, status=400)
+                payload = self._json_body()
+                if payload is None:
+                    return
                 type_ = payload.get("type")
                 project = payload.get("project")
                 slug = payload.get("slug")
@@ -777,6 +1032,22 @@ class TomeHandler(BaseHTTPRequestHandler):
                                             status=400)
                 status_code, result = create_page(self.vault_root, self.conventions,
                                                    type_, project, slug, title, desc)
+                return self._send_json(result, status=status_code)
+            if path == "/api/conflict/resolve":
+                payload = self._json_body()
+                if payload is None:
+                    return
+                rel = payload.get("path")
+                content = payload.get("content")
+                if not rel or content is None:
+                    return self._send_json({"error": "path and content are required"}, status=400)
+                status_code, result = resolve_conflict_file(self.vault_root, rel, content)
+                return self._send_json(result, status=status_code)
+            if path == "/api/conflict/continue":
+                status_code, result = continue_rebase(self.vault_root)
+                return self._send_json(result, status=status_code)
+            if path == "/api/conflict/abort":
+                status_code, result = abort_rebase(self.vault_root)
                 return self._send_json(result, status=status_code)
             self._send_error(404, "not found")
         except BrokenPipeError:
@@ -943,6 +1214,8 @@ def cmd_serve(vault_root, conventions, args):
     print("  POST /api/frontmatter       (title/tags/description edits, conflict + lint gated)")
     print("  POST /api/rename            (slug rename via tome mv, conflict + lint gated)")
     print("  POST /api/new                (scaffold via tome new, uniqueness + lint gated)")
+    print("  GET  /api/conflicts          (a stopped rebase's unmerged files, three-way)")
+    print("  POST /api/conflict/resolve|continue|abort")
 
     idle_minutes = getattr(args, "idle_timeout", 0) or 0
     if idle_minutes > 0:

@@ -264,6 +264,156 @@
       </div>
     </div>
 
+    <!-- Conflict resolver ([[conflict-resolution]]) — one dialog for all three
+         entry points: a body edit, a frontmatter edit, or a stopped rebase.
+         Left is always the user's side, right always the external one. -->
+    <div class="modal-overlay" x-show="resolver" x-cloak>
+      <div class="modal modal--wide resolver" role="dialog" aria-modal="true"
+           aria-label="Resolve conflict" x-show="resolver">
+        <template x-if="resolver">
+          <div>
+            <div class="resolver-head">
+              <div>
+                <h2 x-text="resolver.mode === 'git' ? 'Resolve a diverged history'
+                                                    : 'Resolve this page'"></h2>
+                <p class="resolver-source">
+                  <span class="resolver-source-kind" x-text="resolver.source.headline"></span>
+                  <span x-show="resolver.source.detail" x-text="' · ' + resolver.source.detail"></span>
+                </p>
+              </div>
+              <div class="resolver-progress">
+                <span x-show="resolverUndecided()"
+                      x-text="resolverUndecided() + ' to decide'"></span>
+                <span class="resolver-ready" x-show="!resolverUndecided()">ready to apply</span>
+              </div>
+            </div>
+
+            <p class="resolver-file" x-show="resolver.mode === 'git'">
+              <code x-text="resolver.path"></code>
+              <span x-text="'— ' + resolver.state.files.length + ' file(s) left in this rebase'"></span>
+            </p>
+
+            <p class="editor-banner" :class="'editor-banner--' + resolver.bannerKind"
+               x-show="resolver.banner" x-text="resolver.banner"></p>
+
+            <div class="resolver-legend">
+              <span class="resolver-col-label resolver-col-label--mine">Yours</span>
+              <span class="resolver-col-label resolver-col-label--theirs"
+                    x-text="resolver.mode === 'git' ? 'Remote' : 'On disk'"></span>
+              <button type="button" class="resolver-bulk" x-show="resolverUndecided()"
+                      @click="chooseAll('mine')">Keep all mine</button>
+              <button type="button" class="resolver-bulk" x-show="resolverUndecided()"
+                      @click="chooseAll('theirs')">Keep all theirs</button>
+            </div>
+
+            <!-- Frontmatter: one row per changed field, not a YAML diff. -->
+            <div class="resolver-body" x-show="resolver.mode === 'frontmatter'">
+              <p class="resolver-empty" x-show="!resolverFields().length">
+                Nothing differs — both sides agree on every field.</p>
+              <template x-for="hunk of resolverFields()" :key="hunk.id">
+                <div class="resolver-hunk" :class="'resolver-hunk--' + hunk.kind">
+                  <div class="resolver-hunk-label" x-text="hunk.label"></div>
+                  <div class="resolver-sides">
+                    <button type="button" class="resolver-side resolver-side--mine"
+                            :class="{ chosen: hunk.choice === 'mine' }"
+                            @click="chooseHunk(hunk, 'mine')">
+                      <pre x-text="hunk.mine.join('\n') || '(empty)'"></pre>
+                    </button>
+                    <button type="button" class="resolver-side resolver-side--theirs"
+                            :class="{ chosen: hunk.choice === 'theirs' }"
+                            @click="chooseHunk(hunk, 'theirs')">
+                      <pre x-text="hunk.theirs.join('\n') || '(empty)'"></pre>
+                    </button>
+                  </div>
+                  <div class="resolver-actions-row">
+                    <button type="button" :class="{ chosen: hunk.choice === 'mine' }"
+                            @click="chooseHunk(hunk, 'mine')">Keep mine</button>
+                    <button type="button" :class="{ chosen: hunk.choice === 'theirs' }"
+                            @click="chooseHunk(hunk, 'theirs')">Keep theirs</button>
+                    <button type="button" :class="{ chosen: hunk.choice === 'edit' }"
+                            @click="chooseHunk(hunk, 'edit')">Edit…</button>
+                  </div>
+                  <input type="text" class="resolver-edit" x-show="hunk.choice === 'edit'"
+                         x-model="hunk.editText" />
+                </div>
+              </template>
+            </div>
+
+            <!-- Body / git: line hunks, unchanged runs collapsed. -->
+            <div class="resolver-body" x-show="resolver.mode !== 'frontmatter'">
+              <template x-for="row of resolverRows()" :key="row.key">
+                <div>
+                  <template x-if="row.part === 'context'">
+                    <pre class="resolver-context" x-text="row.lines.join('\n')"></pre>
+                  </template>
+                  <template x-if="row.part === 'gap'">
+                    <div class="resolver-gap" x-text="'⋯ ' + row.elided + ' unchanged lines ⋯'"></div>
+                  </template>
+
+                  <template x-if="row.part === 'hunk'">
+                  <div class="resolver-hunk" :class="'resolver-hunk--' + row.hunk.kind">
+                    <div class="resolver-hunk-label"
+                         x-text="row.hunk.kind === 'conflict' ? 'Both sides changed this'
+                               : row.hunk.kind === 'mine' ? 'Only you changed this'
+                               : 'Only the other side changed this'"></div>
+                    <div class="resolver-sides">
+                      <button type="button" class="resolver-side resolver-side--mine"
+                              :class="{ chosen: row.hunk.choice === 'mine' }"
+                              @click="chooseHunk(row.hunk, 'mine')">
+                        <pre x-text="row.hunk.mine.join('\n') || '(nothing)'"></pre>
+                      </button>
+                      <button type="button" class="resolver-side resolver-side--theirs"
+                              :class="{ chosen: row.hunk.choice === 'theirs' }"
+                              @click="chooseHunk(row.hunk, 'theirs')">
+                        <pre x-text="row.hunk.theirs.join('\n') || '(nothing)'"></pre>
+                      </button>
+                    </div>
+                    <div class="resolver-actions-row">
+                      <button type="button" :class="{ chosen: row.hunk.choice === 'mine' }"
+                              @click="chooseHunk(row.hunk, 'mine')">Keep mine</button>
+                      <button type="button" :class="{ chosen: row.hunk.choice === 'theirs' }"
+                              @click="chooseHunk(row.hunk, 'theirs')">Keep theirs</button>
+                      <button type="button" :class="{ chosen: row.hunk.choice === 'both' }"
+                              @click="chooseHunk(row.hunk, 'both')">Keep both</button>
+                      <button type="button" :class="{ chosen: row.hunk.choice === 'edit' }"
+                              @click="chooseHunk(row.hunk, 'edit')">Edit…</button>
+                    </div>
+                    <textarea class="resolver-edit" rows="4" x-show="row.hunk.choice === 'edit'"
+                              x-model="row.hunk.editText"></textarea>
+                  </div>
+                  </template>
+                </div>
+              </template>
+            </div>
+
+            <p class="resolver-warning" x-show="resolver.mode === 'git'">
+              The vault is stopped mid-rebase. Resolving every file continues it;
+              <strong>Abort</strong> puts the tree back exactly as it was before the pull.
+            </p>
+
+            <div class="editor-actions">
+              <button type="button" class="editor-btn-cancel"
+                      x-show="resolver.mode !== 'git'"
+                      @click="closeResolver()">Cancel</button>
+              <button type="button" class="editor-btn-cancel"
+                      x-show="resolver.mode === 'git'" :disabled="resolver.busy"
+                      @click="closeResolver()">Later</button>
+              <button type="button" class="editor-btn-cancel"
+                      x-show="resolver.mode === 'git'" :disabled="resolver.busy"
+                      @click="abortRebase()">Abort rebase</button>
+              <!-- `> 0` is load-bearing: Alpine only drops a boolean attribute
+                   for null/undefined/false, so a bare count of 0 would leave
+                   this disabled forever. -->
+              <button type="button" class="editor-btn-save" @click="applyResolution()"
+                      :disabled="resolver.busy || resolverUndecided() > 0"
+                      x-text="resolver.busy ? 'Applying…'
+                            : resolver.mode === 'git' ? 'Resolve file' : 'Apply & save'"></button>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+
     <!-- Board view (full-width) -->
     <main class="board-wrap" x-show="view === 'board'">
       <div class="board-toolbar">
