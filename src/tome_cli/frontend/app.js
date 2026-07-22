@@ -5,8 +5,10 @@
 // selected page, with client-side wikilink navigation — and a full-width
 // board. Data comes from the two generated contracts the server emits,
 // `/index.json` and `/board.json`; raw markdown comes from `/raw/…`. The board
-// supports drag-to-move when `board.writable` is true (a live `tome serve`),
-// POSTing to `/api/task/<id>/status`; the page view supports body editing on
+// has a sort-mode lens (Manual/Priority/Title, localStorage-only — see
+// [[board-sort]]) and, in Manual mode when `board.writable` is true (a live
+// `tome serve`), drag-to-move-and-reorder, POSTing `{status, afterId}` to
+// `/api/task/<id>/move`; the page view supports body editing on
 // the same flag, POSTing to `/api/page` ([[page-editing]]), and frontmatter
 // editing (title/tags/description), POSTing to `/api/frontmatter`
 // ([[frontmatter-editing]]). Creation POSTs to `/api/new` (a page,
@@ -99,6 +101,23 @@ const FOLDER_ORDER = [
   "reports", "decisions", "notes", "sources",
 ];
 
+// Board sort modes ([[board-sort]]) — comparators swapped in at render time
+// over the same ordinal data; only "manual" is ever written to disk, so the
+// others are read-only lenses tie-broken on ordinal then id for a stable,
+// deterministic order.
+const SORT_MODE_KEY = "tome.board.sort";
+const PRIORITY_RANK = { high: 0, medium: 1, low: 2 };
+
+function ordinalTieBreak(a, b) {
+  return (a.ordinal ?? Infinity) - (b.ordinal ?? Infinity) || a.id.localeCompare(b.id);
+}
+
+const SORT_COMPARATORS = {
+  manual: (a, b) => (a.ordinal ?? Infinity) - (b.ordinal ?? Infinity),
+  priority: (a, b) => (PRIORITY_RANK[a.priority] ?? 99) - (PRIORITY_RANK[b.priority] ?? 99) || ordinalTieBreak(a, b),
+  title: (a, b) => (a.title || "").localeCompare(b.title || "") || ordinalTieBreak(a, b),
+};
+
 function tomeApp() {
   return {
     view: "page",
@@ -176,7 +195,9 @@ function tomeApp() {
     // board.json
     board: { statuses: [], defaultStatus: "", cards: [], writable: false },
     projectFilter: "__all__",
+    sortMode: "manual", // "manual" | "priority" | "title" — localStorage-only, never touches board.json
     draggingId: null, // card.id currently being dragged
+    dropTarget: null, // { status, afterId } — the insertion point tracked during a Manual-mode drag
     movingCardId: null, // card.id awaiting its POST response
     boardError: "",
 
@@ -196,6 +217,10 @@ function tomeApp() {
         this.pageError = "Failed to load vault data: " + e.message;
         return;
       }
+
+      const savedSort = localStorage.getItem(SORT_MODE_KEY);
+      if (savedSort && SORT_COMPARATORS[savedSort]) this.sortMode = savedSort;
+      this.$watch("sortMode", (mode) => localStorage.setItem(SORT_MODE_KEY, mode));
 
       // React to back/forward navigation.
       window.addEventListener("popstate", () => this.syncFromUrl());
@@ -1128,19 +1153,36 @@ function tomeApp() {
     },
 
     cardsFor(status) {
+      const cmp = SORT_COMPARATORS[this.sortMode] || SORT_COMPARATORS.manual;
       return this.visibleCards()
         .filter((c) => c.status === status)
-        .sort((a, b) => (a.ordinal ?? Infinity) - (b.ordinal ?? Infinity));
+        .sort(cmp);
+    },
+
+    // Insertion-line placement for one rendered card: "above"/"below"/"" —
+    // derived from dropTarget rather than stored per-card, so it never goes
+    // stale as cardsFor() re-sorts. Only meaningful in Manual mode, since
+    // that's the only mode dropTarget is ever set in.
+    dropIndicator(status, card, idx) {
+      if (!this.dropTarget || this.dropTarget.status !== status) return "";
+      const { afterId } = this.dropTarget;
+      const cards = this.cardsFor(status);
+      if (idx === 0 && afterId === null) return "above";
+      if (idx > 0 && cards[idx - 1].id === afterId) return "above";
+      if (idx === cards.length - 1 && afterId === card.id) return "below";
+      return "";
     },
 
     // -- board interaction (write path) ----------------------------------- //
-    // Drag-to-move POSTs to /api/task/<id>/status, which shells out to
+    // Drag-to-move POSTs to /api/task/<id>/move, which shells out to
     // backlog.md server-side — this module never edits task YAML itself.
-    // Absent on a static export (board.writable is false there), so the
-    // drag handlers no-op and the UI drops the drag affordance entirely.
+    // Absent on a static export (board.writable is false there), and only
+    // offered in Manual sort mode — off Manual, card position no longer
+    // means rank, so dragging is ambiguous and the affordance is withheld
+    // the same way it already is for a read-only static export.
 
     onDragStart(event, card) {
-      if (!this.board.writable) return;
+      if (!this.board.writable || this.sortMode !== "manual") return;
       this.draggingId = card.id;
       event.dataTransfer.effectAllowed = "move";
       event.dataTransfer.setData("text/plain", card.id);
@@ -1148,20 +1190,49 @@ function tomeApp() {
 
     onDragEnd() {
       this.draggingId = null;
+      this.dropTarget = null;
+    },
+
+    // Tracks which gap between cards the cursor is over, by comparing its Y
+    // position to each card's vertical midpoint — the insertion slot becomes
+    // the id of the last card whose midpoint the cursor has passed (null if
+    // none, meaning the top of the column).
+    onDragOver(event, status) {
+      if (!this.board.writable || this.sortMode !== "manual") return;
+      const cardEls = [...event.currentTarget.querySelectorAll(".card")]
+        .filter((el) => el.dataset.cardId !== this.draggingId);
+      let afterId = null;
+      for (const el of cardEls) {
+        const rect = el.getBoundingClientRect();
+        if (event.clientY < rect.top + rect.height / 2) break;
+        afterId = el.dataset.cardId;
+      }
+      this.dropTarget = { status, afterId };
+    },
+
+    // Only clears when the pointer has actually left the column body (not
+    // just crossed into a child element, which also fires dragleave).
+    onDragLeave(event) {
+      if (event.currentTarget.contains(event.relatedTarget)) return;
+      this.dropTarget = null;
     },
 
     onDrop(event, status) {
-      if (!this.board.writable) return;
+      if (!this.board.writable || this.sortMode !== "manual") return;
       const cardId = event.dataTransfer.getData("text/plain") || this.draggingId;
+      const afterId = this.dropTarget && this.dropTarget.status === status ? this.dropTarget.afterId : null;
       this.draggingId = null;
+      this.dropTarget = null;
       const card = this.board.cards.find((c) => c.id === cardId);
-      if (card && card.status !== status) this.moveCard(card, status);
+      if (card) this.moveCard(card, status, afterId);
     },
 
-    async moveCard(card, status) {
+    async moveCard(card, status, afterId) {
       const prevBoard = this.board;
       // Reassign (not mutate a card in place) so Alpine tracks the change —
-      // same convention as toggleProject() above.
+      // same convention as toggleProject() above. The exact position is
+      // whatever the server computes; this only needs to look right until
+      // the authoritative board.json below replaces it.
       this.board = {
         ...this.board,
         cards: this.board.cards.map((c) => (c.id === card.id ? { ...c, status } : c)),
@@ -1169,10 +1240,10 @@ function tomeApp() {
       this.movingCardId = card.id;
       this.boardError = "";
       try {
-        const res = await fetch(`/api/task/${encodeURIComponent(card.id)}/status`, {
+        const res = await fetch(`/api/task/${encodeURIComponent(card.id)}/move`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ status }),
+          body: JSON.stringify({ status, afterId }),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);

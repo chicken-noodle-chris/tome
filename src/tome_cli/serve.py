@@ -11,13 +11,17 @@ tome_cli.serve — the local browse host for the no-build frontend.
     wikilink graph) and `/board.json` (the Backlog.md kanban), fresh on every
     request so the render always reflects the markdown on disk — the
     render-from-markdown rule ([[render-layer-principle]]), never the reverse;
-  * accepts one write, `POST /api/task/<id>/status`, which shells out to the
+  * accepts one write, `POST /api/task/<id>/move`, which shells out to the
     pinned backlog.md CLI (`cli.run_backlog`) rather than touching task YAML
     directly — the writes-through-CLI boundary from [[kanban-render-side]].
-    `board.json` carries a `writable` flag so the frontend can tell a live
-    `tome serve` (true) from a frozen static export (false, see
-    export_static() below) and hide drag-to-move accordingly — the static
-    deploy has no server behind it to accept the POST at all;
+    A move carries the drop column's status plus `afterId` (the card it now
+    sits after, or null for the top slot); the server resolves that into an
+    `ordinal` by midpoint math against the column's current on-disk state
+    (see `apply_task_move()` below, [[board-sort]]) rather than trusting a
+    client-computed number. `board.json` carries a `writable` flag so the
+    frontend can tell a live `tome serve` (true) from a frozen static export
+    (false, see export_static() below) and hide drag-to-move accordingly —
+    the static deploy has no server behind it to accept the POST at all;
   * accepts a sibling write, `POST /api/task`, filing a brand-new bare task —
     a kanban card with no wiki page — the same way, via `cli.run_backlog`
     (see `create_task()` below). Same uncommitted-until-`tome sync` contract
@@ -220,16 +224,101 @@ def _board_with_writable(vault_root, conventions, writable):
 
 
 # --------------------------------------------------------------------------- #
-# Task status writes — the one mutation this server accepts, always shelled
-# through backlog.md per [[kanban-render-side]]. Split out from the HTTP
-# handler so it's unit-testable without a live server.
+# Task move writes — the one mutation this server accepts, always shelled
+# through backlog.md per [[kanban-render-side]]. A move carries a target
+# status and an `afterId` position reference; the ordinal the client never
+# sees is computed here, by midpoint, against the column's current on-disk
+# state ([[board-sort]]). Split out from the HTTP handler so it's
+# unit-testable without a live server.
 # --------------------------------------------------------------------------- #
 
-def apply_task_status(vault_root, raw_task_id, status):
-    """Moves a backlog task to `status` via `backlog.md task edit -s`. Returns
-    (ok, message) — message is empty on success, an error string otherwise.
-    `raw_task_id` accepts either case and an optional `task-`/`TASK-` prefix,
-    matching what `board.json` cards and the frontend's URLs carry."""
+_ORDINAL_GAP = 1000
+_ORDINAL_BASE = 10000
+
+
+def _normalize_card_id(raw):
+    """`board.json` card ids are `task-<n>` (lowercase); accept the same
+    case/prefix variations `apply_task_move`'s own task id does, so an
+    `afterId` round-tripped from a card the frontend already has always
+    matches. None/empty means "top of column"."""
+    if not raw:
+        return None
+    s = str(raw).strip()
+    if s.upper().startswith("TASK-"):
+        s = s[len("TASK-"):]
+    return f"task-{s}" if s else None
+
+
+def _column_cards(vault_root, status, exclude_id=None):
+    """`(card_id, ordinal)` pairs currently in `status`, ordinal-ascending
+    (missing ordinal sorts last, same as the frontend's `?? Infinity`) —
+    reuses `build_board`'s own frontmatter readers rather than a second
+    parser. `exclude_id` (the card being moved) is left out so its own old
+    ordinal never enters the neighbour math, including for an in-column
+    reorder."""
+    from tome_cli import cli
+
+    tasks_dir = vault_root / "backlog" / "tasks"
+    cards = []
+    if tasks_dir.is_dir():
+        for path in sorted(tasks_dir.glob("*.md")):
+            fm_lines, _ = cli.read_page(path)
+            raw_id = cli.fm_get(fm_lines, "id") or ""
+            if not raw_id:
+                continue
+            card_id = raw_id.lower()
+            if card_id == exclude_id or (cli.fm_get(fm_lines, "status") or "") != status:
+                continue
+            ordinal_raw = cli.fm_get(fm_lines, "ordinal")
+            try:
+                ordinal = int(ordinal_raw) if ordinal_raw not in (None, "") else None
+            except ValueError:
+                ordinal = None
+            cards.append((card_id, ordinal))
+    cards.sort(key=lambda c: c[1] if c[1] is not None else float("inf"))
+    return cards
+
+
+def _compute_ordinal(cards, after_id):
+    """The ordinal for a card dropped after `after_id` in `cards` (ascending,
+    `after_id`-excluded already). Returns `(ordinal, needs_rebalance)`:
+    `needs_rebalance` is True when the two neighbours are adjacent integers
+    with no midpoint left, and the caller must renumber the column first."""
+    if not cards:
+        return _ORDINAL_BASE, False
+
+    if after_id is None:
+        first = cards[0][1]
+        return (first - _ORDINAL_GAP) if first is not None else _ORDINAL_BASE, False
+
+    idx = next((i for i, (cid, _) in enumerate(cards) if cid == after_id), None)
+    if idx is None:
+        # Stale or unknown afterId (e.g. the client's view raced a concurrent
+        # edit) — fall back to the bottom rather than failing the move.
+        last = cards[-1][1]
+        return (last + _ORDINAL_GAP) if last is not None else _ORDINAL_BASE, False
+
+    after_ordinal = cards[idx][1]
+    if after_ordinal is None:
+        return _ORDINAL_BASE, False
+    if idx + 1 >= len(cards):
+        return after_ordinal + _ORDINAL_GAP, False
+
+    next_ordinal = cards[idx + 1][1]
+    if next_ordinal is None:
+        return after_ordinal + _ORDINAL_GAP, False
+    if next_ordinal - after_ordinal <= 1:
+        return None, True
+    return (after_ordinal + next_ordinal) // 2, False
+
+
+def apply_task_move(vault_root, raw_task_id, status, raw_after_id):
+    """Moves a backlog task to `status`, positioned after `raw_after_id` (or
+    the top of the column when falsy), via `backlog.md task edit -s
+    --ordinal`. Returns (ok, message) — message is empty on success, an
+    error string otherwise. `raw_task_id` accepts either case and an
+    optional `task-`/`TASK-` prefix, matching what `board.json` cards and
+    the frontend's URLs carry."""
     from tome_cli import cli
 
     task_id = raw_task_id.strip()
@@ -240,7 +329,26 @@ def apply_task_status(vault_root, raw_task_id, status):
     if not status:
         return False, "status is required"
 
-    proc = cli.run_backlog(vault_root, ["task", "edit", task_id, "-s", status], capture=True)
+    card_id = f"task-{task_id}"
+    after_id = _normalize_card_id(raw_after_id)
+    cards = _column_cards(vault_root, status, exclude_id=card_id)
+
+    ordinal, needs_rebalance = _compute_ordinal(cards, after_id)
+    if needs_rebalance:
+        renumbered = []
+        for i, (cid, _) in enumerate(cards):
+            new_ordinal = _ORDINAL_BASE + i * _ORDINAL_GAP
+            renumbered.append((cid, new_ordinal))
+            raw_cid = cid[len("task-"):]
+            proc = cli.run_backlog(vault_root, ["task", "edit", raw_cid, "--ordinal", str(new_ordinal)],
+                                    capture=True)
+            if proc.returncode != 0:
+                message = (proc.stderr or proc.stdout).strip() or "backlog task edit failed"
+                return False, message
+        ordinal, _ = _compute_ordinal(renumbered, after_id)
+
+    proc = cli.run_backlog(vault_root, ["task", "edit", task_id, "-s", status, "--ordinal", str(ordinal)],
+                            capture=True)
     if proc.returncode != 0:
         message = (proc.stderr or proc.stdout).strip() or "backlog task edit failed"
         return False, message
@@ -997,7 +1105,7 @@ def create_page(vault_root, conventions, type_, project, slug, title, desc, link
 # POST write routes.
 # --------------------------------------------------------------------------- #
 
-_TASK_STATUS_RE = re.compile(r"^/api/task/([^/]+)/status$")
+_TASK_MOVE_RE = re.compile(r"^/api/task/([^/]+)/move$")
 
 
 class TomeHandler(BaseHTTPRequestHandler):
@@ -1055,13 +1163,13 @@ class TomeHandler(BaseHTTPRequestHandler):
         TomeHandler.last_activity = time.monotonic()
         path = unquote(urlparse(self.path).path)
         try:
-            m = _TASK_STATUS_RE.match(path)
+            m = _TASK_MOVE_RE.match(path)
             if m:
                 payload = self._json_body()
                 if payload is None:
                     return
                 status = str(payload.get("status") or "").strip()
-                ok, message = apply_task_status(self.vault_root, m.group(1), status)
+                ok, message = apply_task_move(self.vault_root, m.group(1), status, payload.get("afterId"))
                 if not ok:
                     return self._send_json({"error": message}, status=400)
                 return self._send_json(_board_with_writable(self.vault_root, self.conventions, True))
@@ -1301,7 +1409,7 @@ def cmd_serve(vault_root, conventions, args):
     url = f"http://{args.host}:{args.port}/"
     print(f"tome serve: {url} (vault: {vault_root})")
     print("  serving  /  /index.json  /board.json  /raw/<page>.md  /app/<file>")
-    print("  POST /api/task/<id>/status  (status moves, shelled to backlog.md)")
+    print("  POST /api/task/<id>/move    (status + reorder, shelled to backlog.md)")
     print("  POST /api/task              (new bare task, shelled to backlog.md)")
     print("  POST /api/page              (body edits, conflict + lint gated)")
     print("  POST /api/frontmatter       (title/tags/description edits, conflict + lint gated)")

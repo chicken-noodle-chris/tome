@@ -231,10 +231,11 @@ tome doctor
 dependency) that serves the frontend's static files, the vault's raw `.md`
 under `/raw/`, and two generated JSON contracts — `/index.json` (the wiki
 catalogue + wikilink graph) and `/board.json` (the Backlog.md kanban) —
-rebuilt fresh on every request. Its write routes move a board card (`POST
-/api/task/<id>/status`, shelled out to backlog.md — never a direct YAML
-write; drag a card to a new column to use it), edit a page's body or
-frontmatter, rename its slug, and scaffold a new page — each one routed
+rebuilt fresh on every request. Its write routes move and reorder a board
+card (`POST /api/task/<id>/move`, shelled out to backlog.md — never a
+direct YAML write; drag a card to a new column or a new spot in Manual sort
+mode to use it), edit a page's body or frontmatter, rename its slug, and
+scaffold a new page — each one routed
 through the same `tome` command a terminal would run, then lint-gated,
 committed, and pushed.
 

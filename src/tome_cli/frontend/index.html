@@ -531,6 +531,14 @@
             </template>
           </select>
         </label>
+        <label>
+          Sort
+          <select x-model="sortMode">
+            <option value="manual">Manual</option>
+            <option value="priority">Priority</option>
+            <option value="title">Title</option>
+          </select>
+        </label>
         <button type="button" class="new-page-btn" x-show="board.writable"
                 @click="openNewTaskModal()">+ New task</button>
         <span class="chip chip--readonly" x-show="!board.writable">read-only</span>
@@ -545,24 +553,33 @@
               <span class="count" x-text="cardsFor(status).length"></span>
             </div>
             <div class="col-body"
-                 @dragover.prevent
+                 @dragover.prevent="onDragOver($event, status)"
+                 @dragleave="onDragLeave($event)"
                  @drop.prevent="onDrop($event, status)">
-              <template x-for="card of cardsFor(status)" :key="card.id">
-                <article class="card"
-                         :draggable="board.writable"
-                         :class="{ dragging: draggingId === card.id, moving: movingCardId === card.id }"
-                         @dragstart="onDragStart($event, card)"
-                         @dragend="onDragEnd">
-                  <div class="card-meta">
-                    <span class="card-id" x-text="card.rawId"></span>
-                    <span class="card-prio" :data-prio="card.priority" x-show="card.priority" x-text="card.priority"></span>
-                  </div>
-                  <div class="card-title" x-text="card.title"></div>
-                  <div class="card-chips">
-                    <span class="chip" x-show="card.project" x-text="card.project"></span>
-                    <span class="chip chip--milestone" x-show="card.milestone" x-text="card.milestone"></span>
-                  </div>
-                </article>
+              <div class="drop-line" x-show="cardsFor(status).length === 0
+                     && dropTarget && dropTarget.status === status"></div>
+              <template x-for="(card, idx) of cardsFor(status)" :key="card.id">
+                <div>
+                  <div class="drop-line" x-show="dropIndicator(status, card, idx) === 'above'"></div>
+                  <article class="card"
+                           :data-card-id="card.id"
+                           :draggable="board.writable && sortMode === 'manual'"
+                           :class="{ dragging: draggingId === card.id, moving: movingCardId === card.id }"
+                           @dragstart="onDragStart($event, card)"
+                           @dragend="onDragEnd">
+                    <div class="card-meta">
+                      <span class="card-id" x-text="card.rawId"></span>
+                      <span class="card-prio" :data-prio="card.priority" x-show="card.priority" x-text="card.priority"></span>
+                    </div>
+                    <div class="card-title" x-text="card.title"></div>
+                    <div class="card-chips">
+                      <span class="chip" x-show="card.project" x-text="card.project"></span>
+                      <span class="chip chip--milestone" x-show="card.milestone" x-text="card.milestone"></span>
+                    </div>
+                  </article>
+                  <div class="drop-line" x-show="dropIndicator(status, card, idx) === 'below'"></div>
+                </div>
+              </template>
               </template>
             </div>
           </section>

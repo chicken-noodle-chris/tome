@@ -2345,8 +2345,9 @@ if you omit -m.
       Serve the no-build browse frontend locally (stdlib http.server): the
       frontend's static files, the vault's raw .md under /raw/, and two
       generated JSON contracts (/index.json, /board.json) rebuilt per
-      request. One write route, POST /api/task/<id>/status, moves a board
-      card by shelling out to backlog.md — never a direct YAML write.
+      request. One write route, POST /api/task/<id>/move, moves and/or
+      repositions a board card by shelling out to backlog.md — never a
+      direct YAML write.
       --export DIR writes the same frontend plus a frozen
       index.json/board.json/raw/*.md snapshot to DIR instead of serving — a
       read-only static deploy (no write route, board.json.writable: false)

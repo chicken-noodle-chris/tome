@@ -447,6 +447,14 @@ body {
 .card.dragging { opacity: 0.4; }
 .card.moving { opacity: 0.6; pointer-events: none; }
 .col-body { min-height: 1.5rem; } /* keeps an empty column a valid drop target */
+/* Unwraps the per-card <div> (drop-line, card, drop-line) so col-body's own
+   grid gap still applies between siblings, instead of nesting a new box. */
+.col-body > div { display: contents; }
+.drop-line {
+  height: 2px;
+  border-radius: 999px;
+  background: var(--accent);
+}
 .card-meta { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.35rem; }
 .card-id { font-size: 0.72rem; color: var(--muted); font-family: ui-monospace, monospace; }
 .card-prio {

@@ -139,10 +139,12 @@ def test_build_board_empty_without_backlog(make_vault):
 
 
 # --------------------------------------------------------------------------- #
-# apply_task_status — the one write `tome serve` accepts, always shelled
+# apply_task_move — the one write `tome serve` accepts, always shelled
 # through backlog.md ([[kanban-render-side]]). Tests fake out
 # tome.run_backlog rather than shelling out to the real npx CLI, same
-# pattern as test_start_done.py's fake_backlog.
+# pattern as test_start_done.py's fake_backlog; column state for the
+# midpoint math is real on-disk task files via make_task, since
+# apply_task_move reads those directly rather than trusting a client ordinal.
 # --------------------------------------------------------------------------- #
 
 class _Result:
@@ -163,62 +165,153 @@ def _fake_run_backlog(monkeypatch, result=None):
     return calls
 
 
-def test_apply_task_status_strips_task_prefix(monkeypatch, make_vault):
+def test_apply_task_move_strips_task_prefix_and_appends_to_empty_column(monkeypatch, make_vault):
     vault = make_vault()
     calls = _fake_run_backlog(monkeypatch)
 
-    ok, message = serve.apply_task_status(vault, "TASK-64", "In Progress")
+    ok, message = serve.apply_task_move(vault, "TASK-64", "In Progress", None)
 
     assert (ok, message) == (True, "")
-    assert calls == [["task", "edit", "64", "-s", "In Progress"]]
+    assert calls == [["task", "edit", "64", "-s", "In Progress", "--ordinal", "10000"]]
 
 
-def test_apply_task_status_accepts_lowercase_id(monkeypatch, make_vault):
+def test_apply_task_move_accepts_lowercase_id(monkeypatch, make_vault):
     vault = make_vault()
     calls = _fake_run_backlog(monkeypatch)
 
-    ok, _ = serve.apply_task_status(vault, "task-7", "Done")
+    ok, _ = serve.apply_task_move(vault, "task-7", "Done", None)
 
     assert ok is True
-    assert calls == [["task", "edit", "7", "-s", "Done"]]
+    assert calls == [["task", "edit", "7", "-s", "Done", "--ordinal", "10000"]]
 
 
-def test_apply_task_status_rejects_non_numeric_id(monkeypatch, make_vault):
+def test_apply_task_move_rejects_non_numeric_id(monkeypatch, make_vault):
     vault = make_vault()
     calls = _fake_run_backlog(monkeypatch)
 
-    ok, message = serve.apply_task_status(vault, "not-a-task", "Done")
+    ok, message = serve.apply_task_move(vault, "not-a-task", "Done", None)
 
     assert ok is False
     assert "bad task id" in message
     assert calls == []  # never shells out for an invalid id
 
 
-def test_apply_task_status_rejects_empty_status(monkeypatch, make_vault):
+def test_apply_task_move_rejects_empty_status(monkeypatch, make_vault):
     vault = make_vault()
     calls = _fake_run_backlog(monkeypatch)
 
-    ok, message = serve.apply_task_status(vault, "task-1", "")
+    ok, message = serve.apply_task_move(vault, "task-1", "", None)
 
     assert ok is False
     assert "status is required" in message
     assert calls == []
 
 
-def test_apply_task_status_surfaces_backlog_failure(monkeypatch, make_vault):
+def test_apply_task_move_surfaces_backlog_failure(monkeypatch, make_vault):
     vault = make_vault()
     _fake_run_backlog(monkeypatch, _Result(returncode=1, stderr="no such task"))
 
-    ok, message = serve.apply_task_status(vault, "task-1", "Done")
+    ok, message = serve.apply_task_move(vault, "task-1", "Done", None)
 
     assert ok is False
     assert message == "no such task"
 
 
+def test_apply_task_move_null_after_id_lands_above_the_current_top(monkeypatch, make_vault, make_task):
+    vault = make_vault()
+    make_task(vault, 1, "Existing top", status="To Do", ordinal=5000)
+    calls = _fake_run_backlog(monkeypatch)
+
+    ok, _ = serve.apply_task_move(vault, "task-2", "To Do", None)
+
+    assert ok is True
+    assert calls == [["task", "edit", "2", "-s", "To Do", "--ordinal", "4000"]]
+
+
+def test_apply_task_move_after_last_card_appends_below_it(monkeypatch, make_vault, make_task):
+    vault = make_vault()
+    make_task(vault, 1, "Only card", status="To Do", ordinal=5000)
+    calls = _fake_run_backlog(monkeypatch)
+
+    ok, _ = serve.apply_task_move(vault, "task-2", "To Do", "task-1")
+
+    assert ok is True
+    assert calls == [["task", "edit", "2", "-s", "To Do", "--ordinal", "6000"]]
+
+
+def test_apply_task_move_between_two_cards_picks_the_midpoint(monkeypatch, make_vault, make_task):
+    vault = make_vault()
+    make_task(vault, 1, "Top", status="To Do", ordinal=1000)
+    make_task(vault, 2, "Bottom", status="To Do", ordinal=2000)
+    calls = _fake_run_backlog(monkeypatch)
+
+    ok, _ = serve.apply_task_move(vault, "task-3", "To Do", "task-1")
+
+    assert ok is True
+    assert calls == [["task", "edit", "3", "-s", "To Do", "--ordinal", "1500"]]
+
+
+def test_apply_task_move_accepts_task_prefixed_after_id(monkeypatch, make_vault, make_task):
+    vault = make_vault()
+    make_task(vault, 1, "Top", status="To Do", ordinal=1000)
+    make_task(vault, 2, "Bottom", status="To Do", ordinal=2000)
+    calls = _fake_run_backlog(monkeypatch)
+
+    ok, _ = serve.apply_task_move(vault, "task-3", "To Do", "TASK-1")
+
+    assert ok is True
+    assert calls == [["task", "edit", "3", "-s", "To Do", "--ordinal", "1500"]]
+
+
+def test_apply_task_move_excludes_the_moving_card_from_its_own_column(monkeypatch, make_vault, make_task):
+    # An in-column reorder: task-1's own old ordinal (500) must not be a
+    # neighbour candidate for its own new position.
+    vault = make_vault()
+    make_task(vault, 1, "Moving", status="To Do", ordinal=500)
+    make_task(vault, 2, "Top", status="To Do", ordinal=1000)
+    make_task(vault, 3, "Bottom", status="To Do", ordinal=2000)
+    calls = _fake_run_backlog(monkeypatch)
+
+    ok, _ = serve.apply_task_move(vault, "task-1", "To Do", "task-2")
+
+    assert ok is True
+    assert calls == [["task", "edit", "1", "-s", "To Do", "--ordinal", "1500"]]
+
+
+def test_apply_task_move_unknown_after_id_falls_back_to_bottom(monkeypatch, make_vault, make_task):
+    vault = make_vault()
+    make_task(vault, 1, "Only card", status="To Do", ordinal=1000)
+    calls = _fake_run_backlog(monkeypatch)
+
+    ok, _ = serve.apply_task_move(vault, "task-2", "To Do", "task-99")
+
+    assert ok is True
+    assert calls == [["task", "edit", "2", "-s", "To Do", "--ordinal", "2000"]]
+
+
+def test_apply_task_move_rebalances_when_the_gap_is_exhausted(monkeypatch, make_vault, make_task):
+    # Adjacent ordinals (1000, 1001) leave no integer midpoint, so the column
+    # is renumbered back to 1000-spacing before the drop position is
+    # recomputed against the fresh values.
+    vault = make_vault()
+    make_task(vault, 1, "Top", status="To Do", ordinal=1000)
+    make_task(vault, 2, "Bottom", status="To Do", ordinal=1001)
+    calls = _fake_run_backlog(monkeypatch)
+
+    ok, _ = serve.apply_task_move(vault, "task-3", "To Do", "task-1")
+
+    assert ok is True
+    assert calls == [
+        ["task", "edit", "1", "--ordinal", "10000"],
+        ["task", "edit", "2", "--ordinal", "11000"],
+        ["task", "edit", "3", "-s", "To Do", "--ordinal", "10500"],
+    ]
+
+
 # --------------------------------------------------------------------------- #
 # save_page — the [[page-editing]] write, conflict- and lint-gated, committed
 # + pushed scoped to just the one file. Needs a real git origin (unlike
-# apply_task_status, which never touches git), so these skip without git on
+# apply_task_move, which never touches git), so these skip without git on
 # PATH, same as test_sync_scoped.py.
 # --------------------------------------------------------------------------- #
 
