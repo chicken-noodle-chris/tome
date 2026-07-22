@@ -17,18 +17,10 @@ your way to task/plan files; let the `tome` commands surface them.
 **The user is always happy to answer questions.** If intent or scope is unclear — which task,
 how far to take it, an ambiguity in the plan — ask.
 
-1. **Prep on Haiku (gate).** Steps 2–4 are mechanical — a git pull, priming, locating the
-   task, and marking it started — and don't need a strong model. If you are **not** running
-   as Haiku, stop and ask whether to switch to Haiku for the prep (the user may decline and
-   stay on their current model — either is fine; you can't switch your own model, only they
-   can). Already Haiku, or once they've answered: continue. The tier that matters for the
-   actual *work* is a separate decision, made at step 5 once the task is started and its
-   plan body is in front of you.
-
-2. **Prime yourself on the vault.** Run `tome sync` to pull, then `tome prime --full`
+1. **Prime yourself on the vault.** Run `tome sync` to pull, then `tome prime --full`
    (skip if already primed this session) — prints SCHEMA.md and the index in one shot.
 
-3. **Locate the task and its plan.** If the user named a task or plan, find it. If they
+2. **Locate the task and its plan.** If the user named a task or plan, find it. If they
    named a **milestone** instead (an id like `m-0` or its title — the epic layer, see
    `wiki/SCHEMA.md`), resume it rather than picking one task in isolation: run `tome task
    task list --milestone <name> --plain` to list its open children (backlog.md already
@@ -39,36 +31,35 @@ how far to take it, an ambiguity in the plan — ask.
    no name given at all, check the board (`tome task task list --plain`) and the project's
    live plans (`plans/`, not `plans/archive/`) and confirm which one they mean.
 
-4. **Mark the work started.** `tome start <task-id-or-slug>` — accepts either, resolving
+3. **Mark the work started.** `tome start <task-id-or-slug>` — accepts either, resolving
    the other half if linked (a plan without a task, or a task without a plan, is normal).
    Sets the plan `active`, moves the task to In Progress (`-a @me`), logs `work-started`,
    syncs, then prints the task text (labels included) and the full plan body as your
-   working context. Run it directly — it's pure bookkeeping, no strong model needed, and it
-   dumps everything the next two steps need, so there's no separate task-lookup step. Read
-   the plan in full and follow its `[[wikilinks]]`; if you have concerns, stop and discuss
-   with the user before going further.
+   working context. Run it directly — it's pure bookkeeping that dumps everything the next
+   steps need, so there's no separate task-lookup step. Read the plan in full and follow
+   its `[[wikilinks]]`; if you have concerns, stop and discuss with the user before going
+   further.
 
-5. **Check the agent-tier label (gate).** The task text `tome start` just printed carries
+4. **Check the agent-tier label (gate).** The task text `tome start` just printed carries
    an `agent:<tier>` label (tier: `haiku` < `sonnet` < `opus` < `fable` — the suggested
-   executor for the *work*, not the prep). Compare it against the model you are running as —
-   still Haiku if you took the prep gate at step 1. If the tier *differs in either
-   direction*, or there's a label and you can't tell, **stop before doing the work**: tell
-   the user the suggested tier and your own, and wait. Running below the tier risks the
-   work's quality; running above it wastes capability and money — both are the user's call,
-   they'll switch the model or tell you to continue. No label, or an exact match: proceed.
-   (Starting the task on Haiku and handing the work to a higher tier is an accurate state —
-   the task *is* started; the switch is only about who does step 6.)
+   executor for the work). Compare it against the model you are running as. If the tier
+   *differs in either direction*, or there's a label and you can't tell, **stop before
+   doing the work**: tell the user the suggested tier and your own, and wait. Running below
+   the tier risks the work's quality; running above it wastes capability and money — both
+   are the user's call, they'll switch the model or tell you to continue. No label, or an
+   exact match: proceed. (The task is already started; switching model now only changes who
+   does the work — the started state stays accurate.)
 
-6. **Do the task work.** Execute the plan in the relevant code repo (not the vault),
+5. **Do the task work.** Execute the plan in the relevant code repo (not the vault),
    following that repo's `CLAUDE.md`. Stick to the plan's scope; if you hit a fork it
    doesn't resolve, ask rather than guess. Verify per the plan's verification section and
    report results honestly.
 
-7. **Commit, then present the work.** Commit by default. Show the user what changed and the
+6. **Commit, then present the work.** Commit by default. Show the user what changed and the
    verification results. The code repo is separate from the vault and follows its own
    commit conventions — check its `CLAUDE.md`. Push only after the user approves.
 
-8. **Close out the tracking.** Once the work has landed: `tome done <slug> --summary "..."`
+7. **Close out the tracking.** Once the work has landed: `tome done <slug> --summary "..."`
    citing the shipping commit (`--as superseded`/`--as abandoned` instead of the default
    `done`, if that's how it landed). This archives the plan (moves it to `plans/archive/`,
    regenerates its project hub and the index), checks the task's acceptance criteria,
