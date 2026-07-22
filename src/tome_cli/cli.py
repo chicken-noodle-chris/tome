@@ -1186,10 +1186,10 @@ def prime_full_text(vault_root, conventions, project):
 def cmd_prime(vault_root, conventions, args):
     if args.project and not args.full:
         raise VaultError("a project only applies with --full (the terse tier is vault-level)")
-    print(prime_terse_text(vault_root))
     if args.full:
-        print()
         print(prime_full_text(vault_root, conventions, args.project))
+    else:
+        print(prime_terse_text(vault_root))
     return 0
 
 
@@ -2236,12 +2236,13 @@ if you omit -m.
 
   tome prime [project] [--full]
       Print session orientation. Bare: the terse vault pointer (same text
-      the SessionStart hook injects). --full also prints SCHEMA.md, the
-      index, and an open-task snapshot (grouped by milestone with
-      done/total counts, scoped to the project when one is given); with a
-      project, also its hub, every live plan's full body, and a recent
-      log.md tail — the write protocol, replacing the read fan-out a skill
-      used to open with.
+      the SessionStart hook injects). --full prints SCHEMA.md, the index,
+      and an open-task snapshot (grouped by milestone with done/total
+      counts, scoped to the project when one is given) instead — not in
+      addition, since the hook already covers the terse tier for any
+      session that went through it; with a project, also its hub, every
+      live plan's full body, and a recent log.md tail — the write
+      protocol, replacing the read fan-out a skill used to open with.
       e.g. tome prime tome --full
 
   tome log <op> "<message>" [--body "..."] [--sync]
@@ -2478,8 +2479,8 @@ def build_parser():
                         epilog="e.g. tome prime tome --full")
     p.add_argument("project", nargs="?", help="a project to prime the full-tier context for")
     p.add_argument("--full", action="store_true",
-                   help="also print SCHEMA.md, the index, and (with a project) its hub, "
-                        "live plan bodies, and a recent log tail")
+                   help="print SCHEMA.md, the index, and (with a project) its hub, live "
+                        "plan bodies, and a recent log tail, instead of the terse tier")
 
     p = sub.add_parser("log", help="append a wiki/log.md entry",
                         epilog='e.g. tome log work-started "..."')
