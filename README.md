@@ -335,23 +335,11 @@ plugin found via `$TOME_PLUGIN_ROOT`).
 
 ## Acknowledgements
 
-- **[backlog.md](https://github.com/MrLesk/Backlog.md)** — owns the
-  `backlog/tasks/*.md` task corpus and every task write; `tome task`
-  shells out to this CLI. (MIT licensed)
-- **[Alpine.js](https://alpinejs.dev/)** — provides the no-build
-  reactivity layer for `tome serve`'s frontend, vendored as
-  `frontend/vendor/alpine.min.js`. (MIT licensed)
-- **[marked](https://github.com/markedjs/marked)** — the Markdown
-  parser the frontend uses to render vault pages, vendored as
-  `frontend/vendor/marked.esm.js`. (MIT licensed)
-- **[node-diff3](https://github.com/bhousel/node-diff3)** — powers
-  the three-way merge conflict resolver in `tome serve`, vendored as
-  `frontend/vendor/diff3.mjs`. (MIT licensed)
-- **[CodeMirror](https://codemirror.net/)** — provides the code editor
-  for raw markdown editing in the frontend, vendored as
-  `frontend/vendor/codemirror.min.js`. (MIT licensed)
-- **[Toast UI Editor](https://ui.toast.com/tui-editor)** — a WYSIWYG/Markdown
-  editor for page editing in the frontend, vendored as
-  `frontend/vendor/toastui-editor.min.js`. (MIT licensed)
+- **[backlog.md](https://github.com/MrLesk/Backlog.md)** (MIT)
+- **[Alpine.js](https://alpinejs.dev/)** (MIT)
+- **[marked](https://github.com/markedjs/marked)** (MIT)
+- **[node-diff3](https://github.com/bhousel/node-diff3)** (MIT)
+- **[CodeMirror](https://codemirror.net/)** (MIT)
+- **[Toast UI Editor](https://ui.toast.com/tui-editor)** (MIT)
 
 MIT licensed.
