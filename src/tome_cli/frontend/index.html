@@ -671,8 +671,20 @@
               <div class="fm-row" x-show="currentTask().milestone">
                 <dt>milestone</dt><dd x-text="currentTask().milestone"></dd>
               </div>
+              <div class="fm-row" x-show="currentTask().agent">
+                <dt>agent</dt><dd x-text="currentTask().agent"></dd>
+              </div>
+              <div class="fm-row" x-show="currentTask().assignee.length">
+                <dt>assignee</dt><dd x-text="currentTask().assignee.join(', ')"></dd>
+              </div>
               <div class="fm-row" x-show="currentTask().labels.length">
                 <dt>labels</dt><dd x-text="currentTask().labels.join(', ')"></dd>
+              </div>
+              <div class="fm-row" x-show="currentTask().created">
+                <dt>created</dt><dd x-text="currentTask().created"></dd>
+              </div>
+              <div class="fm-row" x-show="currentTask().updated">
+                <dt>updated</dt><dd x-text="currentTask().updated"></dd>
               </div>
             </dl>
             <p class="task-wiki-link" x-show="taskWikiPage(currentTask())">
@@ -710,6 +722,11 @@
                 </li>
               </template>
             </ul>
+          </section>
+
+          <section class="task-notes" x-show="currentTask().notes">
+            <h2>Implementation Notes</h2>
+            <div class="markdown" x-html="taskNotesHtml()" @click="onContentClick($event)"></div>
           </section>
         </article>
       </template>

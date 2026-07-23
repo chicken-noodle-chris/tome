@@ -1,6 +1,6 @@
 {
   "name": "tome",
-  "version": "1.8.0",
+  "version": "1.8.1",
   "description": "A commonplace book for you and your agents: the tome CLI, skills (pickup-task, write-a-plan, retrospect, ingest, query, capture), a SessionStart vault-context hook, a scoped Stop sync reminder, a no-build browse frontend (`tome serve`), and `tome init` to scaffold a fresh vault.",
   "author": {
     "name": "Chris"

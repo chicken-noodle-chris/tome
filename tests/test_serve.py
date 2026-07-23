@@ -108,8 +108,9 @@ def test_build_board_reads_config_and_tasks(make_vault, make_task):
     )
     make_task(vault, 1, "First task", status="In Progress", ordinal=1000,
               labels=["project:tome", "agent:opus"], milestone="m-1",
-              refs=["wiki/tome/ideas/alpha.md"], deps=["TASK-63"],
-              desc="Full task description.", acs=("one", "two"), checked={1})
+              refs=["wiki/tome/ideas/alpha.md"], deps=["TASK-63"], assignee=["@me"],
+              desc="Full task description.", notes="Shipped in commit abc123.",
+              acs=("one", "two"), checked={1})
     make_task(vault, 2, "Second task", status="To Do", ordinal=500,
               labels=["project:artikindle"])
 
@@ -130,19 +131,27 @@ def test_build_board_reads_config_and_tasks(make_vault, make_task):
     assert one["ordinal"] == 1000 and isinstance(one["ordinal"], int)
     assert one["milestone"] == "m-1"
     assert one["labels"] == ["project:tome", "agent:opus"]
+    assert one["agent"] == "opus"
     assert one["references"] == ["wiki/tome/ideas/alpha.md"]
     assert one["dependencies"] == ["task-63"]
+    assert one["assignee"] == ["@me"]
+    assert one["created"] == "2026-01-01 00:00"
+    assert one["updated"] == "2026-01-01 00:00"
     assert one["description"] == "Full task description."
     assert one["acceptanceCriteria"] == [
         {"text": "one", "checked": True}, {"text": "two", "checked": False},
     ]
+    assert one["notes"] == "Shipped in commit abc123."
     two = cards["task-2"]
     assert two["project"] == "artikindle"
+    assert two["agent"] is None
     assert two["dependencies"] == []
+    assert two["assignee"] == []
     assert two["description"] == ""
     assert two["acceptanceCriteria"] == [
         {"text": "one", "checked": False}, {"text": "two", "checked": False},
     ]
+    assert two["notes"] == ""
 
 
 def test_build_board_empty_without_backlog(make_vault):

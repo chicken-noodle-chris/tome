@@ -48,11 +48,11 @@ def make_task():
     helpers to work against it. Tests never shell out to the real backlog.md
     CLI — see the fake `run_backlog` pattern in test_start_done.py for how
     mutations are simulated. `checked` is a set of 1-based AC numbers to mark
-    `- [x]`; `desc`, left None, omits the Description section entirely
-    (`cli.task_description` returns "" either way)."""
+    `- [x]`; `desc`/`notes`, left None, omit their sections entirely
+    (`cli.task_description`/`cli.task_notes` return "" either way)."""
     def _make(vault_root, task_num, title, *, status="To Do", assignee=None,
               refs=None, deps=None, acs=("one", "two"), checked=(), ordinal=1000,
-              labels=None, milestone=None, completed=False, desc=None):
+              labels=None, milestone=None, completed=False, desc=None, notes=None):
         tasks_dir = vault_root / "backlog" / ("completed" if completed else "tasks")
         tasks_dir.mkdir(parents=True, exist_ok=True)
         path = tasks_dir / f"task-{task_num} - {title.replace(' ', '-')}.md"
@@ -75,6 +75,10 @@ def make_task():
             "\n## Description\n\n<!-- SECTION:DESCRIPTION:BEGIN -->\n"
             f"{desc}\n<!-- SECTION:DESCRIPTION:END -->\n"
         ) if desc is not None else ""
+        notes_section = (
+            "\n## Implementation Notes\n\n<!-- SECTION:NOTES:BEGIN -->\n"
+            f"{notes}\n<!-- SECTION:NOTES:END -->\n"
+        ) if notes is not None else ""
         text = (
             "---\n"
             f"id: TASK-{task_num}\n"
@@ -94,6 +98,7 @@ def make_task():
             "<!-- AC:BEGIN -->\n"
             f"{ac_lines}\n"
             "<!-- AC:END -->\n"
+            f"{notes_section}"
         )
         path.write_text(text, encoding="utf-8", newline="\n")
         return path

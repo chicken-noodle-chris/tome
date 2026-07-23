@@ -187,10 +187,12 @@ def build_board(vault_root, conventions):
     """The `/board.json` contract: the kanban read from backlog/tasks/*.md.
     Reuses cli's existing task frontmatter/body readers rather than adding
     another hand-rolled parser. Cards carry `description`,
-    `acceptanceCriteria`, and `dependencies` (task-detail view fields,
-    [[task-detail-view]]) alongside the board columns' own fields —
-    `dependencies` is normalized to lowercase `task-<n>` ids the same way
-    `id` is, so the client can link straight to a dependency's own card."""
+    `acceptanceCriteria`, `dependencies`, `assignee`, `created`, `updated`,
+    and `notes` (task-detail view fields, [[task-detail-view]]) alongside the
+    board columns' own fields — `dependencies` is normalized to lowercase
+    `task-<n>` ids the same way `id` is, so the client can link straight to a
+    dependency's own card; `agent` is pulled out of `labels` the same way
+    `project` already is, rather than making the client re-parse it."""
     from tome_cli import cli
 
     backlog_dir = vault_root / "backlog"
@@ -207,6 +209,8 @@ def build_board(vault_root, conventions):
             labels = cli.task_block_list(fm_lines, "labels")
             project = next((l[len("project:"):] for l in labels
                             if l.startswith("project:")), None)
+            agent = next((l[len("agent:"):] for l in labels
+                          if l.startswith("agent:")), None)
             ordinal_raw = cli.fm_get(fm_lines, "ordinal")
             try:
                 ordinal = int(ordinal_raw) if ordinal_raw not in (None, "") else None
@@ -220,14 +224,19 @@ def build_board(vault_root, conventions):
                 "title": cli.task_title(fm_lines) or raw_id,
                 "status": cli.fm_get(fm_lines, "status") or "",
                 "project": project,
+                "agent": agent,
                 "priority": cli.fm_get(fm_lines, "priority"),
                 "ordinal": ordinal,
                 "milestone": cli.fm_get(fm_lines, "milestone"),
                 "labels": labels,
                 "references": cli.task_block_list(fm_lines, "references"),
                 "dependencies": [d for d in dependencies if d],
+                "assignee": cli.task_block_list(fm_lines, "assignee"),
+                "created": cli.fm_get(fm_lines, "created_date") or "",
+                "updated": cli.fm_get(fm_lines, "updated_date") or "",
                 "description": cli.task_description(body),
                 "acceptanceCriteria": cli.task_acceptance_criteria(body),
+                "notes": cli.task_notes(body),
             })
     return {
         "statuses": statuses,

@@ -1740,6 +1740,8 @@ AC_LINE_RE = re.compile(r"^- \[.\] #(\d+)", re.MULTILINE)
 AC_ITEM_RE = re.compile(r"^- \[(.)\] #\d+\s+(.*)$", re.MULTILINE)
 DESCRIPTION_RE = re.compile(
     r"<!-- SECTION:DESCRIPTION:BEGIN -->\s*(.*?)\s*<!-- SECTION:DESCRIPTION:END -->", re.DOTALL)
+NOTES_RE = re.compile(
+    r"<!-- SECTION:NOTES:BEGIN -->\s*(.*?)\s*<!-- SECTION:NOTES:END -->", re.DOTALL)
 
 
 def count_task_acs(task_body):
@@ -1757,6 +1759,14 @@ def task_description(task_body):
     SECTION:DESCRIPTION:BEGIN/END markers ([[task-detail-view]]'s board.json
     contract) — empty string if the task has no description section."""
     m = DESCRIPTION_RE.search(task_body)
+    return m.group(1).strip() if m else ""
+
+
+def task_notes(task_body):
+    """A backlog task's Implementation Notes, from between its
+    SECTION:NOTES:BEGIN/END markers — empty string if absent. Same
+    board.json contract as `task_description`."""
+    m = NOTES_RE.search(task_body)
     return m.group(1).strip() if m else ""
 
 

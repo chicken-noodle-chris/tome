@@ -406,6 +406,11 @@ function tomeApp() {
       return t && t.description ? renderMarkdown(t.description, (s) => this.resolveWikilink(s)) : "";
     },
 
+    taskNotesHtml() {
+      const t = this.currentTask();
+      return t && t.notes ? renderMarkdown(t.notes, (s) => this.resolveWikilink(s)) : "";
+    },
+
     // The first `references` entry that's a known wiki page (paths are
     // vault-root-relative, e.g. "wiki/tome/plans/x.md", while index.json's
     // own `path` is relative to wiki/) — restores the card-to-page link
