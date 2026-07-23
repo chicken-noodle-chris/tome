@@ -326,6 +326,21 @@ or `tome doctor`'s "plugin freshness" check will flag the drift (a
 resolvable dev checkout's `plugin.json` vs. the cached, currently-active
 plugin found via `$TOME_PLUGIN_ROOT`).
 
+## Acknowledgements
+
+tome builds on three open-source projects whose work is embedded in its
+behaviour:
+
+- **[backlog.md](https://github.com/MrLesk/Backlog.md)** — owns the
+  `backlog/tasks/*.md` task corpus and every task write; `tome task`
+  shells out to this CLI. (MIT licensed)
+- **[Alpine.js](https://alpinejs.dev/)** — provides the no-build
+  reactivity layer for `tome serve`'s frontend, vendored as
+  `frontend/vendor/alpine.min.js`. (MIT licensed)
+- **[marked](https://github.com/markedjs/marked)** — the Markdown
+  parser the frontend uses to render vault pages, vendored as
+  `frontend/vendor/marked.esm.js`. (MIT licensed)
+
 ## Out of scope (for now)
 
 - A multi-vault registry — the CLI's root-resolution seam supports it, but
