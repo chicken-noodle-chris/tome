@@ -328,7 +328,7 @@ plugin found via `$TOME_PLUGIN_ROOT`).
 
 ## Acknowledgements
 
-tome builds on three open-source projects whose work is embedded in its
+tome builds on five open-source projects whose work is embedded in its
 behaviour:
 
 - **[backlog.md](https://github.com/MrLesk/Backlog.md)** — owns the
@@ -340,6 +340,15 @@ behaviour:
 - **[marked](https://github.com/markedjs/marked)** — the Markdown
   parser the frontend uses to render vault pages, vendored as
   `frontend/vendor/marked.esm.js`. (MIT licensed)
+- **[node-diff3](https://github.com/bhousel/node-diff3)** — powers
+  the three-way merge conflict resolver in `tome serve`, vendored as
+  `frontend/vendor/diff3.mjs`. (MIT licensed)
+- **[CodeMirror](https://codemirror.net/)** — provides the code editor
+  for raw markdown editing in the frontend, vendored as
+  `frontend/vendor/codemirror.min.js`. (MIT licensed)
+- **[Toast UI Editor](https://ui.toast.com/tui-editor)** — a WYSIWYG/Markdown
+  editor for page editing in the frontend, vendored as
+  `frontend/vendor/toastui-editor.min.js`. (MIT licensed)
 
 ## Out of scope (for now)
 
