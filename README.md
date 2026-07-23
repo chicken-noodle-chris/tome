@@ -326,10 +326,14 @@ or `tome doctor`'s "plugin freshness" check will flag the drift (a
 resolvable dev checkout's `plugin.json` vs. the cached, currently-active
 plugin found via `$TOME_PLUGIN_ROOT`).
 
-## Acknowledgements
+## Out of scope (for now)
 
-tome builds on five open-source projects whose work is embedded in its
-behaviour:
+- A multi-vault registry — the CLI's root-resolution seam supports it, but
+  registration itself waits for a real need.
+- Non-Windows hook portability: hooks invoke `python`, which is correct on
+  Windows; stock macOS may need `python3` there instead.
+
+## Acknowledgements
 
 - **[backlog.md](https://github.com/MrLesk/Backlog.md)** — owns the
   `backlog/tasks/*.md` task corpus and every task write; `tome task`
@@ -349,12 +353,5 @@ behaviour:
 - **[Toast UI Editor](https://ui.toast.com/tui-editor)** — a WYSIWYG/Markdown
   editor for page editing in the frontend, vendored as
   `frontend/vendor/toastui-editor.min.js`. (MIT licensed)
-
-## Out of scope (for now)
-
-- A multi-vault registry — the CLI's root-resolution seam supports it, but
-  registration itself waits for a real need.
-- Non-Windows hook portability: hooks invoke `python`, which is correct on
-  Windows; stock macOS may need `python3` there instead.
 
 MIT licensed.
