@@ -185,8 +185,12 @@ def _read_board_config(backlog_dir):
 
 def build_board(vault_root, conventions):
     """The `/board.json` contract: the kanban read from backlog/tasks/*.md.
-    Reuses cli's existing task frontmatter readers rather than adding
-    another hand-rolled parser."""
+    Reuses cli's existing task frontmatter/body readers rather than adding
+    another hand-rolled parser. Cards carry `description`,
+    `acceptanceCriteria`, and `dependencies` (task-detail view fields,
+    [[task-detail-view]]) alongside the board columns' own fields —
+    `dependencies` is normalized to lowercase `task-<n>` ids the same way
+    `id` is, so the client can link straight to a dependency's own card."""
     from tome_cli import cli
 
     backlog_dir = vault_root / "backlog"
@@ -196,7 +200,7 @@ def build_board(vault_root, conventions):
     tasks_dir = backlog_dir / "tasks"
     if tasks_dir.is_dir():
         for path in sorted(tasks_dir.glob("*.md")):
-            fm_lines, _ = cli.read_page(path)
+            fm_lines, body = cli.read_page(path)
             raw_id = cli.fm_get(fm_lines, "id") or ""
             if not raw_id:
                 continue
@@ -208,6 +212,8 @@ def build_board(vault_root, conventions):
                 ordinal = int(ordinal_raw) if ordinal_raw not in (None, "") else None
             except ValueError:
                 ordinal = None
+            dependencies = [_normalize_card_id(d)
+                             for d in cli.task_block_list(fm_lines, "dependencies")]
             cards.append({
                 "id": raw_id.lower(),
                 "rawId": raw_id,
@@ -219,6 +225,9 @@ def build_board(vault_root, conventions):
                 "milestone": cli.fm_get(fm_lines, "milestone"),
                 "labels": labels,
                 "references": cli.task_block_list(fm_lines, "references"),
+                "dependencies": [d for d in dependencies if d],
+                "description": cli.task_description(body),
+                "acceptanceCriteria": cli.task_acceptance_criteria(body),
             })
     return {
         "statuses": statuses,

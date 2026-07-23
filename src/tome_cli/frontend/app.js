@@ -1,14 +1,16 @@
 // tome browse frontend.
 //
-// One Alpine component drives two views: a page view — a sidebar navigating the
-// whole vault (grouped like the wiki tree) beside a content area that renders the
-// selected page, with client-side wikilink navigation — and a full-width
-// board. Data comes from the two generated contracts the server emits,
-// `/index.json` and `/board.json`; raw markdown comes from `/raw/…`. The board
-// has a sort-mode lens (Manual/Priority/Title, localStorage-only — see
-// [[board-sort]]) and, in Manual mode when `board.writable` is true (a live
-// `tome serve`), drag-to-move-and-reorder, POSTing `{status, afterId}` to
-// `/api/task/<id>/move`; the page view supports body editing on
+// One Alpine component drives three views: a page view — a sidebar navigating
+// the whole vault (grouped like the wiki tree) beside a content area that
+// renders the selected page, with client-side wikilink navigation — a
+// full-width board, and a read-only task-detail view (`?task=<id>`,
+// [[task-detail-view]]) rendered entirely from its board.json card: no fetch,
+// no new server route. Data comes from the two generated contracts the server
+// emits, `/index.json` and `/board.json`; raw markdown comes from `/raw/…`.
+// The board has a sort-mode lens (Manual/Priority/Title, localStorage-only —
+// see [[board-sort]]) and, in Manual mode when `board.writable` is true (a
+// live `tome serve`), drag-to-move-and-reorder, POSTing `{status, afterId}`
+// to `/api/task/<id>/move`; the page view supports body editing on
 // the same flag, POSTing to `/api/page` ([[page-editing]]), and frontmatter
 // editing (title/tags/description), POSTing to `/api/frontmatter`
 // ([[frontmatter-editing]]). Creation POSTs to `/api/new` (a page,
@@ -136,6 +138,12 @@ function tomeApp() {
     pageError: "",
     currentHash: null, // ETag of the last-fetched /raw/ response — the save conflict token
 
+    // task-detail view ([[task-detail-view]]) — no fetch of its own; renders
+    // straight from the matching board.json card, found by id on demand
+    // rather than duplicated into its own reactive field.
+    currentTaskId: null,
+    taskError: "",
+
     // page editing ([[page-editing]]) — the editor instance itself is the
     // module-level `mountedEditor`, not reactive state; see its comment.
     editing: false,
@@ -259,6 +267,11 @@ function tomeApp() {
         this.view = "backlog";
         return;
       }
+      const taskId = params.get("task");
+      if (taskId) {
+        this.loadTask(taskId, { push: false });
+        return;
+      }
       const slug = params.get("page") || DEFAULT_PAGE;
       const justCreated = params.get("new") === "1"; // set by saveNewPage()'s redirect
       await this.loadPage(slug, { push: false });
@@ -363,6 +376,47 @@ function tomeApp() {
       return Object.entries(meta).filter(
         ([k, v]) => !FM_HIDDEN.has(k) && v !== "" && !(Array.isArray(v) && v.length === 0),
       );
+    },
+
+    // -- task-detail view ([[task-detail-view]]) -------------------------- //
+    // A read-only client-side route (`?task=<id>`) rendered entirely from the
+    // matching board.json card already in memory — no fetch, no new server
+    // route, identical on a frozen static export.
+
+    loadTask(id, { push = true } = {}) {
+      this.view = "task";
+      this.currentTaskId = id;
+      this.taskError = this.currentTask() ? "" : `No task with id "${id}".`;
+      if (push) history.pushState({ task: id }, "", `?task=${encodeURIComponent(id)}`);
+    },
+
+    currentTask() {
+      return this.board.cards.find((c) => c.id === this.currentTaskId) || null;
+    },
+
+    // A dependency id ("task-63") resolved to its own card, so the link can
+    // show its title rather than a bare id — null if that task isn't on this
+    // board (e.g. archived to backlog/completed, which build_board doesn't read).
+    dependencyCard(id) {
+      return this.board.cards.find((c) => c.id === id) || null;
+    },
+
+    taskDescriptionHtml() {
+      const t = this.currentTask();
+      return t && t.description ? renderMarkdown(t.description, (s) => this.resolveWikilink(s)) : "";
+    },
+
+    // The first `references` entry that's a known wiki page (paths are
+    // vault-root-relative, e.g. "wiki/tome/plans/x.md", while index.json's
+    // own `path` is relative to wiki/) — restores the card-to-page link
+    // Option 1 dropped. null if the task references no wiki page.
+    taskWikiPage(task) {
+      for (const ref of task.references || []) {
+        const relPath = ref.startsWith("wiki/") ? ref.slice("wiki/".length) : ref;
+        const page = this.pages.find((p) => p.path === relPath);
+        if (page) return page;
+      }
+      return null;
     },
 
     // -- page editing ([[page-editing]]) ---------------------------------- //

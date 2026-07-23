@@ -1737,6 +1737,9 @@ def task_title(fm_lines):
 
 
 AC_LINE_RE = re.compile(r"^- \[.\] #(\d+)", re.MULTILINE)
+AC_ITEM_RE = re.compile(r"^- \[(.)\] #\d+\s+(.*)$", re.MULTILINE)
+DESCRIPTION_RE = re.compile(
+    r"<!-- SECTION:DESCRIPTION:BEGIN -->\s*(.*?)\s*<!-- SECTION:DESCRIPTION:END -->", re.DOTALL)
 
 
 def count_task_acs(task_body):
@@ -1747,6 +1750,25 @@ def count_task_acs(task_body):
     if not m:
         return 0
     return len(AC_LINE_RE.findall(m.group(1)))
+
+
+def task_description(task_body):
+    """A backlog task's description paragraph, from between its
+    SECTION:DESCRIPTION:BEGIN/END markers ([[task-detail-view]]'s board.json
+    contract) — empty string if the task has no description section."""
+    m = DESCRIPTION_RE.search(task_body)
+    return m.group(1).strip() if m else ""
+
+
+def task_acceptance_criteria(task_body):
+    """Acceptance criteria as `{text, checked}` dicts, parsed from the same
+    AC:BEGIN/AC:END block `count_task_acs` reads, but keeping each item's
+    text and checked state for the board.json detail-view contract."""
+    m = re.search(r"<!-- AC:BEGIN -->(.*?)<!-- AC:END -->", task_body, re.DOTALL)
+    if not m:
+        return []
+    return [{"text": text.strip(), "checked": mark.lower() == "x"}
+            for mark, text in AC_ITEM_RE.findall(m.group(1))]
 
 
 # --------------------------------------------------------------------------- #

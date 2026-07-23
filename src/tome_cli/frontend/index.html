@@ -567,7 +567,8 @@
                            :draggable="board.writable && sortMode === 'manual'"
                            :class="{ dragging: draggingId === card.id, moving: movingCardId === card.id }"
                            @dragstart="onDragStart($event, card)"
-                           @dragend="onDragEnd">
+                           @dragend="onDragEnd"
+                           @click="loadTask(card.id)">
                     <div class="card-meta">
                       <span class="card-id" x-text="card.rawId"></span>
                       <span class="card-prio" :data-prio="card.priority" x-show="card.priority" x-text="card.priority"></span>
@@ -621,7 +622,8 @@
                      :draggable="board.writable && sortMode === 'manual'"
                      :class="{ dragging: draggingId === card.id, moving: movingCardId === card.id }"
                      @dragstart="onDragStart($event, card)"
-                     @dragend="onDragEnd">
+                     @dragend="onDragEnd"
+                     @click="loadTask(card.id)">
               <div class="card-meta">
                 <span class="card-id" x-text="card.rawId"></span>
                 <span class="card-prio" :data-prio="card.priority" x-show="card.priority" x-text="card.priority"></span>
@@ -638,6 +640,79 @@
           </div>
         </template>
       </div>
+    </main>
+
+    <!-- Task-detail view ([[task-detail-view]]) — read-only, rendered
+         entirely from the clicked card's board.json entry; no fetch, no new
+         write route, identical on a frozen static export. -->
+    <main class="page task-detail" x-show="view === 'task'">
+      <template x-if="taskError">
+        <p class="error" x-text="taskError"></p>
+      </template>
+      <template x-if="!taskError && currentTask()">
+        <article>
+          <a class="task-back" href="?view=board" @click.prevent="showBoard()">&larr; Board</a>
+          <div class="fm-card">
+            <div class="fm-head">
+              <h1 x-text="currentTask().title"></h1>
+            </div>
+            <div class="card-meta">
+              <span class="card-id" x-text="currentTask().rawId"></span>
+              <span class="card-prio" :data-prio="currentTask().priority" x-show="currentTask().priority"
+                    x-text="currentTask().priority"></span>
+            </div>
+            <dl>
+              <div class="fm-row" x-show="currentTask().status">
+                <dt>status</dt><dd x-text="currentTask().status"></dd>
+              </div>
+              <div class="fm-row" x-show="currentTask().project">
+                <dt>project</dt><dd x-text="currentTask().project"></dd>
+              </div>
+              <div class="fm-row" x-show="currentTask().milestone">
+                <dt>milestone</dt><dd x-text="currentTask().milestone"></dd>
+              </div>
+              <div class="fm-row" x-show="currentTask().labels.length">
+                <dt>labels</dt><dd x-text="currentTask().labels.join(', ')"></dd>
+              </div>
+            </dl>
+            <p class="task-wiki-link" x-show="taskWikiPage(currentTask())">
+              <a :href="'?page=' + encodeURIComponent(taskWikiPage(currentTask())?.slug)"
+                 @click.prevent="loadPage(taskWikiPage(currentTask()).slug)">
+                View wiki page: <span x-text="taskWikiPage(currentTask())?.title"></span>
+              </a>
+            </p>
+          </div>
+
+          <div class="markdown task-description" x-show="currentTask().description"
+               x-html="taskDescriptionHtml()" @click="onContentClick($event)"></div>
+
+          <section class="task-acs" x-show="currentTask().acceptanceCriteria.length">
+            <h2>Acceptance Criteria</h2>
+            <ul>
+              <template x-for="(ac, i) of currentTask().acceptanceCriteria" :key="i">
+                <li class="task-ac" :class="{ 'task-ac--checked': ac.checked }">
+                  <input type="checkbox" disabled :checked="ac.checked" />
+                  <span x-text="ac.text"></span>
+                </li>
+              </template>
+            </ul>
+          </section>
+
+          <section class="task-deps" x-show="currentTask().dependencies.length">
+            <h2>Dependencies</h2>
+            <ul>
+              <template x-for="depId of currentTask().dependencies" :key="depId">
+                <li>
+                  <a :href="'?task=' + encodeURIComponent(depId)" @click.prevent="loadTask(depId)"
+                     x-text="dependencyCard(depId)
+                       ? dependencyCard(depId).rawId + ' — ' + dependencyCard(depId).title
+                       : depId.toUpperCase()"></a>
+                </li>
+              </template>
+            </ul>
+          </section>
+        </article>
+      </template>
     </main>
   </body>
 </html>

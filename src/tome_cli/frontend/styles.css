@@ -442,6 +442,7 @@ body {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 0.6rem 0.7rem;
+  cursor: pointer; /* opens the task-detail view ([[task-detail-view]]) */
 }
 .card[draggable="true"] { cursor: grab; }
 .card.dragging { opacity: 0.4; }
@@ -482,6 +483,29 @@ body {
   cursor: pointer;
 }
 .card-action:hover { border-color: var(--accent); color: var(--accent); }
+
+/* -- task-detail view ([[task-detail-view]]) --
+   Reuses .page's readable-width column and the page view's .fm-card/.fm-row
+   for the metadata strip, so a task page looks like a sibling of a wiki page
+   rather than a new visual language. */
+.task-back {
+  display: inline-block;
+  margin-bottom: 0.75rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+  text-decoration: none;
+}
+.task-back:hover { color: var(--accent); }
+.task-detail .card-meta { margin: -0.4rem 0 0.6rem; }
+.task-wiki-link { margin: 0.6rem 0 0; font-size: 0.85rem; }
+.task-description { margin: 1.25rem 0; }
+.task-acs, .task-deps { margin: 1.5rem 0; }
+.task-acs h2, .task-deps h2 { font-size: 1.05rem; margin: 0 0 0.5rem; }
+.task-acs ul, .task-deps ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.4rem; }
+.task-ac { display: flex; align-items: baseline; gap: 0.5rem; font-size: 0.9rem; }
+.task-ac--checked span { color: var(--muted); text-decoration: line-through; }
+.task-deps a { color: var(--accent); text-decoration: none; font-size: 0.9rem; }
+.task-deps a:hover { text-decoration: underline; }
 
 /* -- backlog view ([[deferred-backlog]]) -- */
 .backlog-list { max-width: 32rem; }
