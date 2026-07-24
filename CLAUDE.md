@@ -9,6 +9,8 @@ Plugin updates are **version-gated** and the cache is keyed by version directory
 So whenever you change the tool itself (the CLI in `src/tome_cli/`, the skills, or the hooks), finishing the work means:
 
 1. Bump `version` in `.claude-plugin/plugin.json` (e.g. `1.2.25` → `1.2.26`).
+   If working from a tracked task, its `semver:patch|minor|major` label sizes
+   the bump. No label, or no active task: default to `patch`, or ask if unsure.
 2. Commit + push to `main`.
 3. Install it locally: `claude plugin update tome@tome` — this refreshes the
    version-keyed cache to your new code.
