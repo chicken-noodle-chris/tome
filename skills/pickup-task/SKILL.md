@@ -55,9 +55,8 @@ how far to take it, an ambiguity in the plan — ask.
    doesn't resolve, ask rather than guess. Verify per the plan's verification section and
    report results honestly.
 
-6. **Commit, then present the work.** Commit by default. Show the user what changed and the
-   verification results. The code repo is separate from the vault and follows its own
-   commit conventions — check its `CLAUDE.md`. Push only after the user approves.
+6. **Commit. Present. No push.** Commit the work. Check repo `CLAUDE.md` for commit rules first.
+   Show user the diff and verify results. Do not push. Wait for user OK. Push only after OK.
 
 7. **Close out the tracking.** Once the work has landed: `tome done <slug> --summary "..."`
    citing the shipping commit (`--as superseded`/`--as abandoned` instead of the default
