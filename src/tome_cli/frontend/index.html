@@ -178,6 +178,18 @@
               <div class="markdown" x-html="pageHtml" @click="onContentClick($event)"></div>
             </template>
 
+            <template x-if="!editing && !fmEditing && backlinks().length">
+              <div class="backlinks">
+                <h2 class="backlinks-title">Linked from</h2>
+                <ul class="backlinks-list">
+                  <template x-for="b of backlinks()" :key="b.slug">
+                    <li><a class="backlinks-link" :href="'?page=' + encodeURIComponent(b.slug)"
+                           @click.prevent="loadPage(b.slug)" x-text="b.title || b.slug"></a></li>
+                  </template>
+                </ul>
+              </div>
+            </template>
+
             <template x-if="editing">
               <div class="editor-pane">
                 <p class="editor-banner" :class="'editor-banner--' + editorBannerKind"

@@ -463,6 +463,19 @@ function tomeApp() {
       );
     },
 
+    // -- backlinks ([[backlinks-view]]) ----------------------------------- //
+    // The inverse of index.json's outbound `links`: every other page whose
+    // links include the current slug. `pages` is already spine-free (the
+    // server's page collection skips index/log/SCHEMA/README entirely), so
+    // this needs no extra filtering to match the linter's inbound-link
+    // exclusions ([[vault-integrity-linter]]).
+    backlinks() {
+      if (!this.currentSlug) return [];
+      return this.pages
+        .filter((p) => p.slug !== this.currentSlug && (p.links || []).includes(this.currentSlug))
+        .sort((a, b) => (a.title || a.slug).localeCompare(b.title || b.slug));
+    },
+
     // -- task-detail view ([[task-detail-view]]) -------------------------- //
     // A read-only client-side route (`?task=<id>`) rendered entirely from the
     // matching board.json card already in memory — no fetch, no new server

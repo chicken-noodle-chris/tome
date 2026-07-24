@@ -359,6 +359,13 @@ body {
 .markdown th, .markdown td { border: 1px solid var(--border); padding: 0.4rem 0.6rem; text-align: left; }
 .markdown th { background: var(--panel); font-weight: 600; }
 
+/* -- backlinks ([[backlinks-view]]) -- */
+.backlinks { margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid var(--border); }
+.backlinks-title { margin: 0 0 0.5rem; font-size: 0.78rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.04em; color: var(--muted); }
+.backlinks-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.3rem; }
+.backlinks-link { color: var(--accent); font-size: 0.92rem; }
+
 /* -- page editing ([[page-editing]]) -- */
 .editor-pane { margin-bottom: 2rem; }
 .editor-banner {
