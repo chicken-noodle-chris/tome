@@ -212,6 +212,10 @@ function tomeApp() {
     dropTarget: null, // { status, afterId } — the insertion point tracked during a Manual-mode drag
     movingCardId: null, // card.id awaiting its POST response
     boardError: "",
+    // live reload ([[live-reload]]) — a board.json push arriving mid-drag or
+    // mid-move is deferred here and replayed once the write settles, rather
+    // than yanking the card out from under it.
+    boardReloadPending: false,
 
     async init() {
       try {
@@ -230,6 +234,11 @@ function tomeApp() {
         return;
       }
 
+      // board.writable is false on a static export, where /events doesn't
+      // exist — EventSource retries a failed connection forever, so this
+      // must not even try there ([[live-reload]]).
+      if (this.board.writable) this.connectLiveReload();
+
       const savedSort = localStorage.getItem(SORT_MODE_KEY);
       if (savedSort && SORT_COMPARATORS[savedSort]) this.sortMode = savedSort;
       this.$watch("sortMode", (mode) => localStorage.setItem(SORT_MODE_KEY, mode));
@@ -238,6 +247,82 @@ function tomeApp() {
       window.addEventListener("popstate", () => this.syncFromUrl());
       await this.syncFromUrl();
       await this.checkGitConflicts();
+    },
+
+    // -- live reload ([[live-reload]]) ------------------------------------ //
+    // The server's mtime-watch daemon pushes `{"changed": [...]}` over SSE
+    // whenever `wiki/` or `backlog/tasks/` moves; this re-fetches just the
+    // named contract(s) rather than polling. EventSource reconnects on its
+    // own after a dropped stream (a plugin reinstall, say), so there's
+    // nothing to do here on error beyond letting it retry.
+    connectLiveReload() {
+      const source = new EventSource("/events");
+      source.onmessage = (event) => {
+        let changed;
+        try {
+          changed = JSON.parse(event.data).changed || [];
+        } catch (e) {
+          return;
+        }
+        if (changed.includes("board")) this.applyBoardChange();
+        if (changed.includes("index")) this.reconcileIndex();
+      };
+    },
+
+    // Transient local state (a drag in progress, or a move whose POST hasn't
+    // returned) always self-resolves in seconds, so a push landing mid-write
+    // is simply held and replayed once it clears (see onDragEnd/moveCard) —
+    // never dropped.
+    async applyBoardChange() {
+      if (this.draggingId || this.movingCardId) {
+        this.boardReloadPending = true;
+        return;
+      }
+      this.boardReloadPending = false;
+      try {
+        this.board = await fetch("/board.json").then((r) => r.json());
+      } catch (e) {
+        /* next push (or the next drag/move's own authoritative board) retries */
+      }
+    },
+
+    // A durable edit buffer (unsaved typing) may never self-resolve, so
+    // unlike the board it's never overwritten — this surfaces the same
+    // "changed on disk" banner + Reload button the save path's 409 already
+    // shows, and lets the sidebar/page-list update independently either way.
+    async reconcileIndex() {
+      let index;
+      try {
+        index = await fetch("/index.json").then((r) => r.json());
+      } catch (e) {
+        return;
+      }
+      this.pages = index.pages || [];
+      this.bySlug = new Map(this.pages.map((p) => [p.slug, p]));
+      this.tagTaxonomy = index.tagTaxonomy || [];
+      this.allowProjectTags = !!index.allowProjectTags;
+      this.typeEnum = index.typeEnum || [];
+
+      if (this.view !== "page" || !this.currentSlug || !this.bySlug.has(this.currentSlug)) return;
+
+      if (this.editing) {
+        if (!this.resolver && this.editorBannerKind !== "conflict") {
+          this.editorBannerKind = "conflict";
+          this.editorBanner = "This page changed on disk. Your edits are safe. "
+            + "Copy them out, then Reload to get the new version.";
+        }
+        return;
+      }
+      if (this.fmEditing) {
+        if (!this.resolver && this.fmBannerKind !== "conflict") {
+          this.fmBannerKind = "conflict";
+          this.fmBanner = "This page changed on disk. Your edits are safe. "
+            + "Copy them out, then Reload to get the new version.";
+        }
+        return;
+      }
+
+      await this.loadPage(this.currentSlug, { push: false });
     },
 
     // A `tome sync` that hit a forked history exits leaving the tree stopped
@@ -1280,6 +1365,7 @@ function tomeApp() {
     onDragEnd() {
       this.draggingId = null;
       this.dropTarget = null;
+      if (this.boardReloadPending && !this.movingCardId) this.applyBoardChange();
     },
 
     // Tracks which gap between cards the cursor is over, by comparing its Y
@@ -1342,6 +1428,7 @@ function tomeApp() {
         this.boardError = `Move failed: ${e.message}`;
       } finally {
         this.movingCardId = null;
+        if (this.boardReloadPending && !this.draggingId) this.applyBoardChange();
       }
     },
 

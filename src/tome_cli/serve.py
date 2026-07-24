@@ -58,7 +58,13 @@ tome_cli.serve — the local browse host for the no-build frontend.
     unwind it. These exist because a forked history is the one conflict the
     write paths above can't answer alone — the rest they answer by returning
     the current text in their 409 so the client can merge it in place. Absent
-    from the static export like every other write route.
+    from the static export like every other write route;
+  * pushes live-reload events ([[live-reload]]): `GET /events` is a
+    long-lived SSE stream that emits `{"changed": [...]}` whenever a daemon
+    thread's mtime poll sees `wiki/` or `backlog/tasks/` move, naming which
+    generated contract(s) — `index`, `board` — moved. The client re-fetches
+    just that contract rather than polling; a static export opens no such
+    stream (there's no server behind it to hold one open).
 
 The JSON *schemas* are the deliberate, permanent part of this slice; the
 server internals and the frontend are rough by design and hardened in place by
@@ -72,6 +78,7 @@ import hashlib
 import importlib.resources
 import json
 import os
+import queue
 import re
 import subprocess
 import sys
@@ -1131,7 +1138,100 @@ def create_page(vault_root, conventions, type_, project, slug, title, desc, link
 
 
 # --------------------------------------------------------------------------- #
-# HTTP handler — GET (four route families, path-safe raw reads) plus five
+# Live reload ([[live-reload]]): a daemon thread polls the two trees the
+# generated contracts derive from and wakes every open `GET /events`
+# connection with whichever contract(s) moved. mtime-poll, stdlib only —
+# this module's docstring rules out a `watchdog` dependency — reusing the
+# same polling pattern `_idle_watchdog` already established below.
+# --------------------------------------------------------------------------- #
+
+def _tree_token(root):
+    """A cheap revision token for every `*.md` file under `root`: hashes the
+    sorted (relative path, mtime) pairs, so a create, delete, or edit
+    anywhere in the tree changes it. Pure function of on-disk state,
+    unit-testable with no live server. "" when `root` doesn't exist yet."""
+    if not root.is_dir():
+        return ""
+    entries = sorted(
+        (p.relative_to(root).as_posix(), p.stat().st_mtime)
+        for p in root.rglob("*.md")
+    )
+    h = hashlib.sha256()
+    for rel, mtime in entries:
+        h.update(f"{rel}:{mtime}\n".encode("utf-8"))
+    return h.hexdigest()
+
+
+class _ChangeWatcher:
+    """One instance per running `tome serve`. `run()` (a daemon thread
+    started by `cmd_serve()`) re-hashes `wiki/` and `backlog/tasks/` every
+    `POLL_SECONDS` and, when either token changes, pushes the changed
+    contract name(s) — "index", "board" — to every registered client queue.
+    `TomeHandler._send_events()` registers one queue per open connection;
+    `_idle_watchdog` consults `client_count()` so a connected browser tab
+    (which makes no further requests once its stream is open) isn't mistaken
+    for an idle server."""
+
+    POLL_SECONDS = 1.0
+
+    def __init__(self, vault_root):
+        self._wiki_root = vault_root / "wiki"
+        self._tasks_dir = vault_root / "backlog" / "tasks"
+        self._lock = threading.Lock()
+        self._clients = []  # list[queue.Queue] — one per open /events connection
+        self._tokens = self._snapshot()
+
+    def _snapshot(self):
+        return {"index": _tree_token(self._wiki_root), "board": _tree_token(self._tasks_dir)}
+
+    def register(self):
+        """A new `/events` connection's inbox — `unregister` it once the
+        connection closes."""
+        q = queue.Queue()
+        with self._lock:
+            self._clients.append(q)
+        return q
+
+    def unregister(self, q):
+        with self._lock:
+            if q in self._clients:
+                self._clients.remove(q)
+
+    def client_count(self):
+        with self._lock:
+            return len(self._clients)
+
+    def poll_once(self):
+        """One tick: returns the contract names whose token changed since the
+        last tick (possibly empty) and updates the stored tokens. Split out
+        from `run()` so the diffing logic is unit-testable without a thread."""
+        tokens = self._snapshot()
+        changed = [k for k in ("index", "board") if tokens[k] != self._tokens[k]]
+        self._tokens = tokens
+        return changed
+
+    def broadcast(self, changed):
+        """Puts `changed` on every registered client's queue. Split out from
+        `run()` so a test can drive it directly against `register()`'s queue
+        without spinning a thread or waiting on a real poll interval."""
+        with self._lock:
+            clients = list(self._clients)
+        for q in clients:
+            q.put(changed)
+
+    def run(self):
+        while True:
+            time.sleep(self.POLL_SECONDS)
+            changed = self.poll_once()
+            if changed:
+                self.broadcast(changed)
+
+    def start(self):
+        threading.Thread(target=self.run, daemon=True).start()
+
+
+# --------------------------------------------------------------------------- #
+# HTTP handler — GET (five route families, path-safe raw reads) plus five
 # POST write routes.
 # --------------------------------------------------------------------------- #
 
@@ -1142,6 +1242,7 @@ class TomeHandler(BaseHTTPRequestHandler):
     # Set by cmd_serve() before the server starts.
     vault_root = None
     conventions = None
+    watcher = None  # _ChangeWatcher, absent (None) on a static export
     last_activity = None
 
     server_version = "tome-serve"
@@ -1152,8 +1253,13 @@ class TomeHandler(BaseHTTPRequestHandler):
         print(f"  {self.command} {self.path} -> {args[1] if len(args) > 1 else ''}")
 
     def do_GET(self):
-        TomeHandler.last_activity = time.monotonic()
         path = unquote(urlparse(self.path).path)
+        # An open /events stream is one long-lived request, not renewed
+        # activity — otherwise a connected tab would keep the idle watchdog
+        # from ever firing. `_idle_watchdog` covers the "tab is still open"
+        # case separately, via watcher.client_count().
+        if path != "/events":
+            TomeHandler.last_activity = time.monotonic()
         try:
             if path in ("/", "/index.html"):
                 return self._send_frontend("index.html")
@@ -1161,6 +1267,8 @@ class TomeHandler(BaseHTTPRequestHandler):
                 return self._send_json(build_index(self.vault_root, self.conventions))
             if path == "/board.json":
                 return self._send_json(_board_with_writable(self.vault_root, self.conventions, True))
+            if path == "/events":
+                return self._send_events()
             if path == "/api/conflicts":
                 # Polled once on load so a tree left mid-rebase by a failed
                 # `tome sync` surfaces in the resolver on its own, without
@@ -1333,6 +1441,34 @@ class TomeHandler(BaseHTTPRequestHandler):
         etag = hashlib.sha256(content).hexdigest()
         self._send_bytes(content, _content_type(target.name), extra_headers={"ETag": etag})
 
+    def _send_events(self):
+        """`GET /events` ([[live-reload]]): a long-lived SSE stream that
+        writes a `data: {"changed": [...]}\\n\\n` frame whenever the watch
+        daemon sees `wiki/` or `backlog/tasks/` move. `ThreadingHTTPServer`
+        gives every request its own thread, so this just blocks here —
+        looping on the registered queue — until the client disconnects,
+        which surfaces as `BrokenPipeError` on a write and is caught by
+        `do_GET`'s own handler like every other route. A ~15s comment-line
+        heartbeat keeps intermediate proxies from timing the connection out.
+        """
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+        q = self.watcher.register()
+        try:
+            while True:
+                try:
+                    changed = q.get(timeout=15)
+                    frame = f"data: {json.dumps({'changed': changed})}\n\n"
+                except queue.Empty:
+                    frame = ": ping\n\n"
+                self.wfile.write(frame.encode("utf-8"))
+                self.wfile.flush()
+        finally:
+            self.watcher.unregister(q)
+
 
 def _safe_join(rel):
     """A request-relative POSIX path with no absolute/`..`/empty components,
@@ -1403,13 +1539,22 @@ def export_static(vault_root, conventions, out_dir):
     return out_dir
 
 
-def _idle_watchdog(httpd, timeout_seconds):
+def _idle_watchdog(httpd, timeout_seconds, watcher):
     """Runs in a daemon thread; shuts the server down once `timeout_seconds`
     have passed with no request. Only meaningful when something started the
     server with no way to Ctrl-C it — the `launch_gui()` pythonw launcher —
-    so an idle server doesn't run forever in the background."""
+    so an idle server doesn't run forever in the background.
+
+    A connected `/events` client ([[live-reload]]) makes no further requests
+    once its stream is open, so `last_activity` alone would call that tab
+    idle and kill the server out from under it — `watcher.client_count()`
+    is checked first as a standing override. The moment the last tab
+    disconnects, the ordinary idle countdown resumes from wherever
+    `last_activity` already was."""
     while True:
         time.sleep(min(30, timeout_seconds))
+        if watcher.client_count() > 0:
+            continue
         idle_for = time.monotonic() - TomeHandler.last_activity
         if idle_for >= timeout_seconds:
             print(f"tome serve: idle {int(idle_for)}s >= {timeout_seconds}s, shutting down.")
@@ -1434,11 +1579,15 @@ def cmd_serve(vault_root, conventions, args):
     TomeHandler.vault_root = vault_root
     TomeHandler.conventions = conventions
     TomeHandler.last_activity = time.monotonic()
+    watcher = _ChangeWatcher(vault_root)
+    watcher.start()
+    TomeHandler.watcher = watcher
 
     httpd = ThreadingHTTPServer((args.host, args.port), TomeHandler)
     url = f"http://{args.host}:{args.port}/"
     print(f"tome serve: {url} (vault: {vault_root})")
     print("  serving  /  /index.json  /board.json  /raw/<page>.md  /app/<file>")
+    print("  GET  /events                (SSE live-reload: push on wiki/backlog changes)")
     print("  POST /api/task/<id>/move    (status + reorder, shelled to backlog.md)")
     print("  POST /api/task              (new bare task, shelled to backlog.md)")
     print("  POST /api/page              (body edits, conflict + lint gated)")
@@ -1451,7 +1600,7 @@ def cmd_serve(vault_root, conventions, args):
     idle_minutes = getattr(args, "idle_timeout", 0) or 0
     if idle_minutes > 0:
         print(f"  auto-exit after {idle_minutes}min idle (--idle-timeout 0 disables)")
-        threading.Thread(target=_idle_watchdog, args=(httpd, idle_minutes * 60),
+        threading.Thread(target=_idle_watchdog, args=(httpd, idle_minutes * 60, watcher),
                           daemon=True).start()
 
     print("  Ctrl-C to stop.")

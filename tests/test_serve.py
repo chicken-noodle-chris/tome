@@ -8,6 +8,7 @@ locked here.
 """
 
 import hashlib
+import os
 import shutil
 import subprocess
 import sys
@@ -1026,6 +1027,80 @@ def test_export_static_board_json_is_read_only(tmp_path, make_vault):
 
     board = json.loads((out_dir / "board.json").read_text(encoding="utf-8"))
     assert board["writable"] is False
+
+
+# --------------------------------------------------------------------------- #
+# Live reload ([[live-reload]]) — _tree_token and _ChangeWatcher are pure/
+# thread-free by construction, so these exercise the diffing logic directly
+# rather than starting a real server and opening a socket to /events.
+# --------------------------------------------------------------------------- #
+
+def test_tree_token_changes_on_create_edit_and_delete(tmp_path):
+    root = tmp_path / "wiki"
+    root.mkdir()
+    empty = serve._tree_token(root)
+
+    a = root / "a.md"
+    a.write_text("one", encoding="utf-8")
+    after_create = serve._tree_token(root)
+    assert after_create != empty
+
+    os.utime(a, (a.stat().st_mtime + 5, a.stat().st_mtime + 5))
+    after_touch = serve._tree_token(root)
+    assert after_touch != after_create
+
+    a.unlink()
+    after_delete = serve._tree_token(root)
+    assert after_delete == empty
+
+
+def test_tree_token_ignores_non_markdown_files(tmp_path):
+    root = tmp_path / "wiki"
+    root.mkdir()
+    before = serve._tree_token(root)
+    (root / "notes.txt").write_text("not markdown", encoding="utf-8")
+    assert serve._tree_token(root) == before
+
+
+def test_tree_token_missing_dir_is_empty_token(tmp_path):
+    assert serve._tree_token(tmp_path / "does-not-exist") == ""
+
+
+def test_change_watcher_poll_once_detects_wiki_and_board_separately(tmp_path):
+    vault = tmp_path / "vault"
+    (vault / "wiki").mkdir(parents=True)
+    (vault / "backlog" / "tasks").mkdir(parents=True)
+    watcher = serve._ChangeWatcher(vault)
+
+    assert watcher.poll_once() == []  # nothing moved since __init__'s snapshot
+
+    (vault / "wiki" / "a.md").write_text("x", encoding="utf-8")
+    assert watcher.poll_once() == ["index"]
+    assert watcher.poll_once() == []  # settled — no further diff on a repeat tick
+
+    (vault / "backlog" / "tasks" / "task-1.md").write_text("x", encoding="utf-8")
+    assert watcher.poll_once() == ["board"]
+
+
+def test_change_watcher_client_lifecycle(tmp_path):
+    vault = tmp_path / "vault"
+    (vault / "wiki").mkdir(parents=True)
+    watcher = serve._ChangeWatcher(vault)
+    assert watcher.client_count() == 0
+
+    q1 = watcher.register()
+    q2 = watcher.register()
+    assert watcher.client_count() == 2
+
+    watcher.broadcast(["board"])
+    assert q1.get_nowait() == ["board"]
+    assert q2.get_nowait() == ["board"]
+
+    watcher.unregister(q1)
+    assert watcher.client_count() == 1
+    watcher.broadcast(["index"])
+    assert q2.get_nowait() == ["index"]
+    assert q1.empty()  # no longer listening
 
 
 # --------------------------------------------------------------------------- #
