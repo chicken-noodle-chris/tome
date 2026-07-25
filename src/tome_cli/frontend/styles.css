@@ -506,8 +506,14 @@ body {
 .task-detail .card-meta { margin: -0.4rem 0 0.6rem; }
 .task-wiki-link { margin: 0.6rem 0 0; font-size: 0.85rem; }
 .task-description { margin: 1.25rem 0; }
-.task-acs, .task-deps, .task-notes { margin: 1.5rem 0; }
-.task-acs h2, .task-deps h2, .task-notes h2 { font-size: 1.05rem; margin: 0 0 0.5rem; }
+.task-acs, .task-deps, .task-chain, .task-notes { margin: 1.5rem 0; }
+.task-acs h2, .task-deps h2, .task-chain h2, .task-notes h2 { font-size: 1.05rem; margin: 0 0 0.5rem; }
+.task-chain h2 { display: flex; align-items: baseline; justify-content: space-between; gap: 0.75rem; }
+.chain-context-link { font-size: 0.78rem; font-weight: 400; color: var(--accent); text-decoration: none; }
+.chain-context-link:hover { text-decoration: underline; }
+.chain-rows--mini { border: 1px solid var(--border); border-radius: 8px; padding: 0.4rem; background: var(--panel); }
+.chain-row--current { background: var(--chip); border-radius: 6px; }
+.chain-row--current .chain-row-title { font-weight: 600; }
 .task-acs ul, .task-deps ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.4rem; }
 .task-ac { display: flex; align-items: baseline; gap: 0.5rem; font-size: 0.9rem; }
 .task-ac--checked span { color: var(--muted); text-decoration: line-through; }
@@ -694,4 +700,52 @@ body {
   overflow-wrap: anywhere;
 }
 .resolver-del { color: var(--muted); }
+
+/* -- dependency chains view ([[dependency-chains]]) --
+   Rows are one flat list per chain; the box-drawing prefix chains.js
+   already computed carries the indentation, so this stays plain flexbox
+   rather than nested trees. */
+.chains-wrap { max-width: 52rem; }
+.chains-empty { color: var(--muted); }
+.chains-empty code { background: var(--code-bg); padding: 0.05rem 0.35rem; border-radius: 4px; }
+.chain-group { margin: 0 0 1.75rem; }
+.chain-title { font-size: 0.95rem; margin: 0 0 0.5rem; }
+.chain-rows { display: grid; }
+.chain-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  padding: 0.3rem 0.4rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.88rem;
+}
+.chain-row:hover { background: var(--panel); }
+.chain-row--offboard { cursor: default; }
+.chain-row--offboard:hover { background: none; }
+.chain-prefix {
+  font-family: ui-monospace, monospace;
+  white-space: pre;
+  color: var(--muted);
+}
+.chain-backref-mark { color: var(--accent); }
+.chain-id { font-size: 0.72rem; color: var(--muted); font-family: ui-monospace, monospace; }
+.chain-row-title { flex: 1 1 auto; min-width: 8rem; }
+.chain-row--backref .chain-row-title, .chain-row--offboard .chain-row-title { color: var(--muted); font-style: italic; }
+.chain-deps { color: var(--muted); font-size: 0.78rem; flex-basis: 100%; padding-left: 1.5rem; }
+.chain-unchained { margin-top: 2rem; border-top: 1px solid var(--border); padding-top: 1rem; }
+.chain-unchained-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--fg);
+  background: none;
+  border: none;
+  padding: 0.2rem 0;
+  cursor: pointer;
+}
+.chain-unchained .chain-rows { margin-top: 0.5rem; }
 .resolver-add { color: var(--fg); }

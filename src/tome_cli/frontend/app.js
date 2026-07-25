@@ -10,7 +10,11 @@
 // The board has a sort-mode lens (Manual/Priority/Title, localStorage-only —
 // see [[board-sort]]) and, in Manual mode when `board.writable` is true (a
 // live `tome serve`), drag-to-move-and-reorder, POSTing `{status, afterId}`
-// to `/api/task/<id>/move`; the page view supports body editing on
+// to `/api/task/<id>/move`. A fourth view, `?view=chains` ([[dependency-chains]]),
+// renders the same board.json cards as indented dependency trees — pure
+// client-side, computed by chains.js, so it recomputes for free on any
+// board push and needs nothing new from the server or a static export.
+// The page view supports body editing on
 // the same flag, POSTing to `/api/page` ([[page-editing]]), and frontmatter
 // editing (title/tags/description), POSTing to `/api/frontmatter`
 // ([[frontmatter-editing]]). Creation POSTs to `/api/new` (a page,
@@ -36,6 +40,7 @@ import { parseFrontmatter, renderMarkdown } from "/app/render.js";
 import {
   assemble, assembleFields, displayRows, fieldHunks, textHunks, undecidedCount,
 } from "/app/merge.js";
+import { computeChains } from "/app/chains.js";
 
 // The page shown on first load when the URL names none. A stable, link-rich
 // vault page so the slice demonstrates wikilink resolution out of the box.
@@ -217,6 +222,11 @@ function tomeApp() {
     // than yanking the card out from under it.
     boardReloadPending: false,
 
+    // dependency chains view ([[dependency-chains]]) — the unchained group
+    // starts collapsed (AC5); everything else is derived on demand by
+    // chainsData(), never stored reactive state.
+    chainsUnchainedOpen: false,
+
     async init() {
       try {
         const [index, board] = await Promise.all([
@@ -352,6 +362,10 @@ function tomeApp() {
         this.view = "backlog";
         return;
       }
+      if (viewParam === "chains") {
+        this.view = "chains";
+        return;
+      }
       const taskId = params.get("task");
       if (taskId) {
         this.loadTask(taskId, { push: false });
@@ -378,6 +392,13 @@ function tomeApp() {
     showBacklog({ push = true } = {}) {
       this.view = "backlog";
       if (push) history.pushState({ view: "backlog" }, "", "?view=backlog");
+    },
+
+    // The dependency-chains route ([[dependency-chains]]) — another sibling
+    // in the same router.
+    showChains({ push = true } = {}) {
+      this.view = "chains";
+      if (push) history.pushState({ view: "chains" }, "", "?view=chains");
     },
 
     // Returns to the page view. If a page is already loaded, this is just a
@@ -1344,6 +1365,37 @@ function tomeApp() {
       return this.visibleCards()
         .filter((c) => c.status === status)
         .sort(cmp);
+    },
+
+    // -- dependency chains view ([[dependency-chains]]) ------------------ //
+    // A read-only fourth view over the same board.json cards already in
+    // memory: no fetch, no server route, recomputed on demand so a live
+    // reload's board push is reflected for free — the graph walk itself
+    // lives in chains.js as a pure function.
+
+    chainsData() {
+      return computeChains(this.board.cards);
+    },
+
+    // The single chain the task-detail view's current task belongs to (or
+    // null if it's unchained) — reuses the same computeChains() call and
+    // row shape the Chains view renders, so task-detail's mini tree is
+    // exactly a highlighted slice of the real thing, not a second render path.
+    currentTaskChain() {
+      if (!this.currentTaskId) return null;
+      return this.chainsData().chains.find(
+        (c) => c.rows.some((r) => r.id === this.currentTaskId),
+      ) || null;
+    },
+
+    hasAnyDependency() {
+      return this.board.cards.some((c) => (c.dependencies || []).length > 0);
+    },
+
+    // A dependency-row label — resolved title when the id has a card on this
+    // board, the bare id (muted, via row.offboard) otherwise.
+    depLabel(dep) {
+      return dep.title ? `${dep.rawId} — ${dep.title}` : dep.rawId;
     },
 
     // Insertion-line placement for one rendered card: "above"/"below"/"" —
