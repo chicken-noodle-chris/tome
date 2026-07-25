@@ -2337,7 +2337,8 @@ if you omit -m.
       e.g. tome sync workflow-compression task-47
 
   tome task <args...>
-      Passthrough to `npx --yes backlog.md@latest <args...>` from the vault root.
+      Passthrough to `npx --yes backlog.md@{BACKLOG_VERSION} <args...>` from the
+      vault root (the version is pinned, not `@latest`).
       e.g. tome task list --plain
 
   tome start <plan-slug-or-task-id>
@@ -2377,12 +2378,14 @@ if you omit -m.
       Serve the no-build browse frontend locally (stdlib http.server): the
       frontend's static files, the vault's raw .md under /raw/, and two
       generated JSON contracts (/index.json, /board.json) rebuilt per
-      request. One write route, POST /api/task/<id>/move, moves and/or
-      repositions a board card by shelling out to backlog.md — never a
-      direct YAML write.
+      request. Write routes (printed in full on startup): task move/create
+      shell out to backlog.md — never a direct YAML write — while page body,
+      frontmatter, rename, and new-page writes route through the same tome
+      operations and lint gate the CLI uses, and /api/conflict* drives the
+      three-way resolver for a stopped rebase.
       --export DIR writes the same frontend plus a frozen
       index.json/board.json/raw/*.md snapshot to DIR instead of serving — a
-      read-only static deploy (no write route, board.json.writable: false)
+      read-only static deploy (no write routes, board.json.writable: false)
       for any static host. --idle-timeout MIN auto-exits after MIN idle
       minutes (0 default disables it; the pythonw desktop launcher installed
       as project.gui-scripts uses 30, since it has no console to Ctrl-C).
@@ -2411,7 +2414,9 @@ keyboard — see README.md's "Headless bootstrap" section for the full recipe):
 
 
 def cmd_help(args):
-    print(HELP_TEXT)
+    # The pinned backlog.md version is substituted rather than written into
+    # HELP_TEXT, so help can't drift from BACKLOG_VERSION the way `@latest` did.
+    print(HELP_TEXT.replace("{BACKLOG_VERSION}", BACKLOG_VERSION))
     return 0
 
 
