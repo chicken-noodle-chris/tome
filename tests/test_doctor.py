@@ -53,10 +53,14 @@ def test_healthy_vault_all_ok(tmp_path, run_tome, capsys):
     lines = [line for line in out.splitlines() if line.strip()]
     check_lines, summary = lines[:-1], lines[-1]
     assert code == 0
-    # every check is ok except ops profile (unset by default, info)
-    assert all(line.startswith(("ok", "info")) for line in check_lines)
+    # Every *vault* check is ok, bar ops profile (unset by default, info).
+    # Plugin freshness is excluded: it compares this checkout's plugin.json
+    # against the plugin cached for the running session, so it legitimately
+    # warns for the whole window between a release bump and the `claude
+    # plugin update` that installs it — session state, not vault health.
+    vault_checks = [line for line in check_lines if "plugin freshness" not in line]
+    assert all(line.startswith(("ok", "info")) for line in vault_checks)
     assert "0 FAIL" in summary
-    assert "0 warn" in summary
 
 
 def test_no_vault_completes_gracefully(tmp_path, run_tome, monkeypatch, capsys):

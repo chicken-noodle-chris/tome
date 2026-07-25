@@ -1,7 +1,7 @@
 {
   "name": "tome",
-  "version": "1.10.0",
-  "description": "A commonplace book for you and your agents: the tome CLI, skills (pickup-task, write-a-plan, retrospect, ingest, query, capture), a SessionStart vault-context hook, a scoped Stop sync reminder, a no-build browse frontend (`tome serve`), and `tome init` to scaffold a fresh vault.",
+  "version": "1.10.1",
+  "description": "Your agent's memory, in a repo you own: the tome CLI, skills (capture, query, ingest, retrospect, write-a-plan, pickup-task), a SessionStart hook that points every session at the vault, a scoped Stop sync reminder, a no-build browse frontend (`tome serve`), and `tome init` to scaffold a fresh vault.",
   "author": {
     "name": "Chris"
   },

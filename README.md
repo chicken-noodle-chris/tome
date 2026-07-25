@@ -1,6 +1,20 @@
 # tome
 
-A commonplace book for you and your agents — where your project lore lives.
+**Your agent's memory, in a repo you own.**
+
+A tome vault is what an agent knows about you — your projects, your
+decisions, the things you'd otherwise have to say again every session. Every
+session starts pointed at it, with two standing instructions: consult it
+before answering from its own knowledge, and write back what's worth saving
+(durable, non-obvious, not trivially derivable) without being asked.
+
+Frontier agents ship their own version of this. What they don't ship is
+**yours**: theirs lives in a per-tool directory, structured the tool's way,
+unreadable by any other agent, uncurated by you. Tome inverts the ownership —
+you own the repo, the folders, the conventions and the taste, and the agent is
+a first-class writer inside those constraints, which is why the constraints
+are enforced by the CLI and `tome lint` rather than trusted to prose. Project
+management is one branch of that, not the trunk.
 
 `tome` is the tooling: a small stdlib CLI, six Claude Code skills, a
 SessionStart vault-context hook and a scoped Stop sync-reminder hook, and a
@@ -10,8 +24,9 @@ plugin. A
 `wiki/`, `backlog/`, `raw/`, and `inbox/`, following the conventions this
 plugin enforces. One copy of the tooling; as many vaults as you want.
 
-Seeded from Andrej Karpathy's "LLM Wiki" pattern — immutable sources, an
-agent-owned wiki, a schema doc — turned into something installable.
+Seeded from Andrej Karpathy's "LLM Wiki" pattern — immutable sources, a
+schema doc, a wiki an agent maintains — turned into something installable,
+and re-pointed at the user as owner.
 
 ## Install
 
@@ -118,27 +133,33 @@ Next steps it'll print: author a first project page, browse it (`tome serve
 
 ## Everyday commands
 
-Skills (triggered by asking, not slash commands): `pickup-task`,
-`write-a-plan`, `retrospect`, `ingest`, `query`, `capture`.
+Skills (triggered by asking, not slash commands): `capture`, `query`,
+`ingest`, `retrospect`, `write-a-plan`, `pickup-task`.
 
 CLI (`tome help` for the full list with examples; write commands all take
 `--sync` to commit+push just the files they touched):
 
 ```
-tome prime [project] [--full]     # session orientation; --full adds SCHEMA, index, open-task snapshot, project context
-tome start <slug-or-task-id>      # work-started ritual: statuses, log, sync, prints working context
-tome done <plan-slug> [--summary "..."] [--force]   # close-out ritual: archive plan, complete task, log, sync (umbrella plans stay active until the last sibling task closes)
-tome new <type> <slug> --project <name> --title "T" --desc "..." [--with-task "T"]
-tome set-status <slug> <status>   # plan/decision lifecycle; moves plans to/from plans/archive/
-tome archive <slug> [--restore]   # status-less pages (ideas, reports, ...) to/from archive/
+tome prime [project] [--full]     # session orientation; --full adds SCHEMA, index, project context, open tasks
 tome search "<query>" [--top N]   # BM25 fallback search; also --backlinks, --top-linked
-tome rm <slug> [--force]          # delete a page; refuses hubs/linked pages by default
 tome inbox "<note>" [--title "T"]   # schema-free capture; retrospect triages it later
+tome new <type> <slug> --project <name> --title "T" --desc "..." [--with-task "T"]
+tome describe <slug> "<one-liner>"   # the page's index summary — how anyone finds it later
+tome archive <slug> [--restore]   # status-less pages (ideas, reports, ...) to/from archive/
+tome rm <slug> [--force]          # delete a page; refuses hubs/linked pages by default
+tome serve [--open] [--export DIR]   # local no-build browse frontend: read, edit, rename and create pages, and a writable board; --export writes a static read-only snapshot instead of serving
 tome lint [--strict]
 tome sync [<slug-or-task-id>...] [-m "message"]   # pull always; scoped commit when entities given
-tome task <args...>       # passthrough to backlog.md
 tome doctor               # environment + vault health check, ok/warn/FAIL per line
-tome serve [--open] [--export DIR]   # local no-build browse frontend (pages + read-only board); --export writes a static read-only snapshot instead of serving
+```
+
+Project management — the board branch — on top of the same vault:
+
+```
+tome start <slug-or-task-id>      # work-started ritual: statuses, log, sync, prints working context
+tome done <plan-slug> [--summary "..."] [--force]   # close-out ritual: archive plan, complete task, log, sync (umbrella plans stay active until the last sibling task closes)
+tome set-status <slug> <status>   # plan/decision lifecycle; moves plans to/from plans/archive/
+tome task <args...>       # passthrough to backlog.md
 ```
 
 Root resolution for the CLI: `--vault PATH`, else walk up from cwd looking
@@ -176,9 +197,9 @@ already has:
 - **A headless container's system cron**, calling a non-interactive `claude
   -p "/tome:retrospect"` (or your harness's equivalent) against the vault —
   reuse the [Headless bootstrap](#headless-bootstrap) section's `VAULT_ROOT`
-  and `TOME_GIT_AUTHOR`, but *not* `TOME_OPS_PROFILE=read-capture`: even the
-  unattended branch still needs `tome inbox`, `tome log`, and `tome sync`
-  (step 6), and read-capture only allows the first of those.
+  and `TOME_GIT_AUTHOR`, and don't reach for `TOME_OPS_PROFILE=read-capture`
+  here: even the unattended branch still needs `tome inbox`, `tome log`, and
+  `tome sync` (step 6), and read-capture only allows the first of those.
 - **Any other trigger your agent harness exposes** — the only requirement
   is that it lands a single `/tome:retrospect` turn on a schedule.
 
@@ -186,27 +207,35 @@ already has:
 
 A container with no human at the keyboard — an agentigrator Cloud Run
 instance, a Claude Code cloud session, any headless consumer — clones a
-vault, installs tome, and operates it safely with three env vars:
+vault, installs tome, and operates it with two env vars:
 
 ```
 uv tool install git+https://github.com/chicken-noodle-chris/tome.git
 git clone <vault-remote-url> /path/to/vault   # deploy key or PAT
 export VAULT_ROOT=/path/to/vault
-export TOME_OPS_PROFILE=read-capture
 export TOME_GIT_AUTHOR="tome-remote <tome-remote@invalid>"
 tome doctor
 ```
 
+Note what's *not* here: a headless agent gets the **full command surface** by
+default, because a memory it can read but not write is a library card. Restrict
+it only where you've decided a particular deployment shouldn't be trusted with
+more (`TOME_OPS_PROFILE`, below).
+
 - **`VAULT_ROOT`** points the CLI at the clone when the process isn't
   standing in it (still overridden by `--vault` or a walk-up match).
-- **`TOME_OPS_PROFILE=read-capture`** restricts the command surface to
-  `search`, `prime`, `doctor`, `help`, and `inbox` — the reads plus the one
-  write that's append-only, schema-free, and conflict-free by design.
-  Anything else (including a command added to tome later) is refused with a
-  clear "this deployment is read-capture" message; the guard lives at one
-  dispatch point, so new commands are guarded by default rather than needing
-  to be added to an allowlist. `help`/`doctor` always run, even under an
-  unset or misconfigured profile, so the deployment can always self-diagnose.
+- **`TOME_OPS_PROFILE`** (optional) narrows the command surface for a
+  deployment you want structurally unable to do everything. One profile ships
+  today: `read-capture` allows `search`, `prime`, `doctor`, `help`, and
+  `inbox` — the reads plus the one write that's append-only, schema-free, and
+  conflict-free by design. It's the right setting for an untrusted or
+  shared-credential deployment and the wrong one for an agent expected to
+  maintain the vault. Anything outside the profile (including a command added
+  to tome later) is refused with a clear "this deployment is read-capture"
+  message; the guard lives at one dispatch point, so new commands are guarded
+  by default rather than needing to be added to an allowlist. `help`/`doctor`
+  always run, even under an unset or misconfigured profile, so the deployment
+  can always self-diagnose.
 - **`TOME_GIT_AUTHOR`** (`"Name <email>"`) is applied as the author (via
   `git commit --author`) and — unless `GIT_COMMITTER_*` is set explicitly —
   as the committer identity on every tome-driven git call, so `git log` on

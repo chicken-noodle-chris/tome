@@ -1,5 +1,7 @@
 """tome_lint: one focused test per finding code, plus parse_frontmatter edges."""
 
+from datetime import date, timedelta
+
 from tome_cli import cli as tome
 from tome_cli import lint as tome_lint
 
@@ -288,6 +290,70 @@ def test_index_oversize_warns_past_soft_cap(make_vault, run_tome):
 
     assert any(f.code == "INDEX_OVERSIZE" for f in findings)
     assert findings[0].severity == tome.WARNING
+
+
+def _seed_inbox(vault, names):
+    inbox = vault / "inbox"
+    inbox.mkdir(exist_ok=True)
+    for name in names:
+        (inbox / name).write_text("note\n", encoding="utf-8", newline="\n")
+
+
+def test_inbox_stalled_flags_deep_queue(make_vault):
+    vault = make_vault()
+    today = date.today().isoformat()
+    conventions = tome.load_conventions(vault)
+    _seed_inbox(vault, [f"{today}-note-{i}.md" for i in range(conventions["inbox"]["max_items"] + 1)])
+
+    findings = tome.check_inbox_backlog(vault, conventions)
+
+    assert [f.code for f in findings] == ["INBOX_STALLED"]
+    assert findings[0].severity == tome.WARNING
+    assert "notes waiting" in findings[0].message
+
+
+def test_inbox_stalled_flags_old_note_alone(make_vault):
+    vault = make_vault()
+    conventions = tome.load_conventions(vault)
+    old = (date.today() - timedelta(days=conventions["inbox"]["max_age_days"] + 1)).isoformat()
+    _seed_inbox(vault, [f"{old}-ancient.md"])
+
+    findings = tome.check_inbox_backlog(vault, conventions)
+
+    assert [f.code for f in findings] == ["INBOX_STALLED"]
+    assert "days old" in findings[0].message
+
+
+def test_inbox_quiet_when_queue_is_shallow_and_fresh(make_vault):
+    vault = make_vault()
+    conventions = tome.load_conventions(vault)
+    _seed_inbox(vault, [f"{date.today().isoformat()}-fresh.md"])
+
+    assert tome.check_inbox_backlog(vault, conventions) == []
+
+
+def test_inbox_check_is_opt_in(make_vault):
+    """A vault whose conventions.toml has no [inbox] section is never gated
+    on thresholds it didn't choose — the same opt-in rule [staleness] uses."""
+    vault = make_vault()
+    old = (date.today() - timedelta(days=365)).isoformat()
+    _seed_inbox(vault, [f"{old}-note-{i}.md" for i in range(20)])
+    conventions = tome.load_conventions(vault)
+    del conventions["inbox"]
+
+    assert tome.check_inbox_backlog(vault, conventions) == []
+
+
+def test_inbox_undated_filename_counts_but_does_not_crash(make_vault):
+    """A hand-named note has no date to judge; it still counts toward depth."""
+    vault = make_vault()
+    conventions = tome.load_conventions(vault)
+    _seed_inbox(vault, [f"hand-named-{i}.md" for i in range(conventions["inbox"]["max_items"] + 1)])
+
+    findings = tome.check_inbox_backlog(vault, conventions)
+
+    assert [f.code for f in findings] == ["INBOX_STALLED"]
+    assert "days old" not in findings[0].message
 
 
 def test_stale_flags_well_linked_old_page(make_vault, make_page):

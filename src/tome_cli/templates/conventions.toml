@@ -71,3 +71,11 @@ ops = ["ingest", "query", "lint", "schema", "shard", "retrospect", "plan", "idea
 # chosen). retrospect's review-flagged-pages step is what acts on these.
 min_inbound_links = 5
 max_days_since_update = 180
+
+[inbox]
+# Warn-tier: the capture queue has stopped draining. Either threshold alone
+# flags — a deep queue and an old note both mean nothing has run triage, and
+# an untriaged note is memory the agent believes it saved and didn't. Absent
+# [inbox] entirely opts a vault out. retrospect is what drains it.
+max_items = 5
+max_age_days = 7

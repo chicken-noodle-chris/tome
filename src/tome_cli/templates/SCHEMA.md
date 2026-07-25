@@ -1,11 +1,28 @@
 # Wiki Schema
 
-This file is the configuration for this wiki: conventions, taste, and
-workflow customizations that a `tome help` command surface can't express.
-The LLM reads this first when entering the wiki; it's authoritative over any
-skill's baked-in defaults. Data-shaped rules (frontmatter fields, the
-type enum, tag taxonomy, size caps, plan-status vocabulary) live in
-`conventions.toml`, not here.
+## What this vault is
+
+This vault is the **agent's memory of its owner**, and it is the owner's: their
+repo, their folders, their conventions, their taste. The agent is a first-class
+writer inside those constraints, not the keeper of a private cache — which is why
+the constraints are enforced by `tome` and `tome lint` rather than trusted to
+prose. Two imperatives follow, and they are the point of the whole thing:
+
+- **Consult it before answering from your own knowledge** whenever a question
+  touches this person, their projects, or their past decisions.
+- **Write back what's worth saving**, without being asked. The bar: **durable,
+  non-obvious, and not trivially derivable** from the code, the repo, or a
+  moment's reasoning. A vault full of the obvious is as useless as an empty one.
+
+The kanban board is a genuinely useful *branch* of this. It is not the trunk.
+
+## What this file is
+
+The configuration for this wiki: conventions, taste, and workflow
+customizations that a `tome help` command surface can't express. The LLM reads
+this first when entering the wiki; it's authoritative over any skill's baked-in
+defaults. Data-shaped rules (frontmatter fields, the type enum, tag taxonomy,
+size caps, plan-status vocabulary) live in `conventions.toml`, not here.
 
 This file is **co-evolved with the user**: when the LLM notices a recurring
 pattern in your edits or feedback that isn't here, it proposes adding it;
@@ -16,8 +33,9 @@ when something here stops fitting, prune it.
 `tome` (installed as a Claude Code plugin) owns scaffolding, the generated
 index, status/archive moves, renames, the log, and git sync — run `tome
 help` for the full command surface, `<command> -h` for one command's detail.
-Reads stay native file tools; there is no read/query surface here. Start and
-end vault work with `tome sync`. `tome lint` must pass error-free as the
+Navigation is index-first, following `[[wikilinks]]`, with native file tools
+for reading and `tome search` when that doesn't surface the right page. Start
+and end vault work with `tome sync`. `tome lint` must pass error-free as the
 last step of any wiki-touching task.
 
 Frontmatter is a hand-rolled subset, not full YAML: `key: value`, inline
@@ -75,6 +93,15 @@ cite.
   No slug change either way, so no `[[link]]` ever needs rewriting.
 - **Reports are dated snapshots**, never edited to stay current — a later
   assessment is a new report page, not an edit to the old one.
+- **Reference knowledge is extracted before a plan archives.** A plan
+  describes work that ends; a durable fact written inside one archives with
+  it and leaves the vault's live surface. Before `tome done`, move anything
+  that outlives the work to a reference page — external-tool capabilities and
+  limits, measurements that would need re-running, a constraint found by
+  experiment, a principle that generalises. The plan keeps what's specific to
+  *this* work: why it was scoped this way, the sequencing, the alternatives
+  rejected. Skip this and the vault fills with plans and teaches every future
+  agent that it's a plan tracker.
 - **The index is generated** — never hand-edit `wiki/index.md`; set a page's
   summary with `tome describe`.
 - **A project hub's plan lists are generated too, once it opts in** — wrap a

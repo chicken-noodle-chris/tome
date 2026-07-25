@@ -17,6 +17,18 @@ def test_prime_terse_prints_vault_pointer(make_vault, run_tome, capsys):
     assert "wiki/index.md" in out
 
 
+def test_prime_terse_states_the_memory_framing_and_both_imperatives(make_vault):
+    """The always-on text is the one surface every session pays for, so it
+    carries what the vault *is* plus the two things that follow from it —
+    not just a location and a command surface (task-89)."""
+    text = tome.prime_terse_text(make_vault())
+
+    assert "your memory of this user" in text
+    assert "Consult it before answering from your own knowledge" in text
+    assert "write back what's worth saving" in text
+    assert "durable, non-obvious, and not trivially derivable" in text
+
+
 def test_prime_terse_matches_module_function(make_vault, run_tome, capsys):
     vault = make_vault()
     capsys.readouterr()
@@ -72,6 +84,25 @@ def test_prime_terse_never_includes_task_snapshot(make_vault, run_tome, make_tas
     out = capsys.readouterr().out
     assert "backlog/tasks" not in out
     assert "Do the thing" not in out
+
+
+def test_prime_full_puts_the_task_snapshot_last(make_vault, run_tome, make_task, capsys):
+    """Payload order is the argument: knowledge leads, the board trails, so an
+    agent priming on the vault doesn't conclude it's a task tracker (task-89)."""
+    vault = make_vault()
+    run_tome("--vault", str(vault), "new", "project", "proj",
+             "--title", "Proj", "--desc", "d")
+    run_tome("--vault", str(vault), "new", "plan", "live-plan", "--project", "proj",
+             "--title", "Live", "--desc", "d")
+    make_task(vault, 1, "Do the thing", labels=["project:proj"])
+    capsys.readouterr()
+
+    run_tome("--vault", str(vault), "prime", "proj", "--full")
+
+    out = capsys.readouterr().out
+    snapshot_at = out.index("backlog/tasks (open")
+    for earlier in ("wiki/SCHEMA.md", "wiki/index.md", "proj/plans/live-plan.md", "log.md"):
+        assert out.index(earlier) < snapshot_at, f"{earlier} should precede the task snapshot"
 
 
 def test_prime_full_task_snapshot_scoped_to_project(make_vault, run_tome, make_task, capsys):

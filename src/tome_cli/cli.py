@@ -291,13 +291,15 @@ def validate_slug(slug, pages, allow_existing=False):
 
 INDEX_PREAMBLE = """# Wiki Index
 
+Everything this vault knows, one line each, organized by project — the map of
+the agent's memory of its owner. Read it before answering from your own
+knowledge when a question touches this person, their projects, or their past
+decisions; the summaries are there to pick which pages to open.
+
 **Generated file — do not hand-edit.** Regenerate with
 `python scripts/tome.py index rebuild` (every lifecycle command does this
 automatically). Change a page's one-line summary with
 `tome describe <slug> "..."`, never by editing this file directly.
-
-The catalog of all pages in this wiki, organized by project. The LLM reads
-this first when answering queries to identify candidate pages.
 
 ---
 """
@@ -517,6 +519,56 @@ def check_description_cap(pages, conventions):
     return out
 
 
+def check_inbox_backlog(vault_root, conventions):
+    """Warn when the capture queue has stopped draining: more than
+    [inbox].max_items waiting, or the oldest older than max_age_days. Either
+    alone is the signal here — unlike the page-staleness check, which needs
+    both thresholds because a fresh page starts with no links. A deep queue
+    and an old item mean the same thing, that nothing has run triage.
+
+    This matters because capture is only half a loop: `tome inbox` writes to
+    inbox/, and nothing reaches the wiki until retrospect triages it, so a
+    stalled queue is memory the agent believes it saved and didn't. Lint is
+    where it's surfaced because lint gates every `tome sync` — the queue gets
+    seen without anyone thinking to look. Opt-in, like [staleness]: a vault
+    with no [inbox] section isn't newly gated on thresholds it never chose.
+    Age comes from the YYYY-MM-DD filename prefix `tome inbox` writes, so no
+    file needs opening."""
+    cfg = conventions.get("inbox")
+    if not cfg:
+        return []
+    inbox_dir = vault_root / "inbox"
+    if not inbox_dir.is_dir():
+        return []
+
+    notes = sorted(p.name for p in inbox_dir.glob("*.md"))
+    if not notes:
+        return []
+
+    reasons = []
+    max_items = cfg.get("max_items")
+    if max_items is not None and len(notes) > max_items:
+        reasons.append(f"{len(notes)} notes waiting (cap {max_items})")
+
+    max_age_days = cfg.get("max_age_days")
+    if max_age_days is not None:
+        dates = []
+        for name in notes:
+            try:
+                dates.append(date.fromisoformat(name[:10]))
+            except ValueError:
+                continue  # hand-named note: no date to judge, count only
+        if dates:
+            age = (date.today() - min(dates)).days
+            if age > max_age_days:
+                reasons.append(f"oldest is {age} days old (cap {max_age_days})")
+
+    if not reasons:
+        return []
+    return [Finding(WARNING, "INBOX_STALLED", "inbox/",
+                    f"{'; '.join(reasons)} — run retrospect to triage")]
+
+
 def check_index_generated_drift(pages, conventions, wiki_root, index_path):
     generated = generate_index(pages, conventions, wiki_root)
     try:
@@ -577,6 +629,7 @@ def run_all_lint_checks(vault_root, conventions):
     findings += check_index_generated_drift(pages, conventions, wiki_root, index_path)
     findings += check_index_oversize(conventions, index_path)
     findings += check_hub_plans_drift(pages, conventions, wiki_root)
+    findings += check_inbox_backlog(vault_root, conventions)
     return pages, findings
 
 
@@ -1054,18 +1107,28 @@ LOG_TAIL_ENTRIES = 15
 
 
 def prime_terse_text(vault_root):
-    """The orientation pointer: what the vault is and how to read/write it.
-    Kept under ~50 tokens — this is paid in every single session via the
-    SessionStart hook, so its cost is constant, not one-time."""
+    """The orientation pointer: what the vault *is*, then the two imperatives
+    that follow from it (consult it before answering from your own knowledge;
+    write back what's worth saving), then the read/write mechanics.
+
+    Every word here is paid in every single session via the SessionStart hook,
+    so the budget is a fixed ~100 tokens and the only lever is which words get
+    it. Mechanics an agent can infer, or `tome lint` will enforce anyway, lose
+    that contest to the framing and the imperatives — a location plus a command
+    surface reads as a library card, not a memory. The worth-saving bar is
+    stated here in the words every other surface reuses verbatim: durable,
+    non-obvious, not trivially derivable."""
     return (
-        f"Knowledge vault at {vault_root} — accumulated knowledge, notes, and "
-        "tasks across projects, not scoped to the current repo. Reading: "
-        "start at wiki/index.md, browse by project folder, follow "
-        "[[wikilinks]]; grep only as a fallback. Writing: the tome CLI "
-        "(`tome help`) owns writes — run `tome help` and follow it (`tome "
-        "task` for backlog items); edit page bodies with normal file "
-        "tools; conventions in wiki/SCHEMA.md. Start and end vault work "
-        "with `tome sync`."
+        f"Knowledge vault at {vault_root} — your memory of this user: their "
+        "repo, holding what you know about them, their projects, and their "
+        "past decisions. Consult it before answering from your own knowledge "
+        "when a question touches any of those, and write back what's worth "
+        "saving without being asked — the bar is durable, non-obvious, and "
+        "not trivially derivable. Reading: start at wiki/index.md, follow "
+        "[[wikilinks]]; `tome search` as fallback. Writing: the tome CLI "
+        "(`tome help`) owns it (`tome task` for backlog items); page bodies "
+        "with normal file tools; conventions in wiki/SCHEMA.md. Start and end "
+        "vault work with `tome sync`."
     )
 
 
@@ -1159,10 +1222,15 @@ def open_task_snapshot(vault_root, project=None):
 
 
 def prime_full_text(vault_root, conventions, project):
-    """The write protocol: SCHEMA.md, the index, and an open-task snapshot
-    always; with a project, also that project's hub, every one of its live
-    plan bodies, and a recent log.md tail — replacing the read fan-out every
-    skill used to open with."""
+    """The write protocol: SCHEMA.md and the index always; with a project,
+    also that project's hub, every one of its live plan bodies, and a recent
+    log.md tail — replacing the read fan-out every skill used to open with.
+    The open-task snapshot comes last, when there is a backlog at all.
+
+    Payload order is the argument: what an agent reads first is what it
+    concludes the vault is. Knowledge leads, and the board — a genuinely
+    useful branch of the vault, not its trunk — trails everything it could
+    otherwise be mistaken for the headline of."""
     wiki_root = vault_root / "wiki"
     sections = [
         ((wiki_root / "SCHEMA.md").relative_to(vault_root).as_posix(),
@@ -1170,11 +1238,6 @@ def prime_full_text(vault_root, conventions, project):
         ((wiki_root / conventions["index"]["file"]).relative_to(vault_root).as_posix(),
          (wiki_root / conventions["index"]["file"]).read_text(encoding="utf-8")),
     ]
-
-    task_snapshot = open_task_snapshot(vault_root, project)
-    if task_snapshot is not None:
-        label = f"backlog/tasks (open, project:{project})" if project else "backlog/tasks (open)"
-        sections.append((label, task_snapshot))
 
     if project:
         if project not in list_projects(wiki_root, conventions):
@@ -1198,6 +1261,11 @@ def prime_full_text(vault_root, conventions, project):
         log_path = wiki_root / "log.md"
         sections.append((f"{log_path.relative_to(vault_root).as_posix()} (last {LOG_TAIL_ENTRIES})",
                           log_tail(log_path.read_text(encoding="utf-8"))))
+
+    task_snapshot = open_task_snapshot(vault_root, project)
+    if task_snapshot is not None:
+        label = f"backlog/tasks (open, project:{project})" if project else "backlog/tasks (open)"
+        sections.append((label, task_snapshot))
 
     return "\n\n".join(f"# {label}\n\n{text}" for label, text in sections)
 
@@ -2302,13 +2370,14 @@ if you omit -m.
 
   tome prime [project] [--full]
       Print session orientation. Bare: the terse vault pointer (same text
-      the SessionStart hook injects). --full prints SCHEMA.md, the index,
-      and an open-task snapshot (grouped by milestone with done/total
-      counts, scoped to the project when one is given) instead — not in
-      addition, since the hook already covers the terse tier for any
-      session that went through it; with a project, also its hub, every
-      live plan's full body, and a recent log.md tail — the write
-      protocol, replacing the read fan-out a skill used to open with.
+      the SessionStart hook injects). --full prints SCHEMA.md and the index
+      instead — not in addition, since the hook already covers the terse
+      tier for any session that went through it; with a project, also its
+      hub, every live plan's full body, and a recent log.md tail — the
+      write protocol, replacing the read fan-out a skill used to open with.
+      An open-task snapshot (grouped by milestone with done/total counts,
+      scoped to the project when one is given) comes last: knowledge leads,
+      the board trails.
       e.g. tome prime tome --full
 
   tome log <op> "<message>" [--body "..."] [--sync]
@@ -2325,7 +2394,10 @@ if you omit -m.
       Regenerate wiki/index.md from page frontmatter.
 
   tome lint [--strict]
-      Structural checks (broken links, orphans, frontmatter, index drift).
+      Structural checks (broken links, orphans, frontmatter, index drift),
+      plus two warn-tier signals gated on conventions.toml opting in:
+      stale well-linked pages ([staleness]) and a capture queue that has
+      stopped draining ([inbox]).
 
   tome sync [<slug-or-task-id>...] [-m "message"] [--no-verify]
       Pull (always). If dirty: lint-gates (errors abort, --no-verify skips),
@@ -2399,10 +2471,14 @@ keyboard — see README.md's "Headless bootstrap" section for the full recipe):
 
   VAULT_ROOT           Vault root when not standing in one (still overridden
                         by --vault / a walk-up match).
-  TOME_OPS_PROFILE      Restricts the command surface. read-capture allows
-                        only search, prime, doctor, help, inbox — everything
-                        else (including a command added later) is refused
-                        with a clear message. help/doctor always run.
+  TOME_OPS_PROFILE      Optional. Narrows the command surface for a
+                        deployment that shouldn't be trusted with all of it;
+                        unset (the default) is the full surface, since a
+                        memory an agent can't write is a library card. One
+                        profile ships: read-capture allows only search,
+                        prime, doctor, help, inbox — everything else
+                        (including a command added later) is refused with a
+                        clear message. help/doctor always run.
   TOME_GIT_AUTHOR       "Name <email>" applied as author (via `git commit
                         --author`) and, unless GIT_COMMITTER_* is set
                         explicitly, as committer identity on every
