@@ -1,19 +1,25 @@
 // tome browse frontend.
 //
-// One Alpine component drives three views: a page view — a sidebar navigating
-// the whole vault (grouped like the wiki tree) beside a content area that
-// renders the selected page, with client-side wikilink navigation — a
-// full-width board, and a read-only task-detail view (`?task=<id>`,
-// [[task-detail-view]]) rendered entirely from its board.json card: no fetch,
-// no new server route. Data comes from the two generated contracts the server
-// emits, `/index.json` and `/board.json`; raw markdown comes from `/raw/…`.
-// The board has a sort-mode lens (Manual/Priority/Title, localStorage-only —
-// see [[board-sort]]) and, in Manual mode when `board.writable` is true (a
-// live `tome serve`), drag-to-move-and-reorder, POSTing `{status, afterId}`
-// to `/api/task/<id>/move`. A fourth view, `?view=chains` ([[dependency-chains]]),
-// renders the same board.json cards as indented dependency trees — pure
-// client-side, computed by chains.js, so it recomputes for free on any
-// board push and needs nothing new from the server or a static export.
+// One Alpine component drives four base views: a page view — a sidebar
+// navigating the whole vault (grouped like the wiki tree) beside a content
+// area that renders the selected page, with client-side wikilink navigation —
+// a full-width board, a single-list backlog ([[deferred-backlog]]), and a
+// dependency-chains tree (`?view=chains`, [[dependency-chains]]) rendered from
+// the same board.json cards, pure client-side via chains.js. Data comes from
+// the two generated contracts the server emits, `/index.json` and
+// `/board.json`; raw markdown comes from `/raw/…`. The board has a sort-mode
+// lens (Manual/Priority/Title, localStorage-only — see [[board-sort]]) and, in
+// Manual mode when `board.writable` is true (a live `tome serve`),
+// drag-to-move-and-reorder, POSTing `{status, afterId}` to
+// `/api/task/<id>/move`.
+//
+// A read-only task-detail panel ([[task-detail-panel]]) layers over whichever
+// of board/backlog/chains is the active base view — `currentTaskId` is an
+// axis orthogonal to `view`, not a fifth view value, so `?view=<base>&task=<id>`
+// (and a bare `?task=<id>`, defaulting to board) fully describes the state and
+// back/forward simply re-derives both from the URL on `popstate`. The panel
+// renders straight from the matching board.json card already in memory: no
+// fetch, no new server route, identical on a frozen static export.
 // The page view supports body editing on
 // the same flag, POSTing to `/api/page` ([[page-editing]]), and frontmatter
 // editing (title/tags/description), POSTing to `/api/frontmatter`
@@ -143,11 +149,14 @@ function tomeApp() {
     pageError: "",
     currentHash: null, // ETag of the last-fetched /raw/ response — the save conflict token
 
-    // task-detail view ([[task-detail-view]]) — no fetch of its own; renders
-    // straight from the matching board.json card, found by id on demand
-    // rather than duplicated into its own reactive field.
+    // task-detail panel ([[task-detail-panel]]) — a layer over the current
+    // `view` (board/backlog/chains), not a view of its own. No fetch; renders
+    // straight from the matching board.json card, found by id on demand.
+    // The not-found state is derived live from that lookup (taskErrorMessage()
+    // below) rather than latched at open time, so a card that vanishes out
+    // from under an open panel (an SSE board push, [[live-reload]]) is caught
+    // immediately instead of showing stale content.
     currentTaskId: null,
-    taskError: "",
 
     // page editing ([[page-editing]]) — the editor instance itself is the
     // module-level `mountedEditor`, not reactive state; see its comment.
@@ -353,22 +362,20 @@ function tomeApp() {
 
     async syncFromUrl() {
       const params = new URLSearchParams(location.search);
+      // The panel's axis is read first and unconditionally, so popstate always
+      // re-derives it from the URL — same for both directions of history.
+      this.currentTaskId = params.get("task") || null;
+
       const viewParam = params.get("view");
-      if (viewParam === "board") {
+      if (viewParam === "board" || viewParam === "backlog" || viewParam === "chains") {
+        this.view = viewParam;
+        return;
+      }
+      if (this.currentTaskId) {
+        // A bare ?task=<id> (no view param) resolves to the board as its
+        // base — when task is present, page is ignored, so there is exactly
+        // one deterministic base for every URL.
         this.view = "board";
-        return;
-      }
-      if (viewParam === "backlog") {
-        this.view = "backlog";
-        return;
-      }
-      if (viewParam === "chains") {
-        this.view = "chains";
-        return;
-      }
-      const taskId = params.get("task");
-      if (taskId) {
-        this.loadTask(taskId, { push: false });
         return;
       }
       const slug = params.get("page") || DEFAULT_PAGE;
@@ -381,9 +388,12 @@ function tomeApp() {
     },
 
     // Enters the board as a real URL state (?view=board), a sibling of
-    // `?page=<slug>` in the same router — see [[board-route]].
+    // `?page=<slug>` in the same router — see [[board-route]]. A topbar nav
+    // click is one of the ways back to a *plain* base view, so it closes any
+    // open task panel rather than carrying it over silently.
     showBoard({ push = true } = {}) {
       this.view = "board";
+      this.currentTaskId = null;
       if (push) history.pushState({ view: "board" }, "", "?view=board");
     },
 
@@ -391,6 +401,7 @@ function tomeApp() {
     // ?view=board, same router, same history-push pattern.
     showBacklog({ push = true } = {}) {
       this.view = "backlog";
+      this.currentTaskId = null;
       if (push) history.pushState({ view: "backlog" }, "", "?view=backlog");
     },
 
@@ -398,6 +409,7 @@ function tomeApp() {
     // in the same router.
     showChains({ push = true } = {}) {
       this.view = "chains";
+      this.currentTaskId = null;
       if (push) history.pushState({ view: "chains" }, "", "?view=chains");
     },
 
@@ -405,6 +417,7 @@ function tomeApp() {
     // view flip + URL push; if the board was entered directly (no page ever
     // loaded), falls through to loadPage() for the lazy first load.
     async showPage({ push = true } = {}) {
+      this.currentTaskId = null;
       if (this.currentSlug) {
         this.view = "page";
         if (push) history.pushState({ slug: this.currentSlug }, "", `?page=${encodeURIComponent(this.currentSlug)}`);
@@ -416,6 +429,7 @@ function tomeApp() {
     async loadPage(slug, { push = true } = {}) {
       if (this.editing) this.exitEdit(); // navigating away discards any in-progress edit
       if (this.fmEditing) this.cancelFmEdit();
+      this.currentTaskId = null; // the page view is a different base — the panel goes with it
       const page = this.bySlug.get(slug);
       this.view = "page";
       this.currentSlug = slug;
@@ -497,20 +511,36 @@ function tomeApp() {
         .sort((a, b) => (a.title || a.slug).localeCompare(b.title || b.slug));
     },
 
-    // -- task-detail view ([[task-detail-view]]) -------------------------- //
-    // A read-only client-side route (`?task=<id>`) rendered entirely from the
-    // matching board.json card already in memory — no fetch, no new server
-    // route, identical on a frozen static export.
+    // -- task-detail panel ([[task-detail-panel]]) ------------------------- //
+    // A read-only layer over the current board/backlog/chains view, rendered
+    // entirely from the matching board.json card already in memory — no
+    // fetch, no new server route, identical on a frozen static export.
 
-    loadTask(id, { push = true } = {}) {
-      this.view = "task";
+    // Opens the panel over whichever base view is currently active — a card
+    // click, a dependency link, or a chain row all funnel through here.
+    openTask(id, { push = true } = {}) {
       this.currentTaskId = id;
-      this.taskError = this.currentTask() ? "" : `No task with id "${id}".`;
-      if (push) history.pushState({ task: id }, "", `?task=${encodeURIComponent(id)}`);
+      if (push) history.pushState({ view: this.view, task: id }, "", `?view=${this.view}&task=${encodeURIComponent(id)}`);
+    },
+
+    // The panel's close affordances (✕, Escape, the narrow-viewport scrim)
+    // all return to the plain current base view.
+    closeTaskPanel({ push = true } = {}) {
+      if (!this.currentTaskId) return;
+      this.currentTaskId = null;
+      if (push) history.pushState({ view: this.view }, "", `?view=${this.view}`);
     },
 
     currentTask() {
       return this.board.cards.find((c) => c.id === this.currentTaskId) || null;
+    },
+
+    // Derived live from the lookup above (not latched at open time) so a
+    // card that vanishes mid-view — an SSE board push, [[live-reload]] —
+    // is caught immediately rather than showing stale content.
+    taskErrorMessage() {
+      if (!this.currentTaskId) return "";
+      return this.currentTask() ? "" : `No task with id "${this.currentTaskId}".`;
     },
 
     // A dependency id ("task-63") resolved to its own card, so the link can

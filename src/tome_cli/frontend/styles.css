@@ -15,6 +15,7 @@
   --col-gap: 1rem;
   --topbar-h: 2.75rem;
   --sidebar-w: 17rem;
+  --panel-w: min(28rem, 40vw);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -400,6 +401,14 @@ body {
 .editor-btn-save { background: var(--accent); color: #fff; border-color: var(--accent); }
 .editor-actions button:disabled { cursor: default; opacity: 0.6; }
 
+/* -- board/backlog/chains layout ([[task-detail-panel]]) --
+   The three board-ish views share one flex row: their <main> content on the
+   left, the task panel as a fixed-width track on the right. A hidden panel
+   (x-show sets display:none) simply isn't a flex item, so the main content
+   gets the full row back with no reserved gap. */
+.board-layout { display: flex; align-items: flex-start; }
+.board-layout-main { flex: 1 1 auto; min-width: 0; }
+
 /* -- board view (full-width) -- */
 .board-wrap { padding: 1rem 1.25rem 3rem; }
 .board-toolbar {
@@ -449,11 +458,12 @@ body {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 0.6rem 0.7rem;
-  cursor: pointer; /* opens the task-detail view ([[task-detail-view]]) */
+  cursor: pointer; /* opens the task panel ([[task-detail-panel]]) */
 }
 .card[draggable="true"] { cursor: grab; }
 .card.dragging { opacity: 0.4; }
 .card.moving { opacity: 0.6; pointer-events: none; }
+.card.selected { outline: 2px solid var(--accent); outline-offset: -2px; }
 .col-body { min-height: 1.5rem; } /* keeps an empty column a valid drop target */
 /* Unwraps the per-card <div> (drop-line, card, drop-line) so col-body's own
    grid gap still applies between siblings, instead of nesting a new box. */
@@ -491,19 +501,65 @@ body {
 }
 .card-action:hover { border-color: var(--accent); color: var(--accent); }
 
-/* -- task-detail view ([[task-detail-view]]) --
-   Reuses .page's readable-width column and the page view's .fm-card/.fm-row
-   for the metadata strip, so a task page looks like a sibling of a wiki page
-   rather than a new visual language. */
-.task-back {
-  display: inline-block;
-  margin-bottom: 0.75rem;
-  font-size: 0.85rem;
-  color: var(--muted);
-  text-decoration: none;
+/* -- task-detail panel ([[task-detail-panel]]) --
+   A fixed-width track beside the board, sticky below the topbar and
+   scrolling its own overflow so a long description never drags the board
+   out of view. Below the narrow breakpoint it becomes a full-viewport
+   overlay above the board, with a dismissable scrim behind it — same
+   markup, same state, just a media query. Reuses the page view's
+   .fm-card/.fm-row for the metadata strip, dropping only .page's
+   centered readable-width column, which is wrong in a narrow track. */
+.task-panel {
+  flex: 0 0 var(--panel-w);
+  width: var(--panel-w);
+  box-sizing: border-box;
+  position: sticky;
+  top: var(--topbar-h);
+  max-height: calc(100vh - var(--topbar-h));
+  overflow-y: auto;
+  border-left: 1px solid var(--border);
+  background: var(--bg);
+  padding: 1rem 1.25rem 3rem;
 }
-.task-back:hover { color: var(--accent); }
-.task-detail .card-meta { margin: -0.4rem 0 0.6rem; }
+.task-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+.task-panel-close {
+  margin-left: auto;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 1.3rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0.1rem 0.3rem;
+}
+.task-panel-close:hover { color: var(--fg); }
+.task-panel .fm-card h1 { font-size: 1.2rem; }
+.task-panel-scrim { display: none; }
+@media (max-width: 900px) {
+  .task-panel {
+    position: fixed;
+    top: var(--topbar-h);
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    max-height: none;
+    z-index: 90;
+    box-shadow: -0.25rem 0 1rem rgba(0, 0, 0, 0.2);
+  }
+  .task-panel-scrim {
+    display: block;
+    position: fixed;
+    inset: var(--topbar-h) 0 0 0;
+    background: rgba(0, 0, 0, 0.4);
+    z-index: 89;
+  }
+}
 .task-wiki-link { margin: 0.6rem 0 0; font-size: 0.85rem; }
 .task-description { margin: 1.25rem 0; }
 .task-acs, .task-deps, .task-chain, .task-notes { margin: 1.5rem 0; }
@@ -519,6 +575,8 @@ body {
 .task-ac--checked span { color: var(--muted); text-decoration: line-through; }
 .task-deps a { color: var(--accent); text-decoration: none; font-size: 0.9rem; }
 .task-deps a:hover { text-decoration: underline; }
+.task-deps a.task-dep--offboard { color: var(--muted); cursor: default; font-style: italic; }
+.task-deps a.task-dep--offboard:hover { text-decoration: none; }
 
 /* -- backlog view ([[deferred-backlog]]) -- */
 .backlog-list { max-width: 32rem; }
