@@ -346,7 +346,7 @@ tome/
 ## Development
 
 ```
-pip install pytest
+pip install pytest pytest-xdist
 python -m pytest
 ```
 

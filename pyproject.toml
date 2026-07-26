@@ -11,6 +11,9 @@ requires-python = ">=3.11"
 license = { file = "LICENSE" }
 authors = [{ name = "Chris" }]
 
+[project.optional-dependencies]
+dev = ["pytest", "pytest-xdist"]
+
 [project.urls]
 Repository = "https://github.com/chicken-noodle-chris/tome"
 
