@@ -263,10 +263,10 @@ describe("lenses", () => {
     assert.deepEqual(rows, [["description", "d"], ["owner", "chris"]]);
   });
 
-  test("resolveWikilink resolves known slugs, and returns null for unknown ones", () => {
+  test("resolveWikilink resolves known slugs to {href, title}, and returns null for unknown ones", () => {
     const app = tomeApp();
-    app.bySlug = new Map([["known", {}]]);
-    assert.equal(app.resolveWikilink("known"), "?page=known");
+    app.bySlug = new Map([["known", { title: "Known Page" }]]);
+    assert.deepEqual(app.resolveWikilink("known"), { href: "?page=known", title: "Known Page" });
     assert.equal(app.resolveWikilink("missing"), null);
   });
 

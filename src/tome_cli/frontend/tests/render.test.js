@@ -53,16 +53,26 @@ describe("renderMarkdown", () => {
     assert.equal(renderMarkdown("# Hello"), "<h1>Hello</h1>\n");
   });
 
-  test("resolves a wikilink via the callback into an anchor", () => {
+  test("a bare wikilink renders the target's title as link text, with the slug in the title attribute", () => {
     const html = renderMarkdown("See [[my-page]] for more.", (slug) =>
-      slug === "my-page" ? "/page/my-page" : null,
+      slug === "my-page" ? { href: "/page/my-page", title: "My Page" } : null,
     );
-    assert.equal(html, '<p>See <a class="wikilink" href="/page/my-page">my-page</a> for more.</p>\n');
+    assert.equal(
+      html,
+      '<p>See <a class="wikilink" href="/page/my-page" title="my-page">My Page</a> for more.</p>\n',
+    );
   });
 
-  test("a piped wikilink uses the alias as the label but the target as the slug", () => {
-    const html = renderMarkdown("[[my-page|Custom Label]]", (slug) => (slug === "my-page" ? "/x" : null));
-    assert.equal(html, '<p><a class="wikilink" href="/x">Custom Label</a></p>\n');
+  test("a piped wikilink keeps the author's label verbatim — the title lookup only fills bare links", () => {
+    const html = renderMarkdown("[[my-page|Custom Label]]", (slug) =>
+      slug === "my-page" ? { href: "/x", title: "My Page" } : null,
+    );
+    assert.equal(html, '<p><a class="wikilink" href="/x" title="my-page">Custom Label</a></p>\n');
+  });
+
+  test("falls back to the slug as label when the resolver has no title", () => {
+    const html = renderMarkdown("[[my-page]]", (slug) => (slug === "my-page" ? { href: "/x" } : null));
+    assert.equal(html, '<p><a class="wikilink" href="/x" title="my-page">my-page</a></p>\n');
   });
 
   test("an unresolved wikilink renders as broken, without needing an explicit resolver", () => {

@@ -60,15 +60,19 @@ function wikilinkExtension(resolveWikilink) {
         type: "wikilink",
         raw: match[0],
         slug: match[1].trim(),
+        piped: !!match[2],
         label: (match[2] || match[1]).trim(),
       };
     },
     renderer(token) {
-      const href = resolveWikilink(token.slug);
-      const label = escapeHtml(token.label);
-      return href
-        ? `<a class="wikilink" href="${href}">${label}</a>`
-        : `<a class="wikilink wikilink--broken" title="no page: ${escapeHtml(token.slug)}">${label}</a>`;
+      const resolved = resolveWikilink(token.slug);
+      if (!resolved) {
+        return `<a class="wikilink wikilink--broken" title="no page: ${escapeHtml(token.slug)}">${escapeHtml(token.label)}</a>`;
+      }
+      // A piped link's label was the author's choice — never overridden by the
+      // title lookup, which only fills in bare [[slug]] links.
+      const label = escapeHtml(token.piped ? token.label : resolved.title || token.label);
+      return `<a class="wikilink" href="${resolved.href}" title="${escapeHtml(token.slug)}">${label}</a>`;
     },
   };
 }
@@ -76,8 +80,9 @@ function wikilinkExtension(resolveWikilink) {
 /**
  * Render markdown to an HTML string.
  * @param {string} md
- * @param {(slug: string) => (string|null)} resolveWikilink  slug -> href, or
- *        null when the target isn't a known page (rendered as a broken link).
+ * @param {(slug: string) => ({href: string, title: string}|null)} resolveWikilink
+ *        slug -> {href, title}, or null when the target isn't a known page
+ *        (rendered as a broken link).
  */
 export function renderMarkdown(md, resolveWikilink = () => null) {
   // A fresh instance per call: the wikilink extension closes over this

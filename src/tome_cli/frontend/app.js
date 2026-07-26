@@ -567,9 +567,11 @@ export function tomeApp() {
       return inFlightPlans(this.pages, this.board.cards);
     },
 
-    // A known slug -> the in-app query link; unknown -> null (broken wikilink).
+    // A known slug -> its in-app query link + title (rendered as the link
+    // text — [[wikilink-titles]]); unknown -> null (broken wikilink).
     resolveWikilink(slug) {
-      return this.bySlug.has(slug) ? `?page=${encodeURIComponent(slug)}` : null;
+      const page = this.bySlug.get(slug);
+      return page ? { href: `?page=${encodeURIComponent(slug)}`, title: page.title } : null;
     },
 
     // Intercept clicks on rendered wikilinks so navigation stays client-side.
