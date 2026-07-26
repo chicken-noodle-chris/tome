@@ -354,6 +354,22 @@ describe("board sort comparators and tie-breaks", () => {
   });
 });
 
+describe("showPrio — priority chip visibility ([[board-column-scroll]])", () => {
+  test("medium, the default, renders no chip", () => {
+    assert.equal(tomeApp().showPrio("medium"), false);
+  });
+
+  test("high and low render a chip", () => {
+    assert.equal(tomeApp().showPrio("high"), true);
+    assert.equal(tomeApp().showPrio("low"), true);
+  });
+
+  test("no priority renders no chip", () => {
+    assert.equal(tomeApp().showPrio(null), false);
+    assert.equal(tomeApp().showPrio(undefined), false);
+  });
+});
+
 describe("sidebar tree ([[sidebar-orientation]])", () => {
   const page = (slug, path, title = slug) => ({ slug, path, title });
 

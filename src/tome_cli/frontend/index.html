@@ -591,7 +591,7 @@
     <div class="board-layout" x-show="view === 'board' || view === 'backlog' || view === 'chains'">
     <div class="board-layout-main">
     <!-- Board view (full-width) -->
-    <main class="board-wrap" x-show="view === 'board'">
+    <main class="board-wrap board-view" x-show="view === 'board'">
       <div class="board-toolbar">
         <label>
           Project
@@ -627,6 +627,7 @@
                  @dragover.prevent="onDragOver($event, status)"
                  @dragleave="onDragLeave($event)"
                  @drop.prevent="onDrop($event, status)">
+              <p class="col-empty" x-show="cardsFor(status).length === 0">No tasks</p>
               <div class="drop-line" x-show="cardsFor(status).length === 0
                      && dropTarget && dropTarget.status === status"></div>
               <template x-for="(card, idx) of cardsFor(status)" :key="card.id">
@@ -642,7 +643,7 @@
                            @click="openTask(card.id)">
                     <div class="card-meta">
                       <span class="card-id" x-text="card.rawId"></span>
-                      <span class="card-prio" :data-prio="card.priority" x-show="card.priority" x-text="card.priority"></span>
+                      <span class="card-prio" :data-prio="card.priority" x-show="showPrio(card.priority)" x-text="card.priority"></span>
                     </div>
                     <div class="card-title" x-text="card.title"></div>
                     <div class="card-chips">
@@ -697,7 +698,7 @@
                      @click="openTask(card.id)">
               <div class="card-meta">
                 <span class="card-id" x-text="card.rawId"></span>
-                <span class="card-prio" :data-prio="card.priority" x-show="card.priority" x-text="card.priority"></span>
+                <span class="card-prio" :data-prio="card.priority" x-show="showPrio(card.priority)" x-text="card.priority"></span>
               </div>
               <div class="card-title" x-text="card.title"></div>
               <div class="card-chips">
@@ -746,7 +747,7 @@
                     <span class="chain-row-title"
                           x-text="row.offboard ? '(not on this board)' : row.title"></span>
                     <span class="card-prio" :data-prio="row.card && row.card.priority"
-                          x-show="row.card && row.card.priority" x-text="row.card && row.card.priority"></span>
+                          x-show="row.card && showPrio(row.card.priority)" x-text="row.card && row.card.priority"></span>
                     <span class="chip" x-show="row.card && row.card.status" x-text="row.card && row.card.status"></span>
                     <span class="chain-deps" x-show="row.deps.length"
                           x-text="'needs ' + row.deps.map(depLabel).join(', ')"></span>
@@ -799,7 +800,7 @@
       <div class="task-panel-head">
         <span class="card-id" x-show="currentTask()" x-text="currentTask() && currentTask().rawId"></span>
         <span class="card-prio" :data-prio="currentTask() && currentTask().priority"
-              x-show="currentTask() && currentTask().priority" x-text="currentTask() && currentTask().priority"></span>
+              x-show="currentTask() && showPrio(currentTask().priority)" x-text="currentTask() && currentTask().priority"></span>
         <button type="button" class="task-panel-close" @click="closeTaskPanel()" aria-label="Close task panel">&times;</button>
       </div>
       <template x-if="taskErrorMessage()">

@@ -122,8 +122,17 @@ describe("onDragOver — cursor-vs-midpoint math", () => {
       }));
   }
 
+  // Far from both edges so armAutoScroll() (also invoked by onDragOver) never
+  // arms during these midpoint-math tests — that behaviour gets its own
+  // describe block below.
   function fakeEvent(clientY, ids, draggingId = null) {
-    return { clientY, currentTarget: { querySelectorAll: () => els(ids, draggingId) } };
+    return {
+      clientY,
+      currentTarget: {
+        querySelectorAll: () => els(ids, draggingId),
+        getBoundingClientRect: () => ({ top: -10000, bottom: 10000 }),
+      },
+    };
   }
 
   test("above every midpoint lands on the top slot (afterId null)", () => {
@@ -161,6 +170,100 @@ describe("onDragOver — cursor-vs-midpoint math", () => {
     const app = makeApp({ sortMode: "priority" });
     app.onDragOver(fakeEvent(100, ["a", "b", "c"]), "todo");
     assert.equal(app.dropTarget, null);
+  });
+});
+
+// =========================================================================== //
+// Auto-scroll near a column edge ([[board-column-scroll]])
+// =========================================================================== //
+
+// requestAnimationFrame isn't a Node global — stub it the same way `document`
+// is stubbed at the top of this file, but recording scheduled callbacks
+// instead of running them, so a test can advance "one frame" on demand and
+// assert the resulting scrollTop rather than racing a real animation loop.
+function stubRaf() {
+  const scheduled = [];
+  globalThis.requestAnimationFrame = (cb) => scheduled.push(cb);
+  globalThis.cancelAnimationFrame = () => {};
+  return {
+    tick() {
+      const cb = scheduled.shift();
+      if (cb) cb();
+    },
+    pending: () => scheduled.length,
+  };
+}
+
+describe("armAutoScroll / runAutoScroll / stopAutoScroll", () => {
+  // A 400px-tall col-body with no cards, so onDragOver's own midpoint math
+  // (which also runs) finds nothing to insert relative to.
+  function colBody(scrollTop) {
+    return {
+      scrollTop,
+      querySelectorAll: () => [],
+      getBoundingClientRect: () => ({ top: 0, bottom: 400 }),
+    };
+  }
+
+  test("dragging within the top edge arms upward auto-scroll, and a frame scrolls it", () => {
+    const raf = stubRaf();
+    const app = makeApp({ sortMode: "manual" });
+    const el = colBody(100);
+    app.onDragOver({ clientY: 10, currentTarget: el }, "todo");
+    assert.equal(app.autoScrollDir, -1);
+    assert.equal(app.autoScrollEl, el);
+    assert.equal(raf.pending(), 1);
+    raf.tick();
+    assert.equal(el.scrollTop, 84); // 100 - AUTO_SCROLL_SPEED_PX(16)
+    assert.equal(raf.pending(), 1); // reschedules itself
+  });
+
+  test("dragging within the bottom edge arms downward auto-scroll", () => {
+    const raf = stubRaf();
+    const app = makeApp({ sortMode: "manual" });
+    const el = colBody(0);
+    app.onDragOver({ clientY: 390, currentTarget: el }, "todo");
+    assert.equal(app.autoScrollDir, 1);
+    raf.tick();
+    assert.equal(el.scrollTop, 16);
+  });
+
+  test("dragging away from both edges disarms auto-scroll", () => {
+    const raf = stubRaf();
+    const app = makeApp({ sortMode: "manual" });
+    app.onDragOver({ clientY: 200, currentTarget: colBody(0) }, "todo");
+    assert.equal(app.autoScrollDir, 0);
+    assert.equal(app.autoScrollEl, null);
+    assert.equal(raf.pending(), 0);
+  });
+
+  test("onDragEnd cancels a running auto-scroll", () => {
+    stubRaf();
+    const app = makeApp({ sortMode: "manual" });
+    app.onDragOver({ clientY: 5, currentTarget: colBody(100) }, "todo");
+    assert.equal(app.autoScrollDir, -1);
+    app.onDragEnd();
+    assert.equal(app.autoScrollDir, 0);
+    assert.equal(app.autoScrollEl, null);
+  });
+
+  test("onDragLeave cancels a running auto-scroll once the pointer truly exits", () => {
+    stubRaf();
+    const app = makeApp({ sortMode: "manual" });
+    app.onDragOver({ clientY: 5, currentTarget: colBody(100) }, "todo");
+    app.onDragLeave({ currentTarget: { contains: () => false }, relatedTarget: {} });
+    assert.equal(app.autoScrollDir, 0);
+    assert.equal(app.autoScrollEl, null);
+  });
+
+  test("onDrop cancels a running auto-scroll", () => {
+    stubRaf();
+    const app = makeApp({ sortMode: "manual", board: { ...makeApp().board, cards: [card("a")] } });
+    app.moveCard = () => {};
+    app.onDragOver({ clientY: 5, currentTarget: colBody(100) }, "todo");
+    app.onDrop({ dataTransfer: { getData: () => "a" } }, "todo");
+    assert.equal(app.autoScrollDir, 0);
+    assert.equal(app.autoScrollEl, null);
   });
 });
 

@@ -451,24 +451,43 @@ body {
   margin: -0.4rem 0 0.75rem;
 }
 
+/* .board-view (the kanban board only, not backlog/chains which also reuse
+   .board-wrap) is a fixed-height flex column so the toolbar and column
+   headers never scroll away — only .col-body, per column, scrolls
+   ([[board-column-scroll]]). */
+.board-view {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - var(--topbar-h));
+  overflow: hidden;
+  padding-bottom: 1rem;
+}
+.board-view .board-toolbar,
+.board-view .board-error { flex: none; }
 .board-columns {
   display: grid;
   grid-auto-flow: column;
   grid-auto-columns: minmax(15rem, 1fr);
   gap: var(--col-gap);
-  align-items: start;
+  align-items: stretch;
   overflow-x: auto;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 .board-column {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 0.6rem;
 }
-.col-head { display: flex; align-items: center; justify-content: space-between; padding: 0.2rem 0.35rem 0.6rem; }
+.col-head { flex: none; display: flex; align-items: center; justify-content: space-between; padding: 0.2rem 0.35rem 0.6rem; }
 .col-head h2 { margin: 0; font-size: 0.95rem; }
 .col-head .count { color: var(--muted); font-size: 0.8rem; }
-.col-body { display: grid; gap: 0.5rem; }
+.col-body { display: grid; gap: 0.5rem; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.col-empty { color: var(--muted); font-size: 0.82rem; text-align: center; padding: 1rem 0.25rem; }
 
 .card {
   background: var(--bg);
@@ -481,7 +500,6 @@ body {
 .card.dragging { opacity: 0.4; }
 .card.moving { opacity: 0.6; pointer-events: none; }
 .card.selected { outline: 2px solid var(--accent); outline-offset: -2px; }
-.col-body { min-height: 1.5rem; } /* keeps an empty column a valid drop target */
 /* Unwraps the per-card <div> (drop-line, card, drop-line) so col-body's own
    grid gap still applies between siblings, instead of nesting a new box. */
 .col-body > div { display: contents; }
@@ -723,7 +741,7 @@ body {
 .task-ac:hover .task-ac-actions, .task-ac:focus-within .task-ac-actions { visibility: visible; }
 
 /* -- backlog view ([[deferred-backlog]]) -- */
-.backlog-list { max-width: 32rem; }
+.backlog-list { max-width: 32rem; min-height: 1.5rem; } /* keeps an empty list a valid drop target */
 .chip {
   font-size: 0.7rem;
   padding: 0.08rem 0.45rem;

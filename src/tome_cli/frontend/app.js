@@ -130,6 +130,12 @@ const SORT_MODE_KEY = "tome.board.sort";
 // share collapse state.
 const SIDEBAR_FOLDERS_KEY_PREFIX = "tome.sidebar.folders:";
 const PRIORITY_RANK = { high: 0, medium: 1, low: 2 };
+const DEFAULT_PRIORITY = "medium";
+
+// Auto-scroll tuning ([[board-column-scroll]]) — how close to a column's own
+// edge a drag must be to arm it, and how far each animation frame scrolls.
+const AUTO_SCROLL_EDGE_PX = 40;
+const AUTO_SCROLL_SPEED_PX = 16;
 
 function ordinalTieBreak(a, b) {
   return (a.ordinal ?? Infinity) - (b.ordinal ?? Infinity) || a.id.localeCompare(b.id);
@@ -254,6 +260,13 @@ export function tomeApp() {
     dropTarget: null, // { status, afterId } — the insertion point tracked during a Manual-mode drag
     movingCardId: null, // card.id awaiting its POST response
     boardError: "",
+    // Auto-scroll ([[board-column-scroll]]) — armed by onDragOver while the
+    // pointer sits within AUTO_SCROLL_EDGE_PX of the hovered .col-body's top
+    // or bottom edge, so a drag can reach cards scrolled out of view instead
+    // of dead-ending at the column's edge.
+    autoScrollEl: null, // the col-body DOM node currently auto-scrolling, or null
+    autoScrollDir: 0, // -1 (toward top), 1 (toward bottom), 0 (idle)
+    autoScrollFrame: null, // requestAnimationFrame handle; lets onDragEnd/onDragLeave cancel a running loop
     // live reload ([[live-reload]]) — a board.json push arriving mid-drag or
     // mid-move is deferred here and replayed once the write settles, rather
     // than yanking the card out from under it.
@@ -1808,6 +1821,13 @@ export function tomeApp() {
         .sort(cmp);
     },
 
+    // Every card carries a priority, and "medium" is the default most of them
+    // sit at — showing a chip for it signals nothing, so it renders only for
+    // the priorities that actually stand out ([[board-column-scroll]]).
+    showPrio(priority) {
+      return Boolean(priority) && priority !== DEFAULT_PRIORITY;
+    },
+
     // -- dependency chains view ([[dependency-chains]]) ------------------ //
     // A read-only fourth view over the same board.json cards already in
     // memory: no fetch, no server route, recomputed on demand so a live
@@ -1871,6 +1891,7 @@ export function tomeApp() {
     onDragEnd() {
       this.draggingId = null;
       this.dropTarget = null;
+      this.stopAutoScroll();
       if (this.boardReloadPending && !this.movingCardId) this.applyBoardChange();
     },
 
@@ -1889,6 +1910,7 @@ export function tomeApp() {
         afterId = el.dataset.cardId;
       }
       this.dropTarget = { status, afterId };
+      this.armAutoScroll(event.currentTarget, event.clientY);
     },
 
     // Only clears when the pointer has actually left the column body (not
@@ -1896,6 +1918,39 @@ export function tomeApp() {
     onDragLeave(event) {
       if (event.currentTarget.contains(event.relatedTarget)) return;
       this.dropTarget = null;
+      this.stopAutoScroll();
+    },
+
+    // Arms (or disarms) auto-scroll for the column body a drag is hovering
+    // over: within AUTO_SCROLL_EDGE_PX of its top/bottom edge, a
+    // requestAnimationFrame loop nudges its scrollTop each frame so a card
+    // scrolled out of view stays reachable while dragging ([[board-column-scroll]]).
+    armAutoScroll(el, clientY) {
+      const rect = el.getBoundingClientRect();
+      let dir = 0;
+      if (clientY - rect.top < AUTO_SCROLL_EDGE_PX) dir = -1;
+      else if (rect.bottom - clientY < AUTO_SCROLL_EDGE_PX) dir = 1;
+      this.autoScrollEl = dir ? el : null;
+      this.autoScrollDir = dir;
+      if (dir && this.autoScrollFrame === null) {
+        this.autoScrollFrame = requestAnimationFrame(() => this.runAutoScroll());
+      }
+    },
+
+    runAutoScroll() {
+      this.autoScrollFrame = null;
+      if (!this.autoScrollEl || !this.autoScrollDir) return;
+      this.autoScrollEl.scrollTop += this.autoScrollDir * AUTO_SCROLL_SPEED_PX;
+      this.autoScrollFrame = requestAnimationFrame(() => this.runAutoScroll());
+    },
+
+    stopAutoScroll() {
+      this.autoScrollEl = null;
+      this.autoScrollDir = 0;
+      if (this.autoScrollFrame !== null) {
+        cancelAnimationFrame(this.autoScrollFrame);
+        this.autoScrollFrame = null;
+      }
     },
 
     onDrop(event, status) {
@@ -1904,6 +1959,7 @@ export function tomeApp() {
       const afterId = this.dropTarget && this.dropTarget.status === status ? this.dropTarget.afterId : null;
       this.draggingId = null;
       this.dropTarget = null;
+      this.stopAutoScroll();
       const card = this.board.cards.find((c) => c.id === cardId);
       if (card) this.moveCard(card, status, afterId);
     },
