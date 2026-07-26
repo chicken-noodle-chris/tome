@@ -125,6 +125,10 @@ const FOLDER_ORDER = [
 // others are read-only lenses tie-broken on ordinal then id for a stable,
 // deterministic order.
 const SORT_MODE_KEY = "tome.board.sort";
+// Per-folder sidebar collapse state ([[sidebar-orientation]]) — prefixed with
+// a vault key (vaultKey()) so two vaults served from the same origin don't
+// share collapse state.
+const SIDEBAR_FOLDERS_KEY_PREFIX = "tome.sidebar.folders:";
 const PRIORITY_RANK = { high: 0, medium: 1, low: 2 };
 
 function ordinalTieBreak(a, b) {
@@ -235,6 +239,12 @@ export function tomeApp() {
 
     // sidebar
     collapsed: {}, // project name -> true when its section is folded shut
+    // Per-folder collapse ([[sidebar-orientation]]): `${project}/${folder.name}`
+    // -> user-toggled bool, overriding the archive-collapsed/live-expanded
+    // default. Only holds folders the user has explicitly touched; the
+    // default lives in folderCollapsed() so untouched folders track it live.
+    collapsedFolders: {},
+    sidebarStorageKey: null, // set once pages load (vault-scoped, see vaultKey())
 
     // board.json
     board: { statuses: [], defaultStatus: "", backlogStatus: "", cards: [], writable: false },
@@ -269,6 +279,14 @@ export function tomeApp() {
       } catch (e) {
         this.pageError = "Failed to load vault data: " + e.message;
         return;
+      }
+
+      this.sidebarStorageKey = SIDEBAR_FOLDERS_KEY_PREFIX + this.vaultKey();
+      try {
+        const savedFolders = localStorage.getItem(this.sidebarStorageKey);
+        if (savedFolders) this.collapsedFolders = JSON.parse(savedFolders);
+      } catch (e) {
+        // malformed localStorage value — fall through with the archive/live default
       }
 
       // board.writable is false on a static export, where /events doesn't
@@ -481,6 +499,9 @@ export function tomeApp() {
       document.title = DEFAULT_TITLE; // per-page titles are [[browse-ui-polish]]'s
       this.currentSlug = slug;
       this.currentPage = page || null;
+      // Runs after Alpine's next DOM flush, once the AC5 folder-expand
+      // override and the .current highlight have both re-rendered.
+      this.$nextTick(() => this.scrollSidebarToCurrent());
       if (!page) {
         this.pageMeta = null;
         this.pageHtml = "";
@@ -1672,13 +1693,14 @@ export function tomeApp() {
           project,
           folders: [...folders.entries()]
             .sort((a, b) => this.folderRank(a[0]) - this.folderRank(b[0]) || a[0].localeCompare(b[0]))
-            .map(([name, pages]) => ({
-              name,
-              label: name.replace("/", " / "),
-              pages: pages
+            .map(([name, pages]) => {
+              const sorted = pages
                 .slice()
-                .sort((x, y) => (x.title || x.slug).localeCompare(y.title || y.slug)),
-            })),
+                .sort((x, y) => (x.title || x.slug).localeCompare(y.title || y.slug));
+              const label = name.replace("/", " / ")
+                + (this.isArchiveFolder(name) ? ` (${sorted.length})` : "");
+              return { name, label, pages: sorted };
+            }),
         }));
     },
 
@@ -1690,6 +1712,66 @@ export function tomeApp() {
     // Reassign the object (not mutate a key) so Alpine tracks the change.
     toggleProject(project) {
       this.collapsed = { ...this.collapsed, [project]: !this.collapsed[project] };
+    },
+
+    isArchiveFolder(name) {
+      return name === "archive" || name.endsWith("/archive");
+    },
+
+    folderKey(project, folderName) {
+      return `${project}/${folderName}`;
+    },
+
+    // Collapsed by default for archive/ folders, expanded for everything
+    // else (AC3), overridden by whatever the user last toggled (AC4) — but a
+    // folder holding the current page always wins, stored state or not
+    // (AC5), so navigating into an archived page never lands you somewhere
+    // the tree denies having.
+    folderCollapsed(project, folder) {
+      if (folder.pages.some((p) => p.slug === this.currentSlug)) return false;
+      const key = this.folderKey(project, folder.name);
+      if (key in this.collapsedFolders) return this.collapsedFolders[key];
+      return this.isArchiveFolder(folder.name);
+    },
+
+    toggleFolder(project, folder) {
+      const key = this.folderKey(project, folder.name);
+      this.collapsedFolders = { ...this.collapsedFolders, [key]: !this.folderCollapsed(project, folder) };
+      if (this.sidebarStorageKey) {
+        localStorage.setItem(this.sidebarStorageKey, JSON.stringify(this.collapsedFolders));
+      }
+    },
+
+    // Disambiguates collapse state ([[sidebar-orientation]]) when the same
+    // origin serves different vaults across sessions — a live serve whose
+    // VAULT_ROOT changed, or several static exports hosted under one domain.
+    // Derived from the first page's absPath minus its vault-relative path,
+    // so it tracks the actual vault directory rather than the URL; falls
+    // back to the origin+path if absPath isn't present (e.g. a future export
+    // that strips it, or an empty vault).
+    vaultKey() {
+      const first = this.pages[0];
+      if (first && first.absPath && first.path && first.absPath.endsWith(first.path)) {
+        return first.absPath.slice(0, first.absPath.length - first.path.length);
+      }
+      return location.origin + location.pathname;
+    },
+
+    // Scrolls the sidebar's own scroll container so the current page's link
+    // is centred — never the article, since scrollIntoView on a nested
+    // scroller can move both ([[sidebar-orientation]], AC1). No-op if the
+    // link isn't currently rendered (its folder still collapsed, or no page
+    // loaded) — folderCollapsed()'s AC5 override is what normally prevents
+    // that.
+    scrollSidebarToCurrent() {
+      const sidebar = document.querySelector(".sidebar");
+      const link = sidebar && sidebar.querySelector(".tree-link.current");
+      if (!sidebar || !link) return;
+      const sidebarRect = sidebar.getBoundingClientRect();
+      const linkRect = link.getBoundingClientRect();
+      const target = linkRect.top - sidebarRect.top + sidebar.scrollTop
+        - sidebar.clientHeight / 2 + linkRect.height / 2;
+      sidebar.scrollTop = Math.max(0, target);
     },
 
     // -- board view ------------------------------------------------------ //

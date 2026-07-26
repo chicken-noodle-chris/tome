@@ -39,8 +39,12 @@
               <div class="tree-project-body" x-show="!collapsed[group.project]">
                 <template x-for="folder of group.folders" :key="folder.name">
                   <div class="tree-folder">
-                    <div class="tree-folder-name" x-show="folder.name" x-text="folder.label"></div>
-                    <ul>
+                    <button type="button" class="tree-folder-name" x-show="folder.name"
+                            @click="toggleFolder(group.project, folder)">
+                      <span class="twisty" x-text="folderCollapsed(group.project, folder) ? '▸' : '▾'"></span>
+                      <span x-text="folder.label"></span>
+                    </button>
+                    <ul x-show="!folderCollapsed(group.project, folder)">
                       <template x-for="pg of folder.pages" :key="pg.slug">
                         <li>
                           <a class="tree-link"

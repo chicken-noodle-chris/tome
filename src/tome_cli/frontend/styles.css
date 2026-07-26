@@ -103,16 +103,29 @@ body {
 .twisty { color: var(--muted); width: 0.9rem; font-size: 0.75rem; flex: none; }
 .tree-folder { margin: 0.15rem 0 0.4rem; }
 .tree-folder-name {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  width: 100%;
+  border: none;
+  background: none;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   font-size: 0.65rem;
   color: var(--muted);
-  padding: 0.2rem 0.4rem 0.1rem 1.25rem;
+  font-family: inherit;
+  padding: 0.2rem 0.4rem 0.1rem 1rem;
+  cursor: pointer;
+  text-align: left;
+  border-radius: 5px;
 }
+.tree-folder-name:hover { background: var(--border); }
+.tree-folder-name .twisty { font-size: 0.65rem; }
 .tree ul { list-style: none; margin: 0; padding: 0; }
 .tree-link {
   display: block;
   padding: 0.2rem 0.5rem 0.2rem 1.25rem;
+  border-left: 3px solid transparent;
   border-radius: 5px;
   color: var(--fg);
   text-decoration: none;
@@ -122,7 +135,11 @@ body {
   text-overflow: ellipsis;
 }
 .tree-link:hover { background: var(--border); }
-.tree-link.current { background: var(--accent); color: #fff; }
+.tree-link.current {
+  background: var(--chip);
+  border-left-color: var(--accent);
+  font-weight: 600;
+}
 
 /* content area sits beside the sidebar; the article stays readable-width */
 .page { flex: 1 1 auto; min-width: 0; max-width: 46rem; margin: 0 auto; padding: 1.5rem 1.25rem 4rem; }

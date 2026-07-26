@@ -33,7 +33,9 @@ function stubLocationAndHistory(initialSearch = "") {
 }
 
 function makeApp(overrides = {}) {
-  return Object.assign(tomeApp(), overrides);
+  // $nextTick is an Alpine magic these tests don't have; loadPage() uses it
+  // to schedule the sidebar scroll ([[sidebar-orientation]]) after render.
+  return Object.assign(tomeApp(), { $nextTick: async () => {} }, overrides);
 }
 
 describe("syncFromUrl — every URL shape", () => {
@@ -349,5 +351,105 @@ describe("board sort comparators and tie-breaks", () => {
     app.board.cards = [card("a", 1, "low", "A"), { ...card("b", 2, "low", "B"), status: "done" }];
     app.sortMode = "manual";
     assert.deepEqual(app.cardsFor("todo").map((c) => c.id), ["a"]);
+  });
+});
+
+describe("sidebar tree ([[sidebar-orientation]])", () => {
+  const page = (slug, path, title = slug) => ({ slug, path, title });
+
+  test("tree groups pages by project then folder, folding an archive folder's count into its label", () => {
+    const app = tomeApp();
+    app.pages = [
+      page("hub", "tome/tome.md", "Hub"),
+      page("p1", "tome/plans/p1.md"),
+      page("p2-old", "tome/plans/archive/p2-old.md"),
+      page("p3-old", "tome/plans/archive/p3-old.md"),
+    ];
+    const [group] = app.tree();
+    assert.equal(group.project, "tome");
+    const live = group.folders.find((f) => f.name === "plans");
+    const archived = group.folders.find((f) => f.name === "plans/archive");
+    assert.equal(live.label, "plans");
+    assert.equal(archived.label, "plans / archive (2)");
+    assert.equal(archived.pages.length, 2);
+  });
+
+  test("isArchiveFolder matches a top-level or nested archive folder only", () => {
+    const app = tomeApp();
+    assert.equal(app.isArchiveFolder("archive"), true);
+    assert.equal(app.isArchiveFolder("plans/archive"), true);
+    assert.equal(app.isArchiveFolder("plans"), false);
+    assert.equal(app.isArchiveFolder("archived"), false);
+  });
+
+  test("folderCollapsed defaults archive folders shut and live folders open", () => {
+    const app = tomeApp();
+    const live = { name: "plans", pages: [page("p1", "tome/plans/p1.md")] };
+    const archived = { name: "plans/archive", pages: [page("p2", "tome/plans/archive/p2.md")] };
+    assert.equal(app.folderCollapsed("tome", live), false);
+    assert.equal(app.folderCollapsed("tome", archived), true);
+  });
+
+  test("toggleFolder flips the stored state and persists it under the vault-scoped key", () => {
+    const saved = {};
+    globalThis.localStorage = {
+      setItem: (k, v) => { saved[k] = v; },
+      getItem: (k) => saved[k] ?? null,
+    };
+    const app = tomeApp();
+    app.sidebarStorageKey = "tome.sidebar.folders:test-vault";
+    const folder = { name: "plans/archive", pages: [] };
+    app.toggleFolder("tome", folder); // archive default is collapsed -> now expanded
+    assert.equal(app.folderCollapsed("tome", folder), false);
+    assert.deepEqual(JSON.parse(saved["tome.sidebar.folders:test-vault"]), { "tome/plans/archive": false });
+    app.toggleFolder("tome", folder); // back to collapsed
+    assert.equal(app.folderCollapsed("tome", folder), true);
+  });
+
+  test("folderCollapsed always expands a folder holding the current page, ignoring stored state", () => {
+    const app = tomeApp();
+    app.currentSlug = "p2";
+    app.collapsedFolders = { "tome/plans/archive": true };
+    const folder = { name: "plans/archive", pages: [page("p2", "tome/plans/archive/p2.md")] };
+    assert.equal(app.folderCollapsed("tome", folder), false);
+  });
+
+  test("vaultKey derives from the first page's absPath minus its relative path", () => {
+    const app = tomeApp();
+    app.pages = [{ path: "tome/tome.md", absPath: "/home/chris/vault/wiki/tome/tome.md" }];
+    assert.equal(app.vaultKey(), "/home/chris/vault/wiki/");
+  });
+
+  test("vaultKey falls back to origin+pathname when absPath is absent", () => {
+    const app = tomeApp();
+    app.pages = [];
+    globalThis.location = { origin: "http://localhost:8420", pathname: "/", search: "" };
+    assert.equal(app.vaultKey(), "http://localhost:8420/");
+  });
+
+  test("scrollSidebarToCurrent is a no-op when the sidebar or the current link isn't rendered", () => {
+    const app = tomeApp();
+    globalThis.document = {
+      addEventListener() {},
+      querySelector: () => null,
+    };
+    assert.doesNotThrow(() => app.scrollSidebarToCurrent());
+  });
+
+  test("scrollSidebarToCurrent centres the current link within the sidebar's own scroll container", () => {
+    const app = tomeApp();
+    const sidebar = {
+      scrollTop: 0,
+      clientHeight: 200,
+      getBoundingClientRect: () => ({ top: 0 }),
+      querySelector: () => link,
+    };
+    const link = { getBoundingClientRect: () => ({ top: 500, height: 20 }) };
+    globalThis.document = {
+      addEventListener() {},
+      querySelector: (sel) => (sel === ".sidebar" ? sidebar : null),
+    };
+    app.scrollSidebarToCurrent();
+    assert.equal(sidebar.scrollTop, 500 - 200 / 2 + 20 / 2); // 410
   });
 });
