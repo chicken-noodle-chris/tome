@@ -46,11 +46,11 @@
 // component on the `alpine:init` event, which Alpine dispatches when it starts —
 // the module is loaded before alpine.min.js, so the listener is always in place.
 
-import { parseFrontmatter, renderMarkdown } from "/app/render.js";
+import { parseFrontmatter, renderMarkdown } from "./render.js";
 import {
   assemble, assembleFields, displayRows, fieldHunks, textHunks, undecidedCount,
-} from "/app/merge.js";
-import { computeChains } from "/app/chains.js";
+} from "./merge.js";
+import { computeChains } from "./chains.js";
 
 // The page shown on first load when the URL names none. A stable, link-rich
 // vault page so the slice demonstrates wikilink resolution out of the box.
@@ -135,7 +135,7 @@ const SORT_COMPARATORS = {
   title: (a, b) => (a.title || "").localeCompare(b.title || "") || ordinalTieBreak(a, b),
 };
 
-function tomeApp() {
+export function tomeApp() {
   return {
     view: "page",
 
