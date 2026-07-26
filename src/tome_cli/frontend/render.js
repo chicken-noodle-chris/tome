@@ -5,7 +5,7 @@
 // per-call Marked instance so resolveWikilink — different per page, since it
 // closes over the current index.json lookup — never leaks across calls.
 
-import { Marked } from "/app/vendor/marked.esm.js";
+import { Marked } from "./vendor/marked.esm.js";
 
 /** Split a raw page into its frontmatter object and markdown body. Mirrors the
  *  lenient key/value + block-list subset the tome CLI writes (no nested YAML). */

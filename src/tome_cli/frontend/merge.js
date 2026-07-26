@@ -15,7 +15,7 @@
 // (the hard part: an LCS diff) comes from the library, and the walk that turns
 // two diffs into reviewable hunks lives here.
 
-import { diffIndices } from "/app/vendor/diff3.mjs";
+import { diffIndices } from "./vendor/diff3.mjs";
 
 /** Text <-> line array. Lossless in both directions, trailing newline
  *  included: "a\nb\n" <-> ["a", "b", ""]. */
