@@ -7,7 +7,14 @@ globalThis.document = { addEventListener() {} };
 const { tomeApp } = await import("../app.js");
 
 function makeApp(overrides = {}) {
-  return Object.assign(tomeApp(), { board: { ...tomeApp().board, writable: true }, ...overrides });
+  // $nextTick is an Alpine magic these tests don't have; loadPage() uses it
+  // to schedule the sidebar scroll ([[sidebar-orientation]]) after render.
+  // Individual tests below override this where they assert on it directly.
+  return Object.assign(
+    tomeApp(),
+    { board: { ...tomeApp().board, writable: true }, $nextTick: async () => {} },
+    overrides,
+  );
 }
 
 const card = (id, extra = {}) => ({ id, status: "todo", ordinal: 1, priority: "medium", ...extra });
