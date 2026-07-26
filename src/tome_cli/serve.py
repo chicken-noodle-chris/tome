@@ -1743,8 +1743,15 @@ def export_static(vault_root, conventions, out_dir):
         else:
             (app_dir / item.name).write_bytes(item.read_bytes())
 
+    index = build_index(vault_root, conventions)
+    # absPath is the author's machine leaking into a public artifact — no
+    # visitor's filesystem has the file, so the field has no consumer here
+    # ([[export-path-hygiene]]). Strip it; the frontend hides the VS Code
+    # link when a page carries no absPath.
+    for page in index["pages"]:
+        page.pop("absPath", None)
     (out_dir / "index.json").write_text(
-        json.dumps(build_index(vault_root, conventions), ensure_ascii=False, indent=2),
+        json.dumps(index, ensure_ascii=False, indent=2),
         encoding="utf-8")
     (out_dir / "board.json").write_text(
         json.dumps(_board_with_writable(vault_root, conventions, False), ensure_ascii=False, indent=2),

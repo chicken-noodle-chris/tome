@@ -1367,6 +1367,35 @@ def test_board_with_writable_true_for_live_serve(make_vault):
     assert board["statuses"] == []  # build_board's own shape still comes through
 
 
+def test_export_static_index_json_has_no_abs_path(tmp_path, make_vault, make_page):
+    # absPath is the author's machine leaking into a public artifact
+    # ([[export-path-hygiene]]) — the export must carry no absolute
+    # filesystem path for any page. Checked two ways: the field is gone
+    # outright, and the vault's own absolute path (the concrete value
+    # absPath would have held) doesn't appear anywhere in the file, so a
+    # future field reintroducing it under another name is still caught.
+    # (Not a bare "no leading /" scan — url/path fields are legitimately
+    # root-relative, e.g. "/raw/tome/ideas/alpha.md".)
+    import json
+    import re
+
+    vault = make_vault()
+    make_page(vault, "tome/ideas/alpha.md", type="idea", title="Alpha")
+    out_dir = tmp_path / "export"
+    serve.export_static(vault, _conv(vault), out_dir)
+
+    raw_text = (out_dir / "index.json").read_text(encoding="utf-8")
+    index = json.loads(raw_text)
+    assert index["pages"], "expected at least one page in the export"
+    for page in index["pages"]:
+        assert "absPath" not in page
+
+    wiki_root = (vault / "wiki").resolve().as_posix()
+    assert wiki_root not in raw_text
+    assert not re.search(r"[A-Za-z]:[\\/]", raw_text), \
+        "found what looks like a Windows absolute path in the export"
+
+
 def test_export_static_board_json_is_read_only(tmp_path, make_vault):
     import json
 

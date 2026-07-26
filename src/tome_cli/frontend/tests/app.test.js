@@ -497,6 +497,24 @@ describe("sidebar tree ([[sidebar-orientation]])", () => {
     assert.equal(app.vaultKey(), "http://localhost:8420/");
   });
 
+  test("editUrl builds a vscode://file/ URI from the current page's absPath", () => {
+    const app = tomeApp();
+    app.currentPage = { absPath: "/home/chris/vault/wiki/tome/tome.md" };
+    assert.equal(app.editUrl(), "vscode://file//home/chris/vault/wiki/tome/tome.md");
+  });
+
+  test("editUrl is null when the current page carries no absPath ([[export-path-hygiene]])", () => {
+    const app = tomeApp();
+    app.currentPage = { path: "tome/tome.md" };
+    assert.equal(app.editUrl(), null);
+  });
+
+  test("editUrl is null with no current page", () => {
+    const app = tomeApp();
+    app.currentPage = null;
+    assert.equal(app.editUrl(), null);
+  });
+
   test("scrollSidebarToCurrent is a no-op when the sidebar or the current link isn't rendered", () => {
     const app = tomeApp();
     globalThis.document = {

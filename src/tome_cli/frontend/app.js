@@ -585,9 +585,11 @@ export function tomeApp() {
 
     // vscode://file/ URI for the current page's source — opens the editor
     // straight to that markdown file. Local-only by nature (the URI does
-    // nothing on a static/remote deploy of this frontend).
+    // nothing on a static/remote deploy of this frontend), and a static
+    // export carries no absPath at all ([[export-path-hygiene]]), so this
+    // is also how the link hides itself there.
     editUrl() {
-      return this.currentPage ? `vscode://file/${this.currentPage.absPath}` : null;
+      return this.currentPage?.absPath ? `vscode://file/${this.currentPage.absPath}` : null;
     },
 
     fmRows(meta) {

@@ -83,7 +83,7 @@
                   <button class="edit-btn" x-show="board.writable && !fmEditing"
                           @click="enterEdit()" x-text="editorLoading ? 'Loading…' : 'Edit'"
                           :disabled="editorLoading"></button>
-                  <a class="edit-link" :href="editUrl()" title="Open in VS Code">VS Code</a>
+                  <a class="edit-link" x-show="editUrl()" :href="editUrl()" title="Open in VS Code">VS Code</a>
                 </div>
               </div>
 
