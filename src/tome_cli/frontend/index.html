@@ -801,6 +801,7 @@
         <span class="card-id" x-show="currentTask()" x-text="currentTask() && currentTask().rawId"></span>
         <span class="card-prio" :data-prio="currentTask() && currentTask().priority"
               x-show="currentTask() && showPrio(currentTask().priority)" x-text="currentTask() && currentTask().priority"></span>
+        <span class="card-completed" x-show="currentTask() && currentTask().completed">Completed</span>
         <button type="button" class="task-panel-close" @click="closeTaskPanel()" aria-label="Close task panel">&times;</button>
       </div>
       <template x-if="taskErrorMessage()">

@@ -302,6 +302,34 @@ describe("lenses", () => {
     assert.equal(app.dependencyCard("task-1").title, "One");
     assert.equal(app.dependencyCard("task-99"), null);
   });
+
+  test("dependencyCard resolves a completed card too ([[completed-tasks-viewable]])", () => {
+    const app = tomeApp();
+    app.board.cards = [{ id: "task-1", title: "Shipped", completed: true }];
+    assert.equal(app.dependencyCard("task-1").title, "Shipped");
+  });
+});
+
+describe("taskWritable — completed tasks are read-only ([[completed-tasks-viewable]])", () => {
+  test("false when the current task is completed, even on a writable board", () => {
+    const app = tomeApp();
+    app.board = { ...app.board, writable: true, cards: [{ id: "task-1", completed: true }] };
+    app.currentTaskId = "task-1";
+    assert.equal(app.taskWritable(), false);
+  });
+
+  test("true for a live task on a writable board", () => {
+    const app = tomeApp();
+    app.board = { ...app.board, writable: true, cards: [{ id: "task-1", completed: false }] };
+    app.currentTaskId = "task-1";
+    assert.equal(app.taskWritable(), true);
+  });
+
+  test("false with no current task", () => {
+    const app = tomeApp();
+    app.board = { ...app.board, writable: true, cards: [] };
+    assert.equal(app.taskWritable(), false);
+  });
 });
 
 describe("board sort comparators and tie-breaks", () => {
@@ -351,6 +379,32 @@ describe("board sort comparators and tie-breaks", () => {
     app.board.cards = [card("a", 1, "low", "A"), { ...card("b", 2, "low", "B"), status: "done" }];
     app.sortMode = "manual";
     assert.deepEqual(app.cardsFor("todo").map((c) => c.id), ["a"]);
+  });
+
+  test("cardsFor excludes a completed card even when its status matches the column ([[completed-tasks-viewable]])", () => {
+    const app = tomeApp();
+    app.board.cards = [card("a", 1, "low", "A"), { ...card("b", 2, "low", "B"), completed: true }];
+    app.sortMode = "manual";
+    assert.deepEqual(app.cardsFor("todo").map((c) => c.id), ["a"]);
+  });
+});
+
+describe("visibleCards — completed cards excluded from every board/backlog surface ([[completed-tasks-viewable]])", () => {
+  test("a completed card is dropped regardless of the project filter", () => {
+    const app = tomeApp();
+    app.board.cards = [
+      { id: "a", project: "tome", completed: false },
+      { id: "b", project: "tome", completed: true },
+    ];
+    app.projectFilter = "__all__";
+    assert.deepEqual(app.visibleCards().map((c) => c.id), ["a"]);
+  });
+
+  test("board.cards itself still holds the completed card — only the derived view drops it", () => {
+    const app = tomeApp();
+    app.board.cards = [{ id: "a", completed: false }, { id: "b", completed: true }];
+    assert.equal(app.board.cards.length, 2);
+    assert.deepEqual(app.visibleCards().map((c) => c.id), ["a"]);
   });
 });
 

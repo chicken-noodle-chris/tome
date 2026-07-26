@@ -520,6 +520,15 @@ body {
   color: var(--muted);
 }
 .card-prio[data-prio="high"] { background: #fee2e2; color: #b91c1c; }
+.card-completed {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  background: var(--chip);
+  color: var(--muted);
+}
 .card-title { font-size: 0.9rem; line-height: 1.4; }
 .card-chips { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.45rem; }
 .card-action {

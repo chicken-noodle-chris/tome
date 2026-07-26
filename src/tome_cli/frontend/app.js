@@ -644,8 +644,9 @@ export function tomeApp() {
     },
 
     // A dependency id ("task-63") resolved to its own card, so the link can
-    // show its title rather than a bare id — null if that task isn't on this
-    // board (e.g. archived to backlog/completed, which build_board doesn't read).
+    // show its title rather than a bare id — null only if no task with that
+    // id exists at all (a stale/typo'd dependency); a completed task still
+    // resolves here since board.cards carries it.
     dependencyCard(id) {
       return this.board.cards.find((c) => c.id === id) || null;
     },
@@ -690,7 +691,8 @@ export function tomeApp() {
     // move endpoint, which already means "status plus a position".
 
     taskWritable() {
-      return !!(this.board.writable && this.currentTask());
+      const task = this.currentTask();
+      return !!(this.board.writable && task && !task.completed);
     },
 
     // The SSE hold predicate: true while a buffered editor holds text that a
@@ -1808,10 +1810,15 @@ export function tomeApp() {
       return [...this.board.statuses, ...extras].filter((s) => s !== backlogStatus);
     },
 
+    // Completed cards live in board.cards (so lookups, dependency links, and
+    // chain rows resolve them) but never in a column or the backlog list —
+    // this is the one predicate both cardsFor() and the backlog view read,
+    // so neither grows a row ([[completed-tasks-viewable]]).
     visibleCards() {
+      const cards = this.board.cards.filter((c) => !c.completed);
       return this.projectFilter === "__all__"
-        ? this.board.cards
-        : this.board.cards.filter((c) => c.project === this.projectFilter);
+        ? cards
+        : cards.filter((c) => c.project === this.projectFilter);
     },
 
     cardsFor(status) {

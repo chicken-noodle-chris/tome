@@ -200,15 +200,18 @@ def _read_board_config(backlog_dir):
 
 
 def build_board(vault_root, conventions):
-    """The `/board.json` contract: the kanban read from backlog/tasks/*.md.
-    Reuses cli's existing task frontmatter/body readers rather than adding
-    another hand-rolled parser. Cards carry `description`,
-    `acceptanceCriteria`, `dependencies`, `assignee`, `created`, `updated`,
-    and `notes` (task-detail view fields, [[task-detail-view]]) alongside the
-    board columns' own fields — `dependencies` is normalized to lowercase
-    `task-<n>` ids the same way `id` is, so the client can link straight to a
-    dependency's own card; `agent` is pulled out of `labels` the same way
-    `project` already is, rather than making the client re-parse it.
+    """The `/board.json` contract: the kanban read from backlog/tasks/*.md,
+    plus backlog/completed/*.md so a shipped task stays linkable and
+    viewable ([[completed-tasks-viewable]]) after `backlog task complete`
+    moves its file out of tasks/. Reuses cli's existing task
+    frontmatter/body readers rather than adding another hand-rolled parser.
+    Cards carry `description`, `acceptanceCriteria`, `dependencies`,
+    `assignee`, `created`, `updated`, and `notes` (task-detail view fields,
+    [[task-detail-view]]) alongside the board columns' own fields —
+    `dependencies` is normalized to lowercase `task-<n>` ids the same way
+    `id` is, so the client can link straight to a dependency's own card;
+    `agent` is pulled out of `labels` the same way `project` already is,
+    rather than making the client re-parse it.
 
     Each card also carries `hash` — sha256 of its task file — the write
     conflict token the panel's field editors echo back on
@@ -216,15 +219,20 @@ def build_board(vault_root, conventions):
     `_send_raw`'s ETag gives the page editor, and byte-exact on purpose: the
     obvious alternative, `updated_date`, is stamped at minute granularity, so
     two edits inside one minute would look identical and a stale save would
-    slip through unnoticed."""
+    slip through unnoticed. A completed card carries `completed: true` and
+    `hash: ""` instead — it's not writable, so there's no conflict to guard
+    and no reason to pay for a second full read of every archived file on
+    every board build."""
     from tome_cli import cli
 
     backlog_dir = vault_root / "backlog"
     statuses, default_status = _read_board_config(backlog_dir)
 
     cards = []
-    tasks_dir = backlog_dir / "tasks"
-    if tasks_dir.is_dir():
+    for subdir, completed in (("tasks", False), ("completed", True)):
+        tasks_dir = backlog_dir / subdir
+        if not tasks_dir.is_dir():
+            continue
         for path in sorted(tasks_dir.glob("*.md")):
             fm_lines, body = cli.read_page(path)
             raw_id = cli.fm_get(fm_lines, "id") or ""
@@ -261,7 +269,8 @@ def build_board(vault_root, conventions):
                 "description": cli.task_description(body),
                 "acceptanceCriteria": cli.task_acceptance_criteria(body),
                 "notes": cli.task_notes(body),
-                "hash": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "completed": completed,
+                "hash": "" if completed else hashlib.sha256(path.read_bytes()).hexdigest(),
             })
     return {
         "statuses": statuses,
@@ -373,7 +382,10 @@ def apply_task_move(vault_root, raw_task_id, status, raw_after_id):
     --ordinal`. Returns (ok, message) — message is empty on success, an
     error string otherwise. `raw_task_id` accepts either case and an
     optional `task-`/`TASK-` prefix, matching what `board.json` cards and
-    the frontend's URLs carry."""
+    the frontend's URLs carry. Refuses a completed task outright — its file
+    lives in backlog/completed/, not backlog/tasks/, so shelling `backlog
+    task edit` against it would either miss the file or resurrect it into a
+    column, neither of which is "move" ([[completed-tasks-viewable]])."""
     from tome_cli import cli
 
     task_id = raw_task_id.strip()
@@ -383,6 +395,10 @@ def apply_task_move(vault_root, raw_task_id, status, raw_after_id):
         return False, f"bad task id {raw_task_id!r}"
     if not status:
         return False, "status is required"
+
+    task_path = cli.find_task_file(vault_root, task_id)
+    if task_path is not None and task_path.parent.name == "completed":
+        return False, f"task-{task_id} is completed and can't be moved"
 
     card_id = f"task-{task_id}"
     after_id = _normalize_card_id(raw_after_id)
@@ -547,6 +563,11 @@ def apply_task_edit(vault_root, conventions, raw_task_id, patch, base_hash):
     refused with 409 and the *fresh* card. That card is what the client's
     on-disk pane renders — it's the thing an informed re-save would be
     overwriting — and its `hash` is the token that makes the retry land.
+
+    A completed card is refused outright with 400, ahead of the hash check —
+    its `hash` is always `""` ([[completed-tasks-viewable]]), so an empty
+    `base_hash` would otherwise read as a plain conflict instead of the
+    clearer "this task is done" error.
     """
     from tome_cli import cli
 
@@ -562,6 +583,8 @@ def apply_task_edit(vault_root, conventions, raw_task_id, patch, base_hash):
     card = next((c for c in board["cards"] if c["id"] == f"task-{task_id}"), None)
     if card is None:
         return 404, {"error": f"no task with id 'task-{task_id}'"}
+    if card["completed"]:
+        return 400, {"error": f"task-{task_id} is completed and can't be edited"}
 
     if base_hash != card["hash"]:
         return 409, {"error": "task changed since you opened it", "card": card}
@@ -1350,8 +1373,8 @@ def _tree_token(root):
 
 class _ChangeWatcher:
     """One instance per running `tome serve`. `run()` (a daemon thread
-    started by `cmd_serve()`) re-hashes `wiki/` and `backlog/tasks/` every
-    `POLL_SECONDS` and, when either token changes, pushes the changed
+    started by `cmd_serve()`) re-hashes `wiki/` and `backlog/{tasks,completed}/`
+    every `POLL_SECONDS` and, when either token changes, pushes the changed
     contract name(s) — "index", "board" — to every registered client queue.
     `TomeHandler._send_events()` registers one queue per open connection;
     `_idle_watchdog` consults `client_count()` so a connected browser tab
@@ -1363,12 +1386,14 @@ class _ChangeWatcher:
     def __init__(self, vault_root):
         self._wiki_root = vault_root / "wiki"
         self._tasks_dir = vault_root / "backlog" / "tasks"
+        self._completed_dir = vault_root / "backlog" / "completed"
         self._lock = threading.Lock()
         self._clients = []  # list[queue.Queue] — one per open /events connection
         self._tokens = self._snapshot()
 
     def _snapshot(self):
-        return {"index": _tree_token(self._wiki_root), "board": _tree_token(self._tasks_dir)}
+        board_token = _tree_token(self._tasks_dir) + "|" + _tree_token(self._completed_dir)
+        return {"index": _tree_token(self._wiki_root), "board": board_token}
 
     def register(self):
         """A new `/events` connection's inbox — `unregister` it once the

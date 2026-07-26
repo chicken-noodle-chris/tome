@@ -341,6 +341,18 @@ def test_apply_task_move_rebalances_when_the_gap_is_exhausted(monkeypatch, make_
     ]
 
 
+def test_apply_task_move_rejects_a_completed_task(monkeypatch, make_vault, make_task):
+    vault = make_vault()
+    make_task(vault, 1, "Shipped task", status="Done", completed=True)
+    calls = _fake_run_backlog(monkeypatch)
+
+    ok, message = serve.apply_task_move(vault, "task-1", "To Do", None)
+
+    assert ok is False
+    assert "completed" in message
+    assert calls == []  # never shells out for a completed task
+
+
 # --------------------------------------------------------------------------- #
 # task_patch_argv / apply_task_edit — the [[task-editing]] write. The
 # translation is a pure function (patch in, argv out) precisely so it can be
@@ -374,6 +386,25 @@ def test_build_board_card_hash_changes_with_the_file(make_vault, make_task):
                     encoding="utf-8", newline="\n")
 
     assert _card(vault)["hash"] != before
+
+
+def test_build_board_includes_completed_cards(make_vault, make_task):
+    # A completed task's file lives in backlog/completed/, not backlog/tasks/,
+    # but its card must still surface — that's the whole point of
+    # [[completed-tasks-viewable]] — flagged rather than dropped, and with no
+    # hash since it's no longer a write target.
+    vault = make_vault()
+    make_task(vault, 1, "Live task", status="To Do")
+    make_task(vault, 2, "Shipped task", status="Done", completed=True)
+
+    board = serve.build_board(vault, _conv(vault))
+    cards = {c["id"]: c for c in board["cards"]}
+
+    assert set(cards) == {"task-1", "task-2"}
+    assert cards["task-1"]["completed"] is False
+    assert cards["task-2"]["completed"] is True
+    assert cards["task-2"]["hash"] == ""
+    assert cards["task-2"]["title"] == "Shipped task"
 
 
 @pytest.mark.parametrize("patch, expected", [
@@ -545,6 +576,19 @@ def test_apply_task_edit_surfaces_a_backlog_failure(monkeypatch, make_vault, mak
 
     assert status == 400
     assert payload["error"] == "no such status"
+
+
+def test_apply_task_edit_rejects_a_completed_task(monkeypatch, make_vault, make_task):
+    vault = make_vault()
+    make_task(vault, 1, "Shipped task", status="Done", completed=True)
+    calls = _fake_run_backlog(monkeypatch)
+
+    status, payload = serve.apply_task_edit(vault, _conv(vault), "task-1",
+                                             {"title": "Renamed"}, "")
+
+    assert status == 400
+    assert calls == []
+    assert "completed" in payload["error"]
 
 
 # --------------------------------------------------------------------------- #
@@ -1334,6 +1378,22 @@ def test_export_static_board_json_is_read_only(tmp_path, make_vault):
     assert board["writable"] is False
 
 
+def test_export_static_board_json_includes_completed_cards(tmp_path, make_vault, make_task):
+    # A static export is just a frozen board.json, so a completed task's
+    # visibility there is a for-free consequence of build_board carrying it
+    # ([[completed-tasks-viewable]]) — no export-specific handling needed.
+    import json
+
+    vault = make_vault()
+    make_task(vault, 1, "Shipped task", status="Done", completed=True)
+    out_dir = tmp_path / "export"
+    serve.export_static(vault, _conv(vault), out_dir)
+
+    board = json.loads((out_dir / "board.json").read_text(encoding="utf-8"))
+    cards = {c["id"]: c for c in board["cards"]}
+    assert cards["task-1"]["completed"] is True
+
+
 # --------------------------------------------------------------------------- #
 # Live reload ([[live-reload]]) — _tree_token and _ChangeWatcher are pure/
 # thread-free by construction, so these exercise the diffing logic directly
@@ -1384,6 +1444,22 @@ def test_change_watcher_poll_once_detects_wiki_and_board_separately(tmp_path):
     assert watcher.poll_once() == []  # settled — no further diff on a repeat tick
 
     (vault / "backlog" / "tasks" / "task-1.md").write_text("x", encoding="utf-8")
+    assert watcher.poll_once() == ["board"]
+
+
+def test_change_watcher_detects_completed_dir_too(tmp_path):
+    # A `tome done` moves a task's file into backlog/completed/ — the board
+    # token must cover that half too, or a completion wouldn't push a live
+    # reload ([[completed-tasks-viewable]]).
+    vault = tmp_path / "vault"
+    (vault / "wiki").mkdir(parents=True)
+    (vault / "backlog" / "tasks").mkdir(parents=True)
+    (vault / "backlog" / "completed").mkdir(parents=True)
+    watcher = serve._ChangeWatcher(vault)
+
+    assert watcher.poll_once() == []
+
+    (vault / "backlog" / "completed" / "task-1.md").write_text("x", encoding="utf-8")
     assert watcher.poll_once() == ["board"]
 
 
