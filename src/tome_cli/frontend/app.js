@@ -51,10 +51,12 @@ import {
   assemble, assembleFields, displayRows, fieldHunks, textHunks, undecidedCount,
 } from "./merge.js";
 import { computeChains } from "./chains.js";
+import { recentPages, projectRoster, inFlightPlans } from "./home.js";
 
-// The page shown on first load when the URL names none. A stable, link-rich
-// vault page so the slice demonstrates wikilink resolution out of the box.
-const DEFAULT_PAGE = "custom-frontend";
+// Document titles for the four base views that don't (yet — [[browse-ui-polish]]
+// owns per-page titles) carry their own; "page" falls back to the bare default.
+const VIEW_TITLES = { home: "Home · tome", board: "Board · tome", backlog: "Backlog · tome", chains: "Chains · tome" };
+const DEFAULT_TITLE = "tome";
 
 // Frontmatter keys not worth showing in the page's header card.
 const FM_HIDDEN = new Set(["title"]);
@@ -390,6 +392,7 @@ export function tomeApp() {
       const viewParam = params.get("view");
       if (viewParam === "board" || viewParam === "backlog" || viewParam === "chains") {
         this.view = viewParam;
+        document.title = VIEW_TITLES[viewParam];
         return;
       }
       if (this.currentTaskId) {
@@ -397,15 +400,32 @@ export function tomeApp() {
         // base — when task is present, page is ignored, so there is exactly
         // one deterministic base for every URL.
         this.view = "board";
+        document.title = VIEW_TITLES.board;
         return;
       }
-      const slug = params.get("page") || DEFAULT_PAGE;
+      const slug = params.get("page");
+      if (!slug) {
+        // No page named and no other base view matched: the hub, same as an
+        // explicit ?view=home or an unrecognized ?view value.
+        this.view = "home";
+        document.title = VIEW_TITLES.home;
+        return;
+      }
       const justCreated = params.get("new") === "1"; // set by saveNewPage()'s redirect
       await this.loadPage(slug, { push: false });
       if (justCreated) {
         history.replaceState({ slug }, "", `?page=${encodeURIComponent(slug)}`); // drop the one-shot marker
         if (this.board.writable && !this.editing) await this.enterEdit();
       }
+    },
+
+    // The hub route ([[wiki-hub-home]]) — a sibling of ?view=board in the
+    // same router, and the topbar brand's link target.
+    showHome({ push = true } = {}) {
+      this.view = "home";
+      this.currentTaskId = null;
+      document.title = VIEW_TITLES.home;
+      if (push) history.pushState({ view: "home" }, "", "?view=home");
     },
 
     // Enters the board as a real URL state (?view=board), a sibling of
@@ -415,6 +435,7 @@ export function tomeApp() {
     showBoard({ push = true } = {}) {
       this.view = "board";
       this.currentTaskId = null;
+      document.title = VIEW_TITLES.board;
       if (push) history.pushState({ view: "board" }, "", "?view=board");
     },
 
@@ -423,6 +444,7 @@ export function tomeApp() {
     showBacklog({ push = true } = {}) {
       this.view = "backlog";
       this.currentTaskId = null;
+      document.title = VIEW_TITLES.backlog;
       if (push) history.pushState({ view: "backlog" }, "", "?view=backlog");
     },
 
@@ -431,20 +453,23 @@ export function tomeApp() {
     showChains({ push = true } = {}) {
       this.view = "chains";
       this.currentTaskId = null;
+      document.title = VIEW_TITLES.chains;
       if (push) history.pushState({ view: "chains" }, "", "?view=chains");
     },
 
     // Returns to the page view. If a page is already loaded, this is just a
-    // view flip + URL push; if the board was entered directly (no page ever
-    // loaded), falls through to loadPage() for the lazy first load.
+    // view flip + URL push; if no page has ever loaded (e.g. landing
+    // straight on the hub or the board), there is no "the page" to return
+    // to, so this falls back to the hub rather than an arbitrary default.
     async showPage({ push = true } = {}) {
       this.currentTaskId = null;
       if (this.currentSlug) {
         this.view = "page";
+        document.title = DEFAULT_TITLE;
         if (push) history.pushState({ slug: this.currentSlug }, "", `?page=${encodeURIComponent(this.currentSlug)}`);
         return;
       }
-      await this.loadPage(DEFAULT_PAGE, { push });
+      this.showHome({ push });
     },
 
     async loadPage(slug, { push = true } = {}) {
@@ -453,6 +478,7 @@ export function tomeApp() {
       this.currentTaskId = null; // the page view is a different base — the panel goes with it
       const page = this.bySlug.get(slug);
       this.view = "page";
+      document.title = DEFAULT_TITLE; // per-page titles are [[browse-ui-polish]]'s
       this.currentSlug = slug;
       this.currentPage = page || null;
       if (!page) {
@@ -482,12 +508,29 @@ export function tomeApp() {
       }
     },
 
-    // The topbar's "Page" link target: the current page, or the default if
-    // none has loaded yet (e.g. landing straight on the board). DEFAULT_PAGE
-    // is a module-level const, not reachable from the template's expression
-    // scope, hence this wrapper.
+    // The topbar's "Page" link target: the current page, or the hub if none
+    // has loaded yet — mirrors showPage()'s own fallback.
     pageHref() {
-      return `?page=${encodeURIComponent(this.currentSlug || DEFAULT_PAGE)}`;
+      return this.currentSlug ? `?page=${encodeURIComponent(this.currentSlug)}` : "?view=home";
+    },
+
+    // -- hub / home view ([[wiki-hub-home]]) ------------------------------ //
+    // Three sections, each a pure derivation of `pages`/`board.cards` already
+    // in memory (home.js) — no fetch, no new endpoint, identical on a frozen
+    // --export. Board-loaded but not-yet-fetched (this.board defaults to
+    // empty cards) is handled the same way visibleCards() already is: an
+    // empty array, not a special case.
+
+    homeRecentPages() {
+      return recentPages(this.pages);
+    },
+
+    homeProjects() {
+      return projectRoster(this.pages);
+    },
+
+    homeInFlightPlans() {
+      return inFlightPlans(this.pages, this.board.cards);
     },
 
     // A known slug -> the in-app query link; unknown -> null (broken wikilink).

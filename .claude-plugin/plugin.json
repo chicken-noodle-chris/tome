@@ -1,6 +1,6 @@
 {
   "name": "tome",
-  "version": "1.12.2",
+  "version": "1.13.0",
   "description": "Your agent's memory, in a repo you own: the tome CLI, skills (capture, query, ingest, retrospect, write-a-plan, pickup-task), a SessionStart hook that points every session at the vault, a scoped Stop sync reminder, a no-build browse frontend (`tome serve`), and `tome init` to scaffold a fresh vault.",
   "author": {
     "name": "Chris"

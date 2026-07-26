@@ -54,7 +54,7 @@ body {
   background: var(--bg);
   z-index: 10;
 }
-.brand { font-weight: 700; letter-spacing: 0.02em; }
+.brand { font-weight: 700; letter-spacing: 0.02em; color: var(--fg); text-decoration: none; cursor: pointer; }
 .views { display: flex; gap: 0.25rem; }
 .views a {
   border: 1px solid var(--border);
@@ -715,6 +715,17 @@ body {
   color: var(--muted);
 }
 .chip--milestone { font-family: ui-monospace, monospace; }
+
+/* -- hub / home view ([[wiki-hub-home]]) -- */
+.home-wrap { max-width: 46rem; margin: 0 auto; padding: 1.5rem 1.25rem 4rem; }
+.home-section { margin: 0 0 2.25rem; }
+.home-section-title { font-size: 0.95rem; margin: 0 0 0.6rem; }
+.home-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.35rem; }
+.home-list-item { display: flex; align-items: baseline; gap: 0.6rem; font-size: 0.9rem; }
+.home-list-item a { color: var(--accent); text-decoration: none; }
+.home-list-item a:hover { text-decoration: underline; }
+.home-list-meta { color: var(--muted); font-size: 0.78rem; }
+.home-empty { color: var(--muted); font-size: 0.88rem; }
 
 /* -- conflict resolver ([[conflict-resolution]]) --
    Reuses .modal-overlay/.modal; only the width and the hunk table are new.

@@ -13,8 +13,9 @@
   </head>
   <body x-data="tomeApp" x-cloak>
     <header class="topbar">
-      <span class="brand">tome</span>
+      <a class="brand" href="?view=home" @click.prevent="showHome()">tome</a>
       <nav class="views">
+        <a :class="{ active: view === 'home' }" href="?view=home" @click.prevent="showHome()">Home</a>
         <a :class="{ active: view === 'page' }" :href="pageHref()" @click.prevent="showPage()">Page</a>
         <a :class="{ active: view === 'board' }" href="?view=board" @click.prevent="showBoard()">Board</a>
         <a :class="{ active: view === 'backlog' }" href="?view=backlog" @click.prevent="showBacklog()">Backlog</a>
@@ -214,6 +215,52 @@
         </template>
       </main>
     </div>
+
+    <!-- Hub / home view ([[wiki-hub-home]]) — the landing page: recently
+         updated pages, a project roster, and every plan in flight. Every
+         section is a pure derivation of index.json/board.json already in
+         memory (home.js), so this needs no fetch of its own and renders
+         identically on a frozen --export. -->
+    <main class="home-wrap" x-show="view === 'home'">
+      <section class="home-section">
+        <h2 class="home-section-title">Recently updated</h2>
+        <ul class="home-list">
+          <template x-for="p of homeRecentPages()" :key="p.slug">
+            <li class="home-list-item">
+              <a :href="'?page=' + encodeURIComponent(p.slug)" @click.prevent="loadPage(p.slug)" x-text="p.title"></a>
+              <span class="home-list-meta" x-text="p.project"></span>
+              <span class="home-list-meta" x-text="p.updated"></span>
+            </li>
+          </template>
+        </ul>
+      </section>
+
+      <section class="home-section">
+        <h2 class="home-section-title">Projects</h2>
+        <ul class="home-list">
+          <template x-for="p of homeProjects()" :key="p.slug">
+            <li class="home-list-item">
+              <a :href="'?page=' + encodeURIComponent(p.slug)" @click.prevent="loadPage(p.slug)" x-text="p.title"></a>
+              <span class="home-list-meta" x-text="p.count + (p.count === 1 ? ' page' : ' pages')"></span>
+            </li>
+          </template>
+        </ul>
+      </section>
+
+      <section class="home-section">
+        <h2 class="home-section-title">In flight</h2>
+        <p class="home-empty" x-show="!homeInFlightPlans().length">No active or proposed plans.</p>
+        <ul class="home-list">
+          <template x-for="p of homeInFlightPlans()" :key="p.slug">
+            <li class="home-list-item">
+              <a :href="'?page=' + encodeURIComponent(p.slug)" @click.prevent="loadPage(p.slug)" x-text="p.title"></a>
+              <span class="chip" x-text="p.status"></span>
+              <span class="chip" x-show="p.task" x-text="p.task && p.task.status"></span>
+            </li>
+          </template>
+        </ul>
+      </section>
+    </main>
 
     <!-- New page modal ([[page-creation]]) -->
     <div class="modal-overlay" x-show="newPageOpen" x-cloak @click.self="closeNewPageModal()"

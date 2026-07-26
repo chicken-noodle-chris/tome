@@ -39,11 +39,18 @@ function makeApp(overrides = {}) {
 describe("syncFromUrl — every URL shape", () => {
   beforeEach(() => stubLocationAndHistory(""));
 
-  test("no params loads the default page", async () => {
+  test("no params lands on the hub", async () => {
     const app = makeApp();
     await app.syncFromUrl();
-    assert.equal(app.view, "page");
-    assert.equal(app.currentSlug, "custom-frontend");
+    assert.equal(app.view, "home");
+    assert.equal(app.currentSlug, null);
+  });
+
+  test("?view=home lands on the hub explicitly", async () => {
+    globalThis.location.search = "?view=home";
+    const app = makeApp();
+    await app.syncFromUrl();
+    assert.equal(app.view, "home");
   });
 
   test("?page=<slug> loads that page (not-found path needs no fetch)", async () => {
@@ -102,12 +109,11 @@ describe("syncFromUrl — every URL shape", () => {
     assert.equal(app.view, "chains");
   });
 
-  test("an unrecognized ?view value falls through to the page loader", async () => {
+  test("an unrecognized ?view value falls through to the hub (no page param)", async () => {
     globalThis.location.search = "?view=bogus";
     const app = makeApp();
     await app.syncFromUrl();
-    assert.equal(app.view, "page");
-    assert.equal(app.currentSlug, "custom-frontend");
+    assert.equal(app.view, "home");
   });
 
   test("a bare ?task=<id> (no view) defaults its base view to board", async () => {
@@ -200,9 +206,15 @@ describe("task panel reconciliation + popstate back/forward", () => {
 describe("base-view navigation", () => {
   beforeEach(() => stubLocationAndHistory(""));
 
-  test("showBoard/showBacklog/showChains push their route and close any open task panel", () => {
+  test("showHome/showBoard/showBacklog/showChains push their route and close any open task panel", () => {
     const app = makeApp({ currentTaskId: "task-1" });
 
+    app.showHome();
+    assert.equal(app.view, "home");
+    assert.equal(app.currentTaskId, null);
+    assert.equal(globalThis.location.search, "?view=home");
+
+    app.currentTaskId = "task-1";
     app.showBoard();
     assert.equal(app.view, "board");
     assert.equal(app.currentTaskId, null);
@@ -219,6 +231,13 @@ describe("base-view navigation", () => {
     assert.equal(app.view, "chains");
     assert.equal(app.currentTaskId, null);
     assert.equal(globalThis.location.search, "?view=chains");
+  });
+
+  test("showPage with no page ever loaded falls back to the hub", async () => {
+    const app = makeApp();
+    await app.showPage();
+    assert.equal(app.view, "home");
+    assert.equal(globalThis.location.search, "?view=home");
   });
 
   test("push: false does not touch the URL", () => {
