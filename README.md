@@ -263,15 +263,26 @@ catalogue + wikilink graph) and `/board.json` (the Backlog.md kanban) —
 rebuilt fresh on every request. Its write routes move and reorder a board
 card (`POST /api/task/<id>/move`, shelled out to backlog.md — never a
 direct YAML write; drag a card to a new column or a new spot in Manual sort
-mode to use it), edit a page's body or frontmatter, rename its slug, and
-scaffold a new page — each one routed
+mode to use it), edit any of a task's fields from its detail panel
+(`POST /api/task/<id>/edit`, likewise shelled out), edit a page's body or
+frontmatter, rename its slug, and scaffold a new page — each one routed
 through the same `tome` command a terminal would run, then lint-gated,
 committed, and pushed.
 
+Task editing has no edit mode: each field carries its own affordance, so a
+status or priority select, an acceptance-criterion checkbox, and a label
+chip write on the gesture itself, while the title and the two prose blocks
+open an editor in place with explicit Save. Whichever it is, one save
+becomes exactly one `backlog task edit` invocation.
+
 Every one of those writes is optimistic: it carries the hash of the version
-you opened, and the server refuses to write over a page that moved
-underneath you. When that happens — or when a `git pull --rebase` finds the
-history itself has forked — a **three-way resolver** opens in place, showing
+you opened, and the server refuses to write over a page — or a task — that
+moved underneath you. For a task, the refusal opens the on-disk version in a
+second pane beside your edit, read-only, with per-block Copy and
+take-the-disk-version buttons: your in-flight text is never discarded, and
+the panel adopts the fresh token so an informed re-save lands. For a page —
+or when a `git pull --rebase` finds the history itself has forked — a
+**three-way resolver** opens in place, showing
 your buffer beside the external version with the differences as pickable
 hunks (keep mine / keep theirs / both / hand-edit; frontmatter resolves per
 field). Resolving assembles one merged buffer and re-saves it through the

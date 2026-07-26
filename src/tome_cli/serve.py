@@ -22,6 +22,15 @@ tome_cli.serve — the local browse host for the no-build frontend.
     frontend can tell a live `tome serve` (true) from a frozen static export
     (false, see export_static() below) and hide drag-to-move accordingly —
     the static deploy has no server behind it to accept the POST at all;
+  * accepts a sibling write, `POST /api/task/<id>/edit`, applying one sparse
+    field patch from the task-detail panel ([[task-editing]]) — title,
+    description, notes, priority, milestone, assignee, one label, or the
+    acceptance criteria — translated into exactly one `backlog task edit`
+    argv by `task_patch_argv()` below and shelled through the same
+    `cli.run_backlog`. Guarded by the per-card `hash` in `board.json`, whose
+    409 carries the fresh card so the client can show what it would be
+    overwriting. Status is *not* a patch field: that's what the move route
+    below already is;
   * accepts a sibling write, `POST /api/task`, filing a brand-new bare task —
     a kanban card with no wiki page — the same way, via `cli.run_backlog`
     (see `create_task()` below). Same uncommitted-until-`tome sync` contract
@@ -199,7 +208,15 @@ def build_board(vault_root, conventions):
     board columns' own fields — `dependencies` is normalized to lowercase
     `task-<n>` ids the same way `id` is, so the client can link straight to a
     dependency's own card; `agent` is pulled out of `labels` the same way
-    `project` already is, rather than making the client re-parse it."""
+    `project` already is, rather than making the client re-parse it.
+
+    Each card also carries `hash` — sha256 of its task file — the write
+    conflict token the panel's field editors echo back on
+    `POST /api/task/<id>/edit` ([[task-editing]]). It's the same discipline
+    `_send_raw`'s ETag gives the page editor, and byte-exact on purpose: the
+    obvious alternative, `updated_date`, is stamped at minute granularity, so
+    two edits inside one minute would look identical and a stale save would
+    slip through unnoticed."""
     from tome_cli import cli
 
     backlog_dir = vault_root / "backlog"
@@ -244,6 +261,7 @@ def build_board(vault_root, conventions):
                 "description": cli.task_description(body),
                 "acceptanceCriteria": cli.task_acceptance_criteria(body),
                 "notes": cli.task_notes(body),
+                "hash": hashlib.sha256(path.read_bytes()).hexdigest(),
             })
     return {
         "statuses": statuses,
@@ -390,6 +408,174 @@ def apply_task_move(vault_root, raw_task_id, status, raw_after_id):
         message = (proc.stderr or proc.stdout).strip() or "backlog task edit failed"
         return False, message
     return True, ""
+
+
+# --------------------------------------------------------------------------- #
+# Task field edits ([[task-editing]]). The panel edits a dozen small typed
+# fields plus three prose blocks, so each field saves on its own — but they
+# all arrive as a *sparse patch* on one endpoint, and each patch becomes
+# exactly one `backlog task edit` invocation. One invocation per save keeps
+# the write atomic from the client's side and the npx cost to one process.
+#
+# `task_patch_argv` is the seam: a pure patch-in/argv-out function with the
+# shell-out around it, so the translation is testable without ever invoking
+# npx (the `_fake_run_backlog` pattern in test_serve.py).
+#
+# `status` is deliberately *not* a patch key — a status change is a move, and
+# `POST /api/task/<id>/move` already means that, ordinal and all. Two paths
+# meaning the same thing is how they drift apart.
+# --------------------------------------------------------------------------- #
+
+_PRIORITIES = ("high", "medium", "low")
+
+# Read-only in the panel ([[task-editing]]): `id` is identity, `created`/
+# `updated` are backlog.md's to stamp, `ordinal` belongs to drag-to-reorder,
+# and `references` is the link a plan is found by — silently breaking a plan's
+# backlink from a text field isn't worth the convenience.
+_PATCH_FIELDS = {"title", "description", "notes", "priority", "milestone",
+                 "assignee", "addLabel", "removeLabel", "ac", "acs"}
+
+
+def _require_str(patch, key, *, allow_empty=False):
+    value = patch[key]
+    if not isinstance(value, str):
+        raise ValueError(f"{key} must be a string")
+    if not allow_empty and not value.strip():
+        raise ValueError(f"{key} must not be empty")
+    return value
+
+
+def task_patch_argv(task_id, patch, card):
+    """One sparse patch -> one `backlog task edit` argv. Pure: `card` is the
+    task's current board.json entry, read by the caller, and the only thing
+    consulted about present state (the AC count a rewrite has to clear).
+    Raises ValueError — the caller's 400 — for anything malformed.
+
+    **Editing an acceptance criterion's text has no flag.** backlog.md can add
+    a criterion and remove one by index, but not rewrite one in place, so a
+    text edit arrives as `acs` — the whole block — and leaves as
+    remove-every-index, re-add-in-order, re-check-the-checked-ones, all inside
+    the one argv so it stays a single atomic edit. Order and check state
+    survive; the cost is that the whole block's markdown is rewritten for a
+    one-word fix. Removal indices are 1-based against the *pre-edit* list and
+    `--check-ac`'s are against the *post-edit* one, which is how backlog.md
+    applies them (verified against 1.47.1).
+    """
+    unknown = set(patch) - _PATCH_FIELDS
+    if unknown:
+        raise ValueError(f"unsupported field(s): {', '.join(sorted(unknown))}")
+    if not patch:
+        raise ValueError("patch is empty")
+    if "ac" in patch and "acs" in patch:
+        raise ValueError("ac and acs are mutually exclusive")
+
+    argv = ["task", "edit", task_id]
+
+    if "title" in patch:
+        argv += ["-t", _require_str(patch, "title")]
+    if "description" in patch:
+        argv += ["-d", _require_str(patch, "description", allow_empty=True)]
+    if "notes" in patch:
+        argv += ["--notes", _require_str(patch, "notes", allow_empty=True)]
+    if "priority" in patch:
+        priority = _require_str(patch, "priority")
+        if priority not in _PRIORITIES:
+            raise ValueError(f"priority must be one of {', '.join(_PRIORITIES)}")
+        argv += ["--priority", priority]
+    if "milestone" in patch:
+        milestone = _require_str(patch, "milestone", allow_empty=True).strip()
+        argv += ["-m", milestone] if milestone else ["--clear-milestone"]
+    if "assignee" in patch:
+        # `-a` replaces the whole assignee list, and backlog.md 1.47.1 has no
+        # flag that clears it (unlike --clear-milestone), so the panel offers
+        # set-and-replace only — an empty value here would be silently
+        # ignored, which is worse than refusing it.
+        argv += ["-a", _require_str(patch, "assignee")]
+    if "removeLabel" in patch:
+        argv += ["--remove-label", _require_str(patch, "removeLabel")]
+    if "addLabel" in patch:
+        # One label per call: `--add-label` isn't a collecting option in
+        # backlog.md 1.47.1, so a second occurrence would silently win. The
+        # chip UI adds one at a time anyway.
+        argv += ["--add-label", _require_str(patch, "addLabel")]
+
+    if "ac" in patch:
+        ac = patch["ac"]
+        if not isinstance(ac, dict) or not isinstance(ac.get("index"), int) \
+                or not isinstance(ac.get("checked"), bool):
+            raise ValueError("ac must be {index: int, checked: bool}")
+        count = len(card.get("acceptanceCriteria") or [])
+        if not 1 <= ac["index"] <= count:
+            raise ValueError(f"ac index {ac['index']} is out of range (1..{count})")
+        argv += ["--check-ac" if ac["checked"] else "--uncheck-ac", str(ac["index"])]
+
+    if "acs" in patch:
+        acs = patch["acs"]
+        if not isinstance(acs, list):
+            raise ValueError("acs must be a list")
+        items = []
+        for entry in acs:
+            if not isinstance(entry, dict) or not isinstance(entry.get("text"), str) \
+                    or not isinstance(entry.get("checked"), bool):
+                raise ValueError("each acs entry must be {text: str, checked: bool}")
+            text = entry["text"].strip()
+            if not text:
+                raise ValueError("an acceptance criterion must not be empty")
+            items.append((text, entry["checked"]))
+        for i in range(1, len(card.get("acceptanceCriteria") or []) + 1):
+            argv += ["--remove-ac", str(i)]
+        for text, _ in items:
+            argv += ["--ac", text]
+        for i, (_, checked) in enumerate(items, start=1):
+            if checked:
+                argv += ["--check-ac", str(i)]
+
+    if len(argv) == 3:
+        raise ValueError("patch changed nothing")
+    return argv
+
+
+def apply_task_edit(vault_root, conventions, raw_task_id, patch, base_hash):
+    """The [[task-editing]] save path: one sparse field patch, one
+    `backlog task edit`. Returns (http_status, payload_dict), never raising,
+    mirroring the page write paths — but with no git in it at all. Task writes
+    stay uncommitted and unlinted, exactly as a drag-to-move or a create
+    already does; the next `tome sync` picks them up.
+
+    The conflict gate is `build_board`'s per-card `hash`: a stale `base_hash`
+    means the task file moved since the panel last read it, so the write is
+    refused with 409 and the *fresh* card. That card is what the client's
+    on-disk pane renders — it's the thing an informed re-save would be
+    overwriting — and its `hash` is the token that makes the retry land.
+    """
+    from tome_cli import cli
+
+    task_id = str(raw_task_id or "").strip()
+    if task_id.upper().startswith("TASK-"):
+        task_id = task_id[len("TASK-"):]
+    if not task_id.isdigit():
+        return 400, {"error": f"bad task id {raw_task_id!r}"}
+    if not isinstance(patch, dict):
+        return 400, {"error": "patch must be an object"}
+
+    board = build_board(vault_root, conventions)
+    card = next((c for c in board["cards"] if c["id"] == f"task-{task_id}"), None)
+    if card is None:
+        return 404, {"error": f"no task with id 'task-{task_id}'"}
+
+    if base_hash != card["hash"]:
+        return 409, {"error": "task changed since you opened it", "card": card}
+
+    try:
+        argv = task_patch_argv(task_id, patch, card)
+    except ValueError as e:
+        return 400, {"error": str(e)}
+
+    proc = cli.run_backlog(vault_root, argv, capture=True)
+    if proc.returncode != 0:
+        return 400, {"error": (proc.stderr or proc.stdout).strip() or "backlog task edit failed"}
+
+    return 200, _board_with_writable(vault_root, conventions, True)
 
 
 def create_task(vault_root, title, status, project, priority, description):
@@ -1236,6 +1422,7 @@ class _ChangeWatcher:
 # --------------------------------------------------------------------------- #
 
 _TASK_MOVE_RE = re.compile(r"^/api/task/([^/]+)/move$")
+_TASK_EDIT_RE = re.compile(r"^/api/task/([^/]+)/edit$")
 
 
 class TomeHandler(BaseHTTPRequestHandler):
@@ -1311,6 +1498,15 @@ class TomeHandler(BaseHTTPRequestHandler):
                 if not ok:
                     return self._send_json({"error": message}, status=400)
                 return self._send_json(_board_with_writable(self.vault_root, self.conventions, True))
+            m = _TASK_EDIT_RE.match(path)
+            if m:
+                payload = self._json_body()
+                if payload is None:
+                    return
+                status_code, result = apply_task_edit(
+                    self.vault_root, self.conventions, m.group(1),
+                    payload.get("patch"), str(payload.get("baseHash") or ""))
+                return self._send_json(result, status=status_code)
             if path == "/api/task":
                 payload = self._json_body()
                 if payload is None:
@@ -1589,6 +1785,7 @@ def cmd_serve(vault_root, conventions, args):
     print("  serving  /  /index.json  /board.json  /raw/<page>.md  /app/<file>")
     print("  GET  /events                (SSE live-reload: push on wiki/backlog changes)")
     print("  POST /api/task/<id>/move    (status + reorder, shelled to backlog.md)")
+    print("  POST /api/task/<id>/edit    (one field patch -> one backlog task edit)")
     print("  POST /api/task              (new bare task, shelled to backlog.md)")
     print("  POST /api/page              (body edits, conflict + lint gated)")
     print("  POST /api/frontmatter       (title/tags/description edits, conflict + lint gated)")

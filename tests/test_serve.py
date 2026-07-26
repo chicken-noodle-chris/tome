@@ -143,6 +143,7 @@ def test_build_board_reads_config_and_tasks(make_vault, make_task):
         {"text": "one", "checked": True}, {"text": "two", "checked": False},
     ]
     assert one["notes"] == "Shipped in commit abc123."
+    assert len(one["hash"]) == 64  # sha256 of the task file — the write conflict token
     two = cards["task-2"]
     assert two["project"] == "artikindle"
     assert two["agent"] is None
@@ -331,6 +332,212 @@ def test_apply_task_move_rebalances_when_the_gap_is_exhausted(monkeypatch, make_
         ["task", "edit", "2", "--ordinal", "11000"],
         ["task", "edit", "3", "-s", "To Do", "--ordinal", "10500"],
     ]
+
+
+# --------------------------------------------------------------------------- #
+# task_patch_argv / apply_task_edit — the [[task-editing]] write. The
+# translation is a pure function (patch in, argv out) precisely so it can be
+# asserted without a live server or a real npx, so these use the same
+# `_fake_run_backlog` monkeypatch the move tests above do; no test here shells
+# out to backlog.md. Like a move, this write never touches git.
+# --------------------------------------------------------------------------- #
+
+def _card(vault, task_id="task-1"):
+    board = serve.build_board(vault, _conv(vault))
+    return next(c for c in board["cards"] if c["id"] == task_id)
+
+
+def test_build_board_card_carries_its_file_hash(make_vault, make_task):
+    vault = make_vault()
+    path = make_task(vault, 1, "First task")
+
+    card = _card(vault)
+
+    assert card["hash"] == hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_build_board_card_hash_changes_with_the_file(make_vault, make_task):
+    # The whole point of a byte-exact token: `updated_date` is stamped at
+    # minute granularity, so two edits inside one minute would look identical.
+    vault = make_vault()
+    path = make_task(vault, 1, "First task")
+    before = _card(vault)["hash"]
+
+    path.write_text(path.read_text(encoding="utf-8") + "\ntrailing\n",
+                    encoding="utf-8", newline="\n")
+
+    assert _card(vault)["hash"] != before
+
+
+@pytest.mark.parametrize("patch, expected", [
+    ({"title": "New title"}, ["-t", "New title"]),
+    ({"description": "Body text."}, ["-d", "Body text."]),
+    ({"description": ""}, ["-d", ""]),
+    ({"notes": "Shipped in abc123."}, ["--notes", "Shipped in abc123."]),
+    ({"priority": "high"}, ["--priority", "high"]),
+    ({"milestone": "m-2"}, ["-m", "m-2"]),
+    ({"milestone": ""}, ["--clear-milestone"]),
+    ({"assignee": "@me"}, ["-a", "@me"]),
+    ({"addLabel": "semver:minor"}, ["--add-label", "semver:minor"]),
+    ({"removeLabel": "agent:opus"}, ["--remove-label", "agent:opus"]),
+    ({"ac": {"index": 1, "checked": True}}, ["--check-ac", "1"]),
+    ({"ac": {"index": 2, "checked": False}}, ["--uncheck-ac", "2"]),
+])
+def test_task_patch_argv_single_fields(make_vault, make_task, patch, expected):
+    vault = make_vault()
+    make_task(vault, 1, "First task")
+
+    argv = serve.task_patch_argv("1", patch, _card(vault))
+
+    assert argv == ["task", "edit", "1", *expected]
+
+
+def test_task_patch_argv_folds_several_fields_into_one_invocation(make_vault, make_task):
+    # One save, one argv — that's what keeps a multi-field write atomic from
+    # the client's side and the npx cost to one process.
+    vault = make_vault()
+    make_task(vault, 1, "First task")
+
+    argv = serve.task_patch_argv(
+        "1", {"title": "T", "priority": "low", "removeLabel": "old", "addLabel": "new"},
+        _card(vault))
+
+    assert argv == ["task", "edit", "1", "-t", "T", "--priority", "low",
+                    "--remove-label", "old", "--add-label", "new"]
+
+
+def test_task_patch_argv_rewrites_the_whole_ac_block(make_vault, make_task):
+    # backlog.md can add and remove a criterion but not rewrite one in place,
+    # so a text edit clears every index and re-adds the list in order, then
+    # re-checks by *post*-rewrite index — all inside the one argv.
+    vault = make_vault()
+    make_task(vault, 1, "First task", acs=("one", "two"), checked={1})
+
+    argv = serve.task_patch_argv("1", {"acs": [
+        {"text": "one edited", "checked": True},
+        {"text": "two", "checked": False},
+        {"text": "three", "checked": True},
+    ]}, _card(vault))
+
+    assert argv == [
+        "task", "edit", "1",
+        "--remove-ac", "1", "--remove-ac", "2",
+        "--ac", "one edited", "--ac", "two", "--ac", "three",
+        "--check-ac", "1", "--check-ac", "3",
+    ]
+
+
+def test_task_patch_argv_can_clear_every_criterion(make_vault, make_task):
+    vault = make_vault()
+    make_task(vault, 1, "First task", acs=("one", "two"))
+
+    argv = serve.task_patch_argv("1", {"acs": []}, _card(vault))
+
+    assert argv == ["task", "edit", "1", "--remove-ac", "1", "--remove-ac", "2"]
+
+
+@pytest.mark.parametrize("patch, fragment", [
+    ({"ordinal": 5}, "unsupported field"),
+    ({"references": ["wiki/x.md"]}, "unsupported field"),
+    ({"created": "2026-01-01"}, "unsupported field"),
+    ({}, "empty"),
+    ({"title": "  "}, "must not be empty"),
+    ({"title": 7}, "must be a string"),
+    ({"priority": "urgent"}, "priority must be one of"),
+    ({"assignee": ""}, "must not be empty"),
+    ({"ac": {"index": 9, "checked": True}}, "out of range"),
+    ({"ac": {"index": "1", "checked": True}}, "index: int"),
+    ({"acs": [{"text": "", "checked": False}]}, "must not be empty"),
+    ({"acs": "one"}, "must be a list"),
+    ({"ac": {"index": 1, "checked": True}, "acs": []}, "mutually exclusive"),
+])
+def test_task_patch_argv_rejects_bad_patches(make_vault, make_task, patch, fragment):
+    vault = make_vault()
+    make_task(vault, 1, "First task")
+
+    with pytest.raises(ValueError) as excinfo:
+        serve.task_patch_argv("1", patch, _card(vault))
+
+    assert fragment in str(excinfo.value)
+
+
+def test_apply_task_edit_happy_path_shells_once_and_returns_the_board(monkeypatch, make_vault, make_task):
+    vault = make_vault()
+    make_task(vault, 1, "First task")
+    card = _card(vault)
+    calls = _fake_run_backlog(monkeypatch)
+
+    status, payload = serve.apply_task_edit(vault, _conv(vault), "TASK-1",
+                                             {"title": "Renamed"}, card["hash"])
+
+    assert status == 200
+    assert calls == [["task", "edit", "1", "-t", "Renamed"]]
+    assert payload["writable"] is True
+    assert [c["id"] for c in payload["cards"]] == ["task-1"]
+
+
+def test_apply_task_edit_refuses_a_stale_hash_and_returns_the_fresh_card(monkeypatch, make_vault, make_task):
+    vault = make_vault()
+    make_task(vault, 1, "First task")
+    calls = _fake_run_backlog(monkeypatch)
+
+    status, payload = serve.apply_task_edit(vault, _conv(vault), "task-1",
+                                             {"title": "Renamed"}, "stale")
+
+    assert status == 409
+    assert calls == []  # disk untouched
+    # The fresh card is what the client's on-disk pane renders, and its hash
+    # is the token that makes an informed retry land.
+    assert payload["card"]["title"] == "First task"
+    assert payload["card"]["hash"] == _card(vault)["hash"]
+
+
+def test_apply_task_edit_rejects_an_unknown_task(monkeypatch, make_vault):
+    vault = make_vault()
+    calls = _fake_run_backlog(monkeypatch)
+
+    status, payload = serve.apply_task_edit(vault, _conv(vault), "task-9", {"title": "x"}, "")
+
+    assert status == 404
+    assert calls == []
+    assert "task-9" in payload["error"]
+
+
+def test_apply_task_edit_rejects_a_non_numeric_id(monkeypatch, make_vault):
+    vault = make_vault()
+    calls = _fake_run_backlog(monkeypatch)
+
+    status, payload = serve.apply_task_edit(vault, _conv(vault), "task-abc", {"title": "x"}, "")
+
+    assert status == 400
+    assert calls == []
+    assert "bad task id" in payload["error"]
+
+
+def test_apply_task_edit_rejects_a_malformed_patch_without_shelling_out(monkeypatch, make_vault, make_task):
+    vault = make_vault()
+    make_task(vault, 1, "First task")
+    calls = _fake_run_backlog(monkeypatch)
+
+    status, payload = serve.apply_task_edit(vault, _conv(vault), "task-1",
+                                             {"ordinal": 5}, _card(vault)["hash"])
+
+    assert status == 400
+    assert calls == []
+    assert "unsupported field" in payload["error"]
+
+
+def test_apply_task_edit_surfaces_a_backlog_failure(monkeypatch, make_vault, make_task):
+    vault = make_vault()
+    make_task(vault, 1, "First task")
+    card = _card(vault)
+    _fake_run_backlog(monkeypatch, _Result(returncode=1, stderr="no such status"))
+
+    status, payload = serve.apply_task_edit(vault, _conv(vault), "task-1",
+                                             {"title": "Renamed"}, card["hash"])
+
+    assert status == 400
+    assert payload["error"] == "no such status"
 
 
 # --------------------------------------------------------------------------- #

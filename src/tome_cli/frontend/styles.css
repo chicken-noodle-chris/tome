@@ -578,6 +578,133 @@ body {
 .task-deps a.task-dep--offboard { color: var(--muted); cursor: default; font-style: italic; }
 .task-deps a.task-dep--offboard:hover { text-decoration: none; }
 
+/* -- task editing ([[task-editing]]) --
+   Field-level, so there is no edit-mode chrome to style — just an affordance
+   per field and one in-place editor at a time. The on-disk pane a conflict
+   opens is the same markup with editors gated off, so the only layout rule
+   it needs is the two-column track below. */
+.task-panel--conflict { flex-basis: min(48rem, 65vw); width: min(48rem, 65vw); }
+.task-panes { display: grid; grid-template-columns: 1fr; gap: 1.25rem; }
+.task-panel--conflict .task-panes {
+  grid-template-columns: 1fr 1fr;
+  align-items: start;
+}
+/* Below the panel's own breakpoint the two columns stack — your edit above
+   the snapshot — in the overlay the panel already becomes there. */
+@media (max-width: 900px) {
+  .task-panel--conflict, .task-panel--conflict .task-panes { width: 100%; }
+  .task-panel--conflict .task-panes { grid-template-columns: 1fr; }
+}
+.task-detail--disk {
+  border-left: 1px solid var(--border);
+  padding-left: 1.25rem;
+  opacity: 0.92;
+}
+.task-pane-head { display: flex; align-items: baseline; gap: 0.5rem; margin-bottom: 0.5rem; }
+.task-pane-head h2 { margin: 0; font-size: 0.95rem; }
+.task-pane-when { color: var(--muted); font-size: 0.75rem; }
+.task-pane-dismiss {
+  margin-left: auto;
+  font: inherit;
+  font-size: 0.72rem;
+  padding: 0.1rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--muted);
+  cursor: pointer;
+}
+.task-pane-take { margin-left: auto; display: flex; gap: 0.2rem; }
+
+.task-banner {
+  font-size: 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.5rem 0.7rem;
+  margin: 0 0 0.75rem;
+  background: var(--panel);
+}
+.task-banner--error { border-color: var(--broken); color: var(--broken); }
+
+.task-title--editable { cursor: text; }
+.task-title--editable:hover { text-decoration: underline dotted var(--muted); }
+
+/* Every small icon affordance in the panel — edit, remove, copy, take —
+   shares one button skin so no single field grows its own chrome. */
+.task-block-actions button,
+.task-ac-actions button,
+.task-pane-take button {
+  font: inherit;
+  font-size: 0.8rem;
+  line-height: 1;
+  padding: 0.15rem 0.35rem;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+.task-block-actions button:hover,
+.task-ac-actions button:hover,
+.task-pane-take button:hover { border-color: var(--border); color: var(--accent); }
+.task-block h2, .task-acs h2 { display: flex; align-items: baseline; gap: 0.5rem; }
+.task-block-actions { margin-left: auto; display: flex; gap: 0.2rem; }
+.task-block { margin: 1.5rem 0; }
+.task-block h2 { font-size: 1.05rem; margin: 0 0 0.5rem; }
+
+.task-field-edit { display: grid; gap: 0.4rem; width: 100%; }
+.task-field-edit input, .task-field-edit textarea {
+  font: inherit;
+  width: 100%;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+}
+.task-field-edit textarea { font-family: ui-monospace, monospace; font-size: 0.85rem; resize: vertical; }
+.task-field-actions { display: flex; gap: 0.4rem; }
+.task-field-actions button {
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 0.2rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+.task-field-actions .editor-btn-save { background: var(--accent); color: #fff; border-color: var(--accent); }
+.task-field-actions button:disabled { cursor: default; opacity: 0.6; }
+
+.task-select, .task-inline-input {
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.1rem 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+}
+.task-inline-input { min-width: 6rem; }
+.task-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem; }
+.chip-remove {
+  border: none;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  line-height: 1;
+  padding: 0 0 0 0.2rem;
+  cursor: pointer;
+}
+.chip-remove:hover { color: var(--broken); }
+.task-label-add { max-width: 9rem; }
+.task-ac-add { margin-top: 0.5rem; width: 100%; }
+.task-ac { align-items: baseline; }
+.task-ac-text { flex: 1 1 auto; }
+.task-ac-actions { margin-left: auto; display: flex; gap: 0.1rem; visibility: hidden; }
+.task-ac:hover .task-ac-actions, .task-ac:focus-within .task-ac-actions { visibility: visible; }
+
 /* -- backlog view ([[deferred-backlog]]) -- */
 .backlog-list { max-width: 32rem; }
 .chip {

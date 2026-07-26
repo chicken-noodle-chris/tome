@@ -13,13 +13,17 @@
 // drag-to-move-and-reorder, POSTing `{status, afterId}` to
 // `/api/task/<id>/move`.
 //
-// A read-only task-detail panel ([[task-detail-panel]]) layers over whichever
+// A task-detail panel ([[task-detail-panel]]) layers over whichever
 // of board/backlog/chains is the active base view — `currentTaskId` is an
 // axis orthogonal to `view`, not a fifth view value, so `?view=<base>&task=<id>`
 // (and a bare `?task=<id>`, defaulting to board) fully describes the state and
 // back/forward simply re-derives both from the URL on `popstate`. The panel
 // renders straight from the matching board.json card already in memory: no
-// fetch, no new server route, identical on a frozen static export.
+// fetch on open, and identical on a frozen static export, where every
+// affordance below is withheld. On a live serve its fields are editable
+// ([[task-editing]]) — one field at a time, each save a sparse patch POSTed
+// to `/api/task/<id>/edit` and turned into a single `backlog task edit`
+// server-side, guarded by the card's own `hash`.
 // The page view supports body editing on
 // the same flag, POSTing to `/api/page` ([[page-editing]]), and frontmatter
 // editing (title/tags/description), POSTing to `/api/frontmatter`
@@ -158,6 +162,18 @@ function tomeApp() {
     // immediately instead of showing stale content.
     currentTaskId: null,
 
+    // task editing ([[task-editing]]) — field-level, no whole-panel edit
+    // mode: at most one *buffered* editor (title, description, notes, or one
+    // AC's text) is open at a time, while every other field writes on the
+    // gesture itself. See the task-editing section below.
+    taskEdit: null, // { field, value, index } — the open buffered editor, or null
+    taskSavingField: "", // the field whose POST is in flight ("" when idle)
+    taskBanner: "",
+    taskBannerKind: "", // "conflict" | "error"
+    taskConflict: null, // { card, at } — the frozen on-disk snapshot from a 409
+    taskLabelDraft: "",
+    taskAcDraft: "",
+
     // page editing ([[page-editing]]) — the editor instance itself is the
     // module-level `mountedEditor`, not reactive state; see its comment.
     editing: false,
@@ -293,7 +309,12 @@ function tomeApp() {
     // is simply held and replayed once it clears (see onDragEnd/moveCard) —
     // never dropped.
     async applyBoardChange() {
-      if (this.draggingId || this.movingCardId) {
+      // A dirty field editor ([[task-editing]]) joins the drag/move hold: an
+      // incoming push would otherwise replace `board` wholesale and take a
+      // half-typed description with it. Unlike those two it doesn't
+      // self-resolve on a timer, so releaseBoardHold() below is what lets it
+      // through, the moment the field is saved or cancelled.
+      if (this.draggingId || this.movingCardId || this.taskEditDirty()) {
         this.boardReloadPending = true;
         return;
       }
@@ -519,6 +540,7 @@ function tomeApp() {
     // Opens the panel over whichever base view is currently active — a card
     // click, a dependency link, or a chain row all funnel through here.
     openTask(id, { push = true } = {}) {
+      if (id !== this.currentTaskId) this.resetTaskEditing();
       this.currentTaskId = id;
       if (push) history.pushState({ view: this.view, task: id }, "", `?view=${this.view}&task=${encodeURIComponent(id)}`);
     },
@@ -527,6 +549,7 @@ function tomeApp() {
     // all return to the plain current base view.
     closeTaskPanel({ push = true } = {}) {
       if (!this.currentTaskId) return;
+      this.resetTaskEditing();
       this.currentTaskId = null;
       if (push) history.pushState({ view: this.view }, "", `?view=${this.view}`);
     },
@@ -550,14 +573,12 @@ function tomeApp() {
       return this.board.cards.find((c) => c.id === id) || null;
     },
 
-    taskDescriptionHtml() {
-      const t = this.currentTask();
-      return t && t.description ? renderMarkdown(t.description, (s) => this.resolveWikilink(s)) : "";
-    },
-
-    taskNotesHtml() {
-      const t = this.currentTask();
-      return t && t.notes ? renderMarkdown(t.notes, (s) => this.resolveWikilink(s)) : "";
+    // The panel's prose blocks, rendered from whichever card the pane holds
+    // ([[task-editing]] renders the same markup for the live task and for a
+    // conflict's on-disk snapshot), so this takes the text rather than
+    // reaching for currentTask() itself.
+    renderTaskMarkdown(text) {
+      return text ? renderMarkdown(text, (s) => this.resolveWikilink(s)) : "";
     },
 
     // The first `references` entry that's a known wiki page (paths are
@@ -571,6 +592,271 @@ function tomeApp() {
         if (page) return page;
       }
       return null;
+    },
+
+    // -- task editing ([[task-editing]]) ---------------------------------- //
+    // A task isn't one markdown blob the way a page is — it's a dozen small
+    // typed fields plus three prose blocks — so there's no Edit button and no
+    // mode. Each field carries its own affordance and three interaction
+    // families share one endpoint:
+    //
+    //   immediate  a status/priority/milestone select, an AC checkbox, a
+    //              label chip added or removed — one gesture, one write, no
+    //              Save button, exactly as drag-to-move already works
+    //   buffered   title, description, notes, and one AC's text — an editor
+    //              in place with explicit Save/Cancel, at most one open
+    //   list       acceptance criteria gain add/remove/edit alongside toggle
+    //
+    // Every save POSTs a sparse patch to /api/task/<id>/edit, which the
+    // server turns into exactly one `backlog task edit` — this module never
+    // writes task YAML. Status is the one exception: it reuses the existing
+    // move endpoint, which already means "status plus a position".
+
+    taskWritable() {
+      return !!(this.board.writable && this.currentTask());
+    },
+
+    // The SSE hold predicate: true while a buffered editor holds text that a
+    // board push would destroy. An immediate write isn't dirty — it has no
+    // buffer to lose, and its own response carries the authoritative board.
+    taskEditDirty() {
+      return !!this.taskEdit;
+    },
+
+    // The counterpart to applyBoardChange()'s hold: once nothing transient is
+    // outstanding, a push that arrived meanwhile is applied.
+    releaseBoardHold() {
+      if (this.boardReloadPending && !this.taskEditDirty()
+          && !this.draggingId && !this.movingCardId) {
+        this.applyBoardChange();
+      }
+    },
+
+    // Dropped whenever the panel changes which task it's showing (or closes):
+    // a buffer, a banner, and an on-disk snapshot all belong to one task.
+    resetTaskEditing() {
+      this.taskEdit = null;
+      this.taskBanner = "";
+      this.taskBannerKind = "";
+      this.taskConflict = null;
+      this.taskLabelDraft = "";
+      this.taskAcDraft = "";
+      this.releaseBoardHold();
+    },
+
+    beginTaskEdit(field, value, index = null) {
+      if (!this.taskWritable()) return;
+      this.taskEdit = { field, value: value || "", index };
+    },
+
+    cancelTaskEdit() {
+      this.taskEdit = null;
+      this.releaseBoardHold();
+    },
+
+    taskEditing(field, index = null) {
+      return !!this.taskEdit && this.taskEdit.field === field && this.taskEdit.index === index;
+    },
+
+    // The one write wrapper every field goes through. Returns true when the
+    // task landed, so callers know whether to close their editor — a refused
+    // save must keep its buffer ([[task-editing]]'s whole point about never
+    // discarding in-flight text).
+    async patchTask(patch, { field = "" } = {}) {
+      const task = this.currentTask();
+      if (!task || !this.board.writable || this.taskSavingField) return false;
+      this.taskSavingField = field || "task";
+      this.taskBanner = "";
+      this.taskBannerKind = "";
+      try {
+        const res = await fetch(`/api/task/${encodeURIComponent(task.id)}/edit`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ patch, baseHash: task.hash }),
+        });
+        const data = await res.json();
+        if (res.status === 200) {
+          this.board = data; // authoritative post-edit board, straight from the server
+          this.taskConflict = null; // a landed save is the end of that conflict
+          return true;
+        }
+        if (res.status === 409 && data.card) {
+          this.openTaskConflict(data.card);
+          return false;
+        }
+        this.taskBannerKind = "error";
+        this.taskBanner = data.error || `Save failed (HTTP ${res.status})`;
+        return false;
+      } catch (e) {
+        this.taskBannerKind = "error";
+        this.taskBanner = `Save failed: ${e.message}`;
+        return false;
+      } finally {
+        this.taskSavingField = "";
+        this.releaseBoardHold();
+      }
+    },
+
+    // A 409 refuses one save; the retry is the interesting moment, because
+    // the panel adopts the fresh token and the *next* Save lands on top of
+    // whatever disk now holds. Leaving that decision blind is the actual
+    // problem, so the refusal opens the on-disk task beside the edit view.
+    openTaskConflict(card) {
+      // Frozen snapshot: it deliberately doesn't live-update on SSE pushes —
+      // a reference column that moves while you're reading it is worse than
+      // a slightly stale one — and is replaced only by a later 409.
+      this.taskConflict = { card, at: Date.now() };
+      // Adopt the fresh hash but keep the card's *content* as it was: the
+      // panel still shows what you were editing, the pane beside it shows
+      // what you'd overwrite, and an informed re-save now carries a token
+      // the server accepts.
+      this.board = {
+        ...this.board,
+        cards: this.board.cards.map((c) => (c.id === card.id ? { ...c, hash: card.hash } : c)),
+      };
+      this.taskBannerKind = "conflict";
+      this.taskBanner = "This task changed on disk — nothing was written. "
+        + "Compare with the On-disk pane, then Save again to overwrite it.";
+    },
+
+    dismissTaskConflict() {
+      this.taskConflict = null;
+      if (this.taskBannerKind === "conflict") {
+        this.taskBanner = "";
+        this.taskBannerKind = "";
+      }
+    },
+
+    taskConflictAgo() {
+      return this.taskConflict ? timeAgo(this.taskConflict.at) : "";
+    },
+
+    // One markup block, two data sources — the on-disk pane is the panel's
+    // own render instantiated a second time against the 409's card, with
+    // every editor gated off and Copy/Take offered instead.
+    taskPanes() {
+      const live = { key: "live", card: this.currentTask(), disk: false };
+      if (!this.taskConflict) return [live];
+      return [live, { key: "disk", card: this.taskConflict.card, disk: true }];
+    },
+
+    // -- buffered fields -------------------------------------------------- //
+
+    async saveTaskEdit() {
+      if (!this.taskEdit) return;
+      const { field, value, index } = this.taskEdit;
+      let patch;
+      if (field === "ac") {
+        const items = (this.currentTask().acceptanceCriteria || [])
+          .map((ac, i) => (i === index ? { ...ac, text: value } : ac));
+        patch = this.acsPatch(items);
+      } else {
+        patch = { [field]: value };
+      }
+      if (await this.patchTask(patch, { field })) this.taskEdit = null;
+      this.releaseBoardHold();
+    },
+
+    // -- metadata (immediate writes) -------------------------------------- //
+
+    // Status is a move, not a field edit: the existing endpoint already means
+    // "status plus a position", so this reuses it rather than growing a
+    // second path that says the same thing. Always the top of the target
+    // column, like Defer/Promote.
+    setTaskStatus(status) {
+      const task = this.currentTask();
+      if (task && status && status !== task.status) this.moveCard(task, status, null);
+    },
+
+    setTaskPriority(priority) {
+      const task = this.currentTask();
+      if (task && priority && priority !== task.priority) {
+        this.patchTask({ priority }, { field: "priority" });
+      }
+    },
+
+    // "" clears the milestone (the server routes that to --clear-milestone).
+    setTaskMilestone(milestone) {
+      const task = this.currentTask();
+      if (task && milestone !== (task.milestone || "")) {
+        this.patchTask({ milestone }, { field: "milestone" });
+      }
+    },
+
+    // `-a` replaces the whole assignee list and backlog.md has no flag that
+    // clears it, so this is set-and-replace only — hence a text input rather
+    // than removable chips, which would promise a removal that can't happen.
+    setTaskAssignee(assignee) {
+      const value = (assignee || "").trim();
+      const task = this.currentTask();
+      if (!task || !value || value === (task.assignee || []).join(", ")) return;
+      this.patchTask({ assignee: value }, { field: "assignee" });
+    },
+
+    milestoneOptions() {
+      return [...new Set(this.board.cards.map((c) => c.milestone).filter(Boolean))].sort();
+    },
+
+    // Every label already in use on the board, minus the ones this task
+    // carries — so the conventional prefixes (project:, agent:, semver:) are
+    // one keystroke rather than one typo.
+    labelSuggestions() {
+      const task = this.currentTask();
+      const mine = new Set((task && task.labels) || []);
+      return [...new Set(this.board.cards.flatMap((c) => c.labels || []))]
+        .filter((l) => !mine.has(l))
+        .sort();
+    },
+
+    async addTaskLabel(label) {
+      const value = (label || "").trim();
+      if (!value) return;
+      if (await this.patchTask({ addLabel: value }, { field: "labels" })) this.taskLabelDraft = "";
+    },
+
+    removeTaskLabel(label) {
+      this.patchTask({ removeLabel: label }, { field: "labels" });
+    },
+
+    // -- acceptance criteria ---------------------------------------------- //
+
+    // backlog.md can add a criterion and remove one by index, but not rewrite
+    // one in place, so any text or membership change ships the whole block —
+    // one argv, so it stays a single atomic edit. A plain check/uncheck is
+    // spared that: it has its own flag, and stays a one-gesture write.
+    acsPatch(items) {
+      return { acs: items.map((ac) => ({ text: ac.text, checked: !!ac.checked })) };
+    },
+
+    toggleAc(index) {
+      const ac = (this.currentTask().acceptanceCriteria || [])[index];
+      if (ac) this.patchTask({ ac: { index: index + 1, checked: !ac.checked } }, { field: "ac" });
+    },
+
+    removeAc(index) {
+      const items = (this.currentTask().acceptanceCriteria || []).filter((_, i) => i !== index);
+      this.patchTask(this.acsPatch(items), { field: "ac" });
+    },
+
+    async addAc(text) {
+      const value = (text || "").trim();
+      if (!value) return;
+      const items = [...(this.currentTask().acceptanceCriteria || []), { text: value, checked: false }];
+      if (await this.patchTask(this.acsPatch(items), { field: "ac" })) this.taskAcDraft = "";
+    },
+
+    // -- on-disk pane affordances ----------------------------------------- //
+
+    copyText(text) {
+      if (navigator.clipboard) navigator.clipboard.writeText(text || "");
+    },
+
+    // Drops the disk version straight into your editor, so reconciling by
+    // hand is a click rather than a select-and-paste. Deliberately only for
+    // the buffered fields: taking the disk copy of a field you'd write back
+    // unchanged is a no-op, so the AC list offers Copy alone.
+    takeDiskText(field, text) {
+      this.beginTaskEdit(field, text || "");
     },
 
     // -- page editing ([[page-editing]]) ---------------------------------- //

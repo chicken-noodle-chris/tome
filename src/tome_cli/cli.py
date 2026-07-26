@@ -1735,11 +1735,76 @@ def cmd_sync(vault_root, conventions, args):
     return sync_core(vault_root, conventions, args.message, args.no_verify, pathspec=None)
 
 
+_backlog_script = None  # memoized _find_backlog_script() hit, resolved once per process
+
+
+def _find_backlog_script():
+    """Filesystem path to the pinned backlog.md `cli.js`, or None if it can't
+    be located. Used only by the multi-line path in `run_backlog` below.
+
+    npm keeps one npx-cache directory per package spec, keyed by a hash tome
+    has no way to derive, so this globs the cache and keeps only a copy whose
+    own package.json reads exactly `BACKLOG_VERSION` — a neighbouring cache
+    entry for a different pin must never be the one that runs."""
+    probe = subprocess.run(["npm", "config", "get", "cache"], capture_output=True,
+                            text=True, shell=(sys.platform == "win32"))
+    if probe.returncode != 0:
+        return None
+    cache = Path(probe.stdout.strip())
+    if not cache.is_dir():
+        return None
+    for manifest in sorted((cache / "_npx").glob("*/node_modules/backlog.md/package.json")):
+        try:
+            version = json.loads(manifest.read_text(encoding="utf-8")).get("version")
+        except (OSError, json.JSONDecodeError):
+            continue
+        script = manifest.parent / "cli.js"
+        if version == BACKLOG_VERSION and script.is_file():
+            return script
+    return None
+
+
+def backlog_script(refresh=True):
+    """`_find_backlog_script()`, memoized, priming the npx cache with one
+    cheap single-line invocation if the pinned version isn't there yet."""
+    global _backlog_script
+    if _backlog_script is None:
+        _backlog_script = _find_backlog_script()
+    if _backlog_script is None and refresh:
+        subprocess.run(["npx", "--yes", f"backlog.md@{BACKLOG_VERSION}", "--version"],
+                        capture_output=True, shell=(sys.platform == "win32"))
+        _backlog_script = _find_backlog_script()
+    return _backlog_script
+
+
 def run_backlog(vault_root, argv, capture=False):
     """Shell out to the pinned backlog.md CLI from the vault root. Used both
     by the raw `tome task` passthrough and by `start`/`done`'s bundled task
     edits — task files are backlog.md-owned, so tome never hand-writes them,
-    only drives them through this same entry point."""
+    only drives them through this same entry point.
+
+    Normally that means `npx`, which on Windows reaches the package through a
+    `.cmd` shim. A batch shim cannot carry a newline: cmd.exe truncates the
+    argument there and drops every flag after it, so a multi-line
+    `--notes`/`-d` value would land as its first line alone — silently, with
+    a zero exit code. Any argv containing a newline therefore runs the
+    resolved `cli.js` directly under `node`, with no shell in the path at
+    all. If that script can't be found the write is refused outright (a
+    non-zero CompletedProcess every existing caller already knows how to
+    surface) rather than allowed through to be quietly truncated.
+    """
+    if any("\n" in str(a) for a in argv):
+        script = backlog_script()
+        if script is None:
+            return subprocess.CompletedProcess(
+                argv, 1, "",
+                f"backlog.md@{BACKLOG_VERSION} could not be located, and this edit "
+                f"carries a multi-line value that the npx shim would truncate")
+        cmd = ["node", str(script), *argv]
+        if capture:
+            return subprocess.run(cmd, cwd=str(vault_root), capture_output=True, text=True)
+        return subprocess.run(cmd, cwd=str(vault_root))
+
     cmd = ["npx", "--yes", f"backlog.md@{BACKLOG_VERSION}", *argv]
     if capture:
         return subprocess.run(cmd, cwd=str(vault_root), shell=(sys.platform == "win32"),
@@ -2450,8 +2515,8 @@ if you omit -m.
       Serve the no-build browse frontend locally (stdlib http.server): the
       frontend's static files, the vault's raw .md under /raw/, and two
       generated JSON contracts (/index.json, /board.json) rebuilt per
-      request. Write routes (printed in full on startup): task move/create
-      shell out to backlog.md — never a direct YAML write — while page body,
+      request. Write routes (printed in full on startup): task move/create/
+      edit shell out to backlog.md — never a direct YAML write — while page body,
       frontmatter, rename, and new-page writes route through the same tome
       operations and lint gate the CLI uses, and /api/conflict* drives the
       three-way resolver for a stopped rebase.
