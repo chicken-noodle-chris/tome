@@ -7,12 +7,19 @@ frontend and any future static-export path depend on, so those are what's
 locked here.
 """
 
+import functools
 import hashlib
+import http.client
+import json
 import os
 import shutil
 import subprocess
 import sys
+import threading
+import time
+from http.server import HTTPServer, SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -538,6 +545,97 @@ def test_apply_task_edit_surfaces_a_backlog_failure(monkeypatch, make_vault, mak
 
     assert status == 400
     assert payload["error"] == "no such status"
+
+
+# --------------------------------------------------------------------------- #
+# create_task — the [[in-ui-creation]] New Task write: a bare kanban card with
+# no wiki page, shelled through backlog.md like apply_task_move/
+# apply_task_edit, so it uses the same `_fake_run_backlog`-style monkeypatch.
+# Unlike those, success has to parse the real CLI's "File: <path>" stdout line
+# and then read that file back for its id, so the happy-path fake points at
+# an actual task file on disk rather than just returning an empty result.
+# --------------------------------------------------------------------------- #
+
+def test_create_task_happy_path_returns_lowercase_id(monkeypatch, make_vault, make_task):
+    vault = make_vault()
+    task_path = make_task(vault, 5, "New task", status="To Do")
+    calls = []
+
+    def _run(vault_root, argv, capture=False):
+        calls.append(list(argv))
+        return _Result(returncode=0, stdout=f"File: {task_path}\n")
+
+    monkeypatch.setattr(tome, "run_backlog", _run)
+
+    ok, result = serve.create_task(vault, "New task", "To Do", "tome", "high", "desc")
+
+    assert ok is True
+    assert result == "task-5"
+    assert calls == [["task", "create", "New task", "-s", "To Do", "--plain",
+                       "-d", "desc", "-l", "project:tome", "--priority", "high"]]
+
+
+def test_create_task_requires_title(monkeypatch, make_vault):
+    vault = make_vault()
+    calls = _fake_run_backlog(monkeypatch)
+
+    ok, message = serve.create_task(vault, "  ", "To Do", None, None, None)
+
+    assert ok is False
+    assert "title is required" in message
+    assert calls == []
+
+
+def test_create_task_requires_status(monkeypatch, make_vault):
+    vault = make_vault()
+    calls = _fake_run_backlog(monkeypatch)
+
+    ok, message = serve.create_task(vault, "New task", "", None, None, None)
+
+    assert ok is False
+    assert "status is required" in message
+    assert calls == []
+
+
+def test_create_task_surfaces_backlog_failure(monkeypatch, make_vault):
+    vault = make_vault()
+    _fake_run_backlog(monkeypatch, _Result(returncode=1, stderr="no such status"))
+
+    ok, message = serve.create_task(vault, "New task", "To Do", None, None, None)
+
+    assert ok is False
+    assert message == "no such status"
+
+
+def test_create_task_missing_file_line_is_reported(monkeypatch, make_vault):
+    vault = make_vault()
+
+    def _run(vault_root, argv, capture=False):
+        return _Result(returncode=0, stdout="created ok, no file line\n")
+
+    monkeypatch.setattr(tome, "run_backlog", _run)
+
+    ok, message = serve.create_task(vault, "New task", "To Do", None, None, None)
+
+    assert ok is False
+    assert "file path" in message
+
+
+def test_create_task_missing_id_is_reported(monkeypatch, make_vault):
+    vault = make_vault()
+    task_path = vault / "backlog" / "tasks" / "task-x.md"
+    task_path.parent.mkdir(parents=True, exist_ok=True)
+    task_path.write_text("---\ntitle: X\n---\nbody\n", encoding="utf-8")
+
+    def _run(vault_root, argv, capture=False):
+        return _Result(returncode=0, stdout=f"File: {task_path}\n")
+
+    monkeypatch.setattr(tome, "run_backlog", _run)
+
+    ok, message = serve.create_task(vault, "New task", "To Do", None, None, None)
+
+    assert ok is False
+    assert "id could not be read" in message
 
 
 # --------------------------------------------------------------------------- #
@@ -1346,3 +1444,475 @@ def test_launch_gui_reports_failure_without_crashing(monkeypatch, tmp_path):
     code = serve.launch_gui()
 
     assert code == 1
+
+
+# --------------------------------------------------------------------------- #
+# HTTP layer ([[serve-http-tests]]) — everything above this line exercises the
+# pure functions TomeHandler calls; this section is the layer above them:
+# route matching, status codes, header emission, and body/error shaping, over
+# a real running server. `start_server` binds TomeHandler to an ephemeral
+# port on a real vault (class-level state, same pattern cmd_serve() itself
+# uses) and tears every server it started down at the end of the test.
+# --------------------------------------------------------------------------- #
+
+@pytest.fixture
+def start_server():
+    servers = []
+
+    def _start(vault, conventions=None):
+        conv = conventions if conventions is not None else _conv(vault)
+        serve.TomeHandler.vault_root = vault
+        serve.TomeHandler.conventions = conv
+        serve.TomeHandler.last_activity = time.monotonic()
+        serve.TomeHandler.watcher = serve._ChangeWatcher(vault)
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), serve.TomeHandler)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        servers.append(httpd)
+        return f"http://127.0.0.1:{httpd.server_address[1]}"
+
+    yield _start
+    for httpd in servers:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def _request(base_url, method, path, body=None):
+    """A bare HTTP round-trip via http.client rather than urllib.request,
+    which silently collapses `..` segments out of the path before the
+    request ever leaves the process — exactly the thing the traversal tests
+    below need to reach the handler."""
+    parts = urlsplit(base_url)
+    conn = http.client.HTTPConnection(parts.hostname, parts.port)
+    try:
+        headers = {"Content-Type": "application/json"} if body is not None else {}
+        conn.request(method, path, body=body, headers=headers)
+        resp = conn.getresponse()
+        return resp.status, resp.read(), resp.headers
+    finally:
+        conn.close()
+
+
+def _get(base_url, path):
+    return _request(base_url, "GET", path)
+
+
+def _post_bytes(base_url, path, data):
+    status, body, _headers = _request(base_url, "POST", path, body=data)
+    return status, body
+
+
+def _post(base_url, path, obj):
+    return _post_bytes(base_url, path, json.dumps(obj).encode("utf-8"))
+
+
+# -- GET ---------------------------------------------------------------- #
+
+def test_get_index_json(start_server, make_vault, make_page):
+    vault = make_vault()
+    make_page(vault, "tome/ideas/alpha.md", type="idea", title="Alpha", desc="d")
+    base = start_server(vault)
+
+    status, body, headers = _get(base, "/index.json")
+
+    assert status == 200
+    assert headers["Content-Type"] == "application/json; charset=utf-8"
+    data = json.loads(body)
+    assert any(p["slug"] == "alpha" for p in data["pages"])
+
+
+def test_get_board_json(start_server, make_vault, make_task):
+    vault = make_vault()
+    (vault / "backlog").mkdir(exist_ok=True)
+    (vault / "backlog" / "config.yml").write_text(
+        'default_status: "To Do"\nstatuses: ["To Do", "Done"]\n', encoding="utf-8")
+    make_task(vault, 1, "First task")
+    base = start_server(vault)
+
+    status, body, headers = _get(base, "/board.json")
+
+    assert status == 200
+    assert headers["Content-Type"] == "application/json; charset=utf-8"
+    data = json.loads(body)
+    assert data["writable"] is True
+    assert [c["id"] for c in data["cards"]] == ["task-1"]
+
+
+def test_get_raw_page_returns_etag(start_server, make_vault, make_page):
+    vault = make_vault()
+    make_page(vault, "tome/ideas/alpha.md", type="idea", title="Alpha",
+              body="\n# Alpha\n\nBody text.\n")
+    base = start_server(vault)
+
+    status, body, headers = _get(base, "/raw/tome/ideas/alpha.md")
+
+    assert status == 200
+    assert headers["Content-Type"] == "text/markdown; charset=utf-8"
+    assert "Body text." in body.decode("utf-8")
+    assert headers["ETag"] == hashlib.sha256(body).hexdigest()
+
+
+def test_get_raw_page_missing_is_404(start_server, make_vault):
+    vault = make_vault()
+    base = start_server(vault)
+
+    status, _body, _headers = _get(base, "/raw/tome/ideas/no-such.md")
+
+    assert status == 404
+
+
+def test_get_raw_rejects_path_traversal(start_server, make_vault):
+    vault = make_vault()
+    base = start_server(vault)
+
+    status, _body, _headers = _get(base, "/raw/../../etc/passwd")
+
+    assert status == 400
+
+
+def test_get_app_statics(start_server, make_vault):
+    vault = make_vault()
+    base = start_server(vault)
+
+    status, body, headers = _get(base, "/app/app.js")
+    assert status == 200
+    assert headers["Content-Type"] == "text/javascript; charset=utf-8"
+    assert len(body) > 0
+
+    status, _body, headers = _get(base, "/app/styles.css")
+    assert status == 200
+    assert headers["Content-Type"] == "text/css; charset=utf-8"
+
+
+def test_get_app_rejects_path_traversal(start_server, make_vault):
+    vault = make_vault()
+    base = start_server(vault)
+
+    status, _body, _headers = _get(base, "/app/../../etc/passwd")
+
+    assert status == 400
+
+
+def test_get_root_serves_frontend_index(start_server, make_vault):
+    vault = make_vault()
+    base = start_server(vault)
+
+    status, body, headers = _get(base, "/")
+
+    assert status == 200
+    assert headers["Content-Type"] == "text/html; charset=utf-8"
+    assert b"<html" in body.lower()
+
+
+def test_get_unknown_path_is_404(start_server, make_vault):
+    vault = make_vault()
+    base = start_server(vault)
+
+    status, _body, _headers = _get(base, "/nope")
+
+    assert status == 404
+
+
+# -- POST: task move / edit / create ------------------------------------- #
+
+def test_post_task_move_success(monkeypatch, start_server, make_vault, make_task):
+    vault = make_vault()
+    make_task(vault, 1, "First task", status="To Do")
+    calls = _fake_run_backlog(monkeypatch)
+    base = start_server(vault)
+
+    status, body = _post(base, "/api/task/task-1/move", {"status": "Done", "afterId": None})
+
+    assert status == 200
+    data = json.loads(body)
+    assert data["writable"] is True
+    assert calls == [["task", "edit", "1", "-s", "Done", "--ordinal", "10000"]]
+
+
+def test_post_task_move_missing_status_is_400(monkeypatch, start_server, make_vault, make_task):
+    vault = make_vault()
+    make_task(vault, 1, "First task")
+    _fake_run_backlog(monkeypatch)
+    base = start_server(vault)
+
+    status, body = _post(base, "/api/task/task-1/move", {"status": ""})
+
+    assert status == 400
+    assert "error" in json.loads(body)
+
+
+def test_post_malformed_json_body_is_400(start_server, make_vault):
+    vault = make_vault()
+    base = start_server(vault)
+
+    status, body = _post_bytes(base, "/api/task/task-1/move", b"{not valid json")
+
+    assert status == 400
+    assert "error" in json.loads(body)
+
+
+def test_post_task_edit_success(monkeypatch, start_server, make_vault, make_task):
+    vault = make_vault()
+    make_task(vault, 1, "First task")
+    card = _card(vault)
+    _fake_run_backlog(monkeypatch)
+    base = start_server(vault)
+
+    status, body = _post(base, "/api/task/task-1/edit",
+                          {"patch": {"title": "Renamed"}, "baseHash": card["hash"]})
+
+    assert status == 200
+    assert json.loads(body)["writable"] is True
+
+
+def test_post_task_edit_stale_hash_is_409(monkeypatch, start_server, make_vault, make_task):
+    vault = make_vault()
+    make_task(vault, 1, "First task")
+    _fake_run_backlog(monkeypatch)
+    base = start_server(vault)
+
+    status, body = _post(base, "/api/task/task-1/edit",
+                          {"patch": {"title": "Renamed"}, "baseHash": "stale"})
+
+    data = json.loads(body)
+    assert status == 409
+    assert data["card"]["title"] == "First task"
+
+
+def test_post_task_edit_missing_patch_is_400(monkeypatch, start_server, make_vault, make_task):
+    vault = make_vault()
+    make_task(vault, 1, "First task")
+    _fake_run_backlog(monkeypatch)
+    base = start_server(vault)
+
+    status, body = _post(base, "/api/task/task-1/edit", {"baseHash": "irrelevant"})
+
+    assert status == 400
+    assert "error" in json.loads(body)
+
+
+def test_post_task_create_success(monkeypatch, start_server, make_vault, make_task):
+    vault = make_vault()
+    task_path = make_task(vault, 9, "New task", status="To Do")
+
+    def _run(vault_root, argv, capture=False):
+        return _Result(returncode=0, stdout=f"File: {task_path}\n")
+
+    monkeypatch.setattr(tome, "run_backlog", _run)
+    base = start_server(vault)
+
+    status, body = _post(base, "/api/task",
+                          {"title": "New task", "status": "To Do", "project": "tome",
+                           "priority": "high", "description": "d"})
+
+    assert status == 200
+    data = json.loads(body)
+    assert data["taskId"] == "task-9"
+    assert data["writable"] is True
+
+
+def test_post_task_create_missing_title_is_400(start_server, make_vault):
+    vault = make_vault()
+    base = start_server(vault)
+
+    status, body = _post(base, "/api/task", {"status": "To Do"})
+
+    assert status == 400
+    assert "error" in json.loads(body)
+
+
+# -- POST: page / frontmatter / rename / new (needs a real git vault) ---- #
+
+@pytestmark_git
+def test_post_page_success(start_server, tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    target = _scaffold_idea(vault, run_tome)
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "add alpha")
+    _git(vault, "push")
+    base_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+    base = start_server(vault)
+
+    status, body = _post(base, "/api/page", {"path": "tome/ideas/alpha.md",
+                                              "body": "\n# Alpha\n\nEdited via HTTP.\n",
+                                              "baseHash": base_hash})
+
+    assert status == 200
+    data = json.loads(body)
+    assert "hash" in data
+    assert "Edited via HTTP." in target.read_text(encoding="utf-8")
+
+
+@pytestmark_git
+def test_post_page_missing_fields_is_400(start_server, tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    base = start_server(vault)
+
+    status, body = _post(base, "/api/page", {"path": "tome/ideas/alpha.md"})
+
+    assert status == 400
+    assert "error" in json.loads(body)
+
+
+@pytestmark_git
+def test_post_page_stale_hash_is_409(start_server, tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    _scaffold_idea(vault, run_tome)
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "add alpha")
+    _git(vault, "push")
+    base = start_server(vault)
+
+    status, body = _post(base, "/api/page", {"path": "tome/ideas/alpha.md",
+                                              "body": "x", "baseHash": "stale"})
+
+    data = json.loads(body)
+    assert status == 409
+    assert "currentHash" in data
+
+
+@pytestmark_git
+def test_post_frontmatter_success(start_server, tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    target = _scaffold_idea(vault, run_tome)
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "add alpha")
+    _git(vault, "push")
+    base_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+    base = start_server(vault)
+
+    status, body = _post(base, "/api/frontmatter",
+                          {"path": "tome/ideas/alpha.md",
+                           "fields": {"title": "Alpha Renamed"},
+                           "baseHash": base_hash})
+
+    assert status == 200
+    data = json.loads(body)
+    assert "hash" in data
+    assert 'title: "Alpha Renamed"' in target.read_text(encoding="utf-8")
+
+
+@pytestmark_git
+def test_post_frontmatter_missing_fields_is_400(start_server, tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    base = start_server(vault)
+
+    status, body = _post(base, "/api/frontmatter", {"path": "tome/ideas/alpha.md"})
+
+    assert status == 400
+    assert "error" in json.loads(body)
+
+
+@pytestmark_git
+def test_post_frontmatter_stale_hash_is_409(start_server, tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    _scaffold_idea(vault, run_tome)
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "add alpha")
+    _git(vault, "push")
+    base = start_server(vault)
+
+    status, body = _post(base, "/api/frontmatter",
+                          {"path": "tome/ideas/alpha.md", "fields": {"title": "X"},
+                           "baseHash": "stale"})
+
+    data = json.loads(body)
+    assert status == 409
+    assert "currentHash" in data
+
+
+@pytestmark_git
+def test_post_rename_success(start_server, tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    alpha, _beta = _scaffold_two_ideas(vault, run_tome)
+    base_hash = hashlib.sha256(alpha.read_bytes()).hexdigest()
+    base = start_server(vault)
+
+    status, body = _post(base, "/api/rename",
+                          {"path": "tome/ideas/alpha.md", "newSlug": "gamma", "baseHash": base_hash})
+
+    assert status == 200
+    data = json.loads(body)
+    assert data["slug"] == "gamma"
+    assert data["url"] == "?page=gamma"
+
+
+@pytestmark_git
+def test_post_rename_missing_fields_is_400(start_server, tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    base = start_server(vault)
+
+    status, body = _post(base, "/api/rename", {"path": "tome/ideas/alpha.md"})
+
+    assert status == 400
+    assert "error" in json.loads(body)
+
+
+@pytestmark_git
+def test_post_rename_stale_hash_is_409(start_server, tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    _scaffold_two_ideas(vault, run_tome)
+    base = start_server(vault)
+
+    status, body = _post(base, "/api/rename",
+                          {"path": "tome/ideas/alpha.md", "newSlug": "gamma", "baseHash": "stale"})
+
+    data = json.loads(body)
+    assert status == 409
+    assert "currentHash" in data
+
+
+@pytestmark_git
+def test_post_new_success(start_server, tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    run_tome("--vault", str(vault), "new", "project", "tome", "--title", "Tome", "--desc", "d")
+    _git(vault, "add", "-A")
+    _git(vault, "commit", "-m", "add project")
+    _git(vault, "push")
+    base = start_server(vault)
+
+    status, body = _post(base, "/api/new",
+                          {"type": "idea", "project": "tome", "slug": "my-idea",
+                           "title": "My Idea", "description": "a fresh idea"})
+
+    assert status == 200
+    data = json.loads(body)
+    assert data["slug"] == "my-idea"
+    assert (vault / "wiki" / "tome" / "ideas" / "my-idea.md").is_file()
+
+
+@pytestmark_git
+def test_post_new_missing_fields_is_400(start_server, tmp_path, run_tome):
+    vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
+    base = start_server(vault)
+
+    status, body = _post(base, "/api/new", {"type": "idea"})
+
+    assert status == 400
+    assert "error" in json.loads(body)
+
+
+# -- static export, served over HTTP by an ordinary static host ---------- #
+
+def test_export_over_http_reports_writable_false_and_lacks_write_routes(tmp_path, make_vault):
+    vault = make_vault()
+    out_dir = tmp_path / "export"
+    serve.export_static(vault, _conv(vault), out_dir)
+
+    handler = functools.partial(SimpleHTTPRequestHandler, directory=str(out_dir))
+    httpd = HTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+
+        status, body, _headers = _get(base, "/board.json")
+        assert status == 200
+        assert json.loads(body)["writable"] is False
+
+        # No server-side route handling behind a static host at all — a
+        # write POST isn't refused by application logic, it's unsupported
+        # by the file server itself.
+        status, _body = _post(base, "/api/task/task-1/move", {"status": "Done"})
+        assert status in (404, 501)
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
