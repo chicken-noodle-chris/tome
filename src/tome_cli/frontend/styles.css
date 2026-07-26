@@ -989,3 +989,100 @@ body {
 }
 .chain-unchained .chain-rows { margin-top: 0.5rem; }
 .resolver-add { color: var(--fg); }
+
+/* -- search ([[browse-ui-polish]], AC1) --
+   A topbar input with a dropdown of results anchored beneath it; the
+   dropdown is a normal block so it never fights the topbar's own layout. */
+.search-box { position: relative; width: 16rem; }
+.search-input {
+  width: 100%;
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.3rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--fg);
+}
+.search-results {
+  position: absolute;
+  top: calc(100% + 0.3rem);
+  left: 0;
+  right: 0;
+  max-height: 22rem;
+  overflow-y: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 0.5rem 1.5rem rgba(0, 0, 0, 0.15);
+  padding: 0.4rem;
+  z-index: 20;
+}
+.search-empty { margin: 0; padding: 0.4rem; color: var(--muted); font-size: 0.85rem; }
+.search-group + .search-group { margin-top: 0.5rem; }
+.search-group h3 {
+  margin: 0 0 0.25rem;
+  padding: 0 0.4rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.search-result {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.6rem;
+  width: 100%;
+  font: inherit;
+  font-size: 0.88rem;
+  text-align: left;
+  color: var(--fg);
+  background: none;
+  border: none;
+  border-radius: 6px;
+  padding: 0.35rem 0.4rem;
+  cursor: pointer;
+}
+.search-result:hover, .search-result:focus { background: var(--panel); }
+.search-result-meta { color: var(--muted); font-size: 0.76rem; white-space: nowrap; }
+
+/* -- sidebar keyboard cursor ([[browse-ui-polish]], AC5) -- */
+.tree-link.cursor { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* -- page-to-task link ([[browse-ui-polish]], AC2) --
+   Same shape as .backlinks, so a page with both sections reads as one
+   family rather than two competing footers. */
+.linked-tasks { margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid var(--border); }
+.linked-tasks-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.35rem; }
+.linked-task-link {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--fg);
+  text-decoration: none;
+  font-size: 0.9rem;
+}
+.linked-task-link:hover { text-decoration: underline; }
+
+/* -- log view ([[browse-ui-polish]], AC3) -- */
+.log-wrap { max-width: 46rem; margin: 0 auto; padding: 1.5rem 1.25rem 4rem; }
+.log-markdown h2 { font-size: 0.95rem; margin: 1.5rem 0 0.35rem; }
+.log-markdown h2:first-child { margin-top: 0; }
+
+/* -- milestone swimlanes ([[browse-ui-polish]], AC4) --
+   Replaces .board-columns as the board view's scrollable flex-1 region when
+   grouped; each lane keeps its own fixed-height row of columns rather than
+   the plain board's full-viewport one, since several lanes stack here. */
+.board-swimlanes { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: grid; gap: 1.5rem; }
+.board-swimlane:last-child { padding-bottom: 0.25rem; }
+.swimlane-title {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+}
+.board-columns--lane { grid-auto-columns: minmax(13rem, 1fr); }
+.board-columns--lane .board-column { height: 16rem; }

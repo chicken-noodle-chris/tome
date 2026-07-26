@@ -52,10 +52,14 @@ import {
 } from "./merge.js";
 import { computeChains } from "./chains.js";
 import { recentPages, projectRoster, inFlightPlans } from "./home.js";
+import { searchVault } from "./search.js";
+import { linkifyLog } from "./log.js";
 
-// Document titles for the four base views that don't (yet — [[browse-ui-polish]]
-// owns per-page titles) carry their own; "page" falls back to the bare default.
-const VIEW_TITLES = { home: "Home · tome", board: "Board · tome", backlog: "Backlog · tome", chains: "Chains · tome" };
+// Document titles for the five base views that don't carry their own.
+const VIEW_TITLES = {
+  home: "Home · tome", board: "Board · tome", backlog: "Backlog · tome",
+  chains: "Chains · tome", log: "Log · tome",
+};
 const DEFAULT_TITLE = "tome";
 
 // Frontmatter keys not worth showing in the page's header card.
@@ -125,6 +129,9 @@ const FOLDER_ORDER = [
 // others are read-only lenses tie-broken on ordinal then id for a stable,
 // deterministic order.
 const SORT_MODE_KEY = "tome.board.sort";
+// Milestone swimlane grouping ([[browse-ui-polish]]) — localStorage-only,
+// same treatment as sortMode: a read lens over board.json, never written.
+const GROUP_MODE_KEY = "tome.board.group";
 // Per-folder sidebar collapse state ([[sidebar-orientation]]) — prefixed with
 // a vault key (vaultKey()) so two vaults served from the same origin don't
 // share collapse state.
@@ -251,11 +258,28 @@ export function tomeApp() {
     // default lives in folderCollapsed() so untouched folders track it live.
     collapsedFolders: {},
     sidebarStorageKey: null, // set once pages load (vault-scoped, see vaultKey())
+    // Keyboard cursor over the sidebar tree ([[browse-ui-polish]], AC5) —
+    // j/k move it, Enter opens it; independent of currentSlug so arrowing
+    // around doesn't navigate until you commit.
+    sidebarCursor: null,
+
+    // search ([[browse-ui-polish]], AC1) — a live filter over pages/board.json
+    // already in memory, no fetch of its own. searchActive tracks whether the
+    // dropdown should be showing (focus, or a result just chosen) independent
+    // of whether the query is empty.
+    searchQuery: "",
+    searchActive: false,
+
+    // log view ([[browse-ui-polish]], AC3) — wiki/log.md fetched fresh each
+    // time the view is entered (no live-reload; a read-only history view).
+    logHtml: "",
+    logError: "",
 
     // board.json
     board: { statuses: [], defaultStatus: "", backlogStatus: "", cards: [], writable: false },
     projectFilter: "__all__",
     sortMode: "manual", // "manual" | "priority" | "title" — localStorage-only, never touches board.json
+    groupMode: "none", // "none" | "milestone" — swimlane grouping ([[browse-ui-polish]], AC4), localStorage-only
     draggingId: null, // card.id currently being dragged
     dropTarget: null, // { status, afterId } — the insertion point tracked during a Manual-mode drag
     movingCardId: null, // card.id awaiting its POST response
@@ -311,8 +335,16 @@ export function tomeApp() {
       if (savedSort && SORT_COMPARATORS[savedSort]) this.sortMode = savedSort;
       this.$watch("sortMode", (mode) => localStorage.setItem(SORT_MODE_KEY, mode));
 
+      const savedGroup = localStorage.getItem(GROUP_MODE_KEY);
+      if (savedGroup === "none" || savedGroup === "milestone") this.groupMode = savedGroup;
+      this.$watch("groupMode", (mode) => localStorage.setItem(GROUP_MODE_KEY, mode));
+
       // React to back/forward navigation.
       window.addEventListener("popstate", () => this.syncFromUrl());
+      // Keyboard shortcuts ([[browse-ui-polish]], AC5) — one listener for the
+      // app's lifetime, not per-view, so it works regardless of which base
+      // view is active.
+      window.addEventListener("keydown", (e) => this.onGlobalKeydown(e));
       await this.syncFromUrl();
       await this.checkGitConflicts();
     },
@@ -412,6 +444,55 @@ export function tomeApp() {
       }
     },
 
+    // -- keyboard shortcuts ([[browse-ui-polish]], AC5) --------------------- //
+    // One global listener (registered once in init()) rather than per-view
+    // handlers, so "/" and Escape work no matter which base view is active.
+    // Suppressed entirely while a text input, a <select>, a contenteditable
+    // node, or the mounted page editor holds focus — Escape is the one
+    // exception, since closing an overlay from inside its own input (the
+    // search box, a modal field) is exactly what it's for.
+
+    onGlobalKeydown(event) {
+      if (event.key === "Escape") {
+        this.closeTopOverlay();
+        return;
+      }
+      const target = event.target;
+      const typing = this.editing
+        || (target instanceof Element
+            && (target.matches("input, textarea, select") || target.isContentEditable));
+      if (typing) return;
+
+      if (event.key === "/") {
+        event.preventDefault();
+        this.focusSearch();
+        return;
+      }
+      if (this.view !== "page") return;
+      if (event.key === "j") {
+        event.preventDefault();
+        this.moveSidebarCursor(1);
+      } else if (event.key === "k") {
+        event.preventDefault();
+        this.moveSidebarCursor(-1);
+      } else if (event.key === "Enter" && this.sidebarCursor) {
+        event.preventDefault();
+        this.openSidebarCursor();
+      }
+    },
+
+    // Centralizes Escape across every overlay — one priority order instead of
+    // several independent `.window` listeners that could drift out of sync:
+    // a merge in progress outranks a create modal, which outranks the task
+    // panel, which outranks the search dropdown.
+    closeTopOverlay() {
+      if (this.resolver) { this.closeResolver(); return; }
+      if (this.newTaskOpen) { this.closeNewTaskModal(); return; }
+      if (this.newPageOpen) { this.closeNewPageModal(); return; }
+      if (this.currentTaskId) { this.closeTaskPanel(); return; }
+      if (this.searchActive) { this.closeSearch(); return; }
+    },
+
     // -- page view ------------------------------------------------------- //
 
     async syncFromUrl() {
@@ -424,6 +505,12 @@ export function tomeApp() {
       if (viewParam === "board" || viewParam === "backlog" || viewParam === "chains") {
         this.view = viewParam;
         document.title = VIEW_TITLES[viewParam];
+        return;
+      }
+      if (viewParam === "log") {
+        this.view = "log";
+        document.title = VIEW_TITLES.log;
+        await this.loadLog();
         return;
       }
       if (this.currentTaskId) {
@@ -486,6 +573,39 @@ export function tomeApp() {
       this.currentTaskId = null;
       document.title = VIEW_TITLES.chains;
       if (push) history.pushState({ view: "chains" }, "", "?view=chains");
+    },
+
+    // The log route ([[browse-ui-polish]], AC3) — another sibling in the same
+    // router, fetching /raw/log.md fresh on every entry (no live-reload;
+    // read-only history).
+    async showLog({ push = true } = {}) {
+      this.view = "log";
+      this.currentTaskId = null;
+      document.title = VIEW_TITLES.log;
+      if (push) history.pushState({ view: "log" }, "", "?view=log");
+      await this.loadLog();
+    },
+
+    // Rewrites log.md's bare slug/task-id references into markdown links
+    // (log.js's linkifyLog) before the normal render pipeline ever sees the
+    // text — [[wikilinks]] have their own resolver already; this covers the
+    // freeform prose `tome log` actually writes.
+    async loadLog() {
+      this.logError = "";
+      try {
+        const res = await fetch("/raw/log.md");
+        if (!res.ok) throw new Error(`${res.status}`);
+        const raw = await res.text();
+        const linkified = linkifyLog(
+          raw,
+          (slug) => this.resolveWikilink(slug),
+          (id) => ({ href: `?view=board&task=${encodeURIComponent(id)}` }),
+        );
+        this.logHtml = renderMarkdown(linkified, (s) => this.resolveWikilink(s));
+      } catch (e) {
+        this.logHtml = "";
+        this.logError = `Failed to load log.md: ${e.message}`;
+      }
     },
 
     // Returns to the page view. If a page is already loaded, this is just a
@@ -574,14 +694,27 @@ export function tomeApp() {
       return page ? { href: `?page=${encodeURIComponent(slug)}`, title: page.title } : null;
     },
 
-    // Intercept clicks on rendered wikilinks so navigation stays client-side.
+    // Intercept clicks on rendered wikilinks and log-view task links so
+    // navigation stays client-side. The latter are plain markdown links
+    // (log.js's linkifyLog output), not the wikilink extension's `a.wikilink`,
+    // so they're matched by their `?...task=` query shape instead.
     onContentClick(event) {
-      const a = event.target.closest("a.wikilink");
-      if (!a || a.classList.contains("wikilink--broken")) return;
-      const slug = new URLSearchParams(a.getAttribute("href").replace(/^\?/, "")).get("page");
-      if (slug) {
+      const wikilink = event.target.closest("a.wikilink");
+      if (wikilink) {
+        if (wikilink.classList.contains("wikilink--broken")) return;
+        const slug = new URLSearchParams(wikilink.getAttribute("href").replace(/^\?/, "")).get("page");
+        if (slug) {
+          event.preventDefault();
+          this.loadPage(slug);
+        }
+        return;
+      }
+      const link = event.target.closest("a[href^='?']");
+      if (!link) return;
+      const taskId = new URLSearchParams(link.getAttribute("href").replace(/^\?/, "")).get("task");
+      if (taskId) {
         event.preventDefault();
-        this.loadPage(slug);
+        this.openTaskFromAnywhere(taskId);
       }
     },
 
@@ -611,6 +744,38 @@ export function tomeApp() {
       return this.pages
         .filter((p) => p.slug !== this.currentSlug && (p.links || []).includes(this.currentSlug))
         .sort((a, b) => (a.title || a.slug).localeCompare(b.title || b.slug));
+    },
+
+    // -- search ([[browse-ui-polish]], AC1) -------------------------------- //
+    // A live filter over pages/board.json already in memory (search.js) — no
+    // fetch, no new endpoint. searchActive is the dropdown's own visibility
+    // flag, separate from whether there's a query, so it can be closed
+    // (Escape, a result picked, a click outside) without losing typed text.
+
+    searchResults() {
+      return searchVault(this.searchQuery, this.pages, this.board.cards);
+    },
+
+    focusSearch() {
+      this.searchActive = true;
+      this.$nextTick(() => this.$refs.searchInput && this.$refs.searchInput.focus());
+    },
+
+    closeSearch() {
+      this.searchActive = false;
+      if (this.$refs.searchInput) this.$refs.searchInput.blur();
+    },
+
+    selectSearchPage(slug) {
+      this.searchQuery = "";
+      this.closeSearch();
+      this.loadPage(slug);
+    },
+
+    selectSearchTask(id) {
+      this.searchQuery = "";
+      this.closeSearch();
+      this.openTaskFromAnywhere(id);
     },
 
     // -- task-detail panel ([[task-detail-panel]]) ------------------------- //
@@ -674,6 +839,27 @@ export function tomeApp() {
         if (page) return page;
       }
       return null;
+    },
+
+    // The inverse of taskWikiPage() above ([[browse-ui-polish]], AC2): every
+    // card whose references resolve to the current page. Plural, and reuses
+    // taskWikiPage's own resolution rather than re-implementing the
+    // ref-path matching, so the two directions can never drift apart —
+    // umbrella plans have several phase tasks sharing one plan page.
+    linkedTasks() {
+      if (!this.currentPage) return [];
+      return this.board.cards
+        .filter((c) => this.taskWikiPage(c)?.slug === this.currentPage.slug)
+        .sort((a, b) => (a.rawId || a.id).localeCompare(b.rawId || b.id, undefined, { numeric: true }));
+    },
+
+    // Opens the task panel from anywhere ([[browse-ui-polish]]) — the panel
+    // only ever renders layered over board/backlog/chains, so from page/home/
+    // log this first switches to the board, exactly like a bare `?task=<id>`
+    // URL already resolves to board as its base (see syncFromUrl).
+    openTaskFromAnywhere(id) {
+      if (this.view !== "board" && this.view !== "backlog" && this.view !== "chains") this.view = "board";
+      this.openTask(id);
     },
 
     // -- task editing ([[task-editing]]) ---------------------------------- //
@@ -1793,6 +1979,43 @@ export function tomeApp() {
       sidebar.scrollTop = Math.max(0, target);
     },
 
+    // -- sidebar keyboard cursor ([[browse-ui-polish]], AC5) --------------- //
+    // j/k move a cursor independent of currentSlug (arrowing around doesn't
+    // navigate until Enter commits it); the flattened order mirrors tree()'s
+    // own rendering rules exactly, so the cursor only ever lands on a link
+    // that's actually on screen.
+
+    visibleSidebarSlugs() {
+      const slugs = [];
+      for (const group of this.tree()) {
+        if (this.collapsed[group.project]) continue;
+        for (const folder of group.folders) {
+          if (folder.name && this.folderCollapsed(group.project, folder)) continue;
+          for (const pg of folder.pages) slugs.push(pg.slug);
+        }
+      }
+      return slugs;
+    },
+
+    moveSidebarCursor(delta) {
+      const slugs = this.visibleSidebarSlugs();
+      if (!slugs.length) return;
+      const current = this.sidebarCursor || this.currentSlug;
+      const idx = current ? slugs.indexOf(current) : -1;
+      const next = idx === -1 ? (delta > 0 ? 0 : slugs.length - 1)
+        : Math.max(0, Math.min(slugs.length - 1, idx + delta));
+      this.sidebarCursor = slugs[next];
+      this.$nextTick(() => {
+        const sidebar = document.querySelector(".sidebar");
+        const link = sidebar && sidebar.querySelector(".tree-link.cursor");
+        if (link) link.scrollIntoView({ block: "nearest" });
+      });
+    },
+
+    openSidebarCursor() {
+      if (this.sidebarCursor) this.loadPage(this.sidebarCursor);
+    },
+
     // -- board view ------------------------------------------------------ //
 
     projects() {
@@ -1825,11 +2048,32 @@ export function tomeApp() {
         : cards.filter((c) => c.project === this.projectFilter);
     },
 
-    cardsFor(status) {
+    // Per-column card list, optionally scoped to one milestone lane
+    // ([[browse-ui-polish]], AC4) — cardsFor() below always leaves milestone
+    // undefined, so every existing caller (dropIndicator, the plain board) is
+    // unaffected by swimlane grouping.
+    cardsForColumn(status, milestone) {
       const cmp = SORT_COMPARATORS[this.sortMode] || SORT_COMPARATORS.manual;
-      return this.visibleCards()
-        .filter((c) => c.status === status)
-        .sort(cmp);
+      let cards = this.visibleCards().filter((c) => c.status === status);
+      if (milestone !== undefined) cards = cards.filter((c) => (c.milestone || null) === milestone);
+      return cards.sort(cmp);
+    },
+
+    cardsFor(status) {
+      return this.cardsForColumn(status, undefined);
+    },
+
+    // One lane per milestone present among the currently visible cards, plus
+    // a trailing "Unassigned" lane when any visible card carries none. A pure
+    // read lens like the other sort modes — nothing here is ever written
+    // back to a card, and "None" (the default) renders today's single-row
+    // layout unchanged.
+    boardSwimlanes() {
+      const visible = this.visibleCards();
+      const milestones = [...new Set(visible.map((c) => c.milestone).filter(Boolean))].sort();
+      const lanes = milestones.map((m) => ({ key: m, label: m, milestone: m }));
+      if (visible.some((c) => !c.milestone)) lanes.push({ key: "__unassigned__", label: "Unassigned", milestone: null });
+      return lanes;
     },
 
     // Every card carries a priority, and "medium" is the default most of them
