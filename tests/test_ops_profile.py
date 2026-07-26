@@ -7,16 +7,45 @@ guarded by default instead of trusted to be."""
 from tome_cli import cli as tome
 
 READ_CAPTURE_ALLOWED = {"search", "prime", "doctor", "help", "inbox"}
+AUTHORING_ALLOWED = READ_CAPTURE_ALLOWED | {
+    "read", "write", "append", "new", "describe", "set-status", "archive",
+    "mv", "log",
+}
+# The refusals [[remote-authoring]] is explicit about keeping, spelled out here
+# so widening the profile has to be a deliberate edit to this list too.
+AUTHORING_REFUSED = {"rm", "sync", "task", "start", "done"}
 
 
 def test_read_capture_allowlist_matches_plan():
     assert tome.OPS_PROFILES["read-capture"] == frozenset(READ_CAPTURE_ALLOWED)
 
 
+def test_authoring_allowlist_matches_plan():
+    assert tome.OPS_PROFILES["authoring"] == frozenset(AUTHORING_ALLOWED)
+
+
+def test_authoring_still_refuses_deletion_sync_and_board_writes(monkeypatch):
+    monkeypatch.setenv("TOME_OPS_PROFILE", "authoring")
+    for command in AUTHORING_REFUSED:
+        assert tome.enforce_ops_profile(command) == 1, command
+
+
 def test_every_registered_command_is_accounted_for():
     all_commands = tome.all_registered_commands()
     assert all_commands  # sanity: introspection actually found the subcommands
     assert READ_CAPTURE_ALLOWED <= all_commands
+    assert AUTHORING_ALLOWED <= all_commands
+    assert AUTHORING_REFUSED <= all_commands
+
+
+def test_authoring_blocks_every_non_allowlisted_command(monkeypatch):
+    monkeypatch.setenv("TOME_OPS_PROFILE", "authoring")
+    for command in tome.all_registered_commands():
+        result = tome.enforce_ops_profile(command)
+        if command in AUTHORING_ALLOWED or command in tome.ALWAYS_ALLOWED_COMMANDS:
+            assert result is None, command
+        else:
+            assert result == 1, command
 
 
 def test_no_profile_allows_everything(monkeypatch):

@@ -143,6 +143,9 @@ CLI (`tome help` for the full list with examples; write commands all take
 tome prime [project] [--full]     # session orientation; --full adds SCHEMA, index, project context, open tasks
 tome search "<query>" [--top N]   # BM25 fallback search; also --backlinks, --top-linked
 tome inbox "<note>" [--title "T"]   # schema-free capture; retrospect triages it later
+tome read <ident> [--json]        # a page's markdown; --json adds the hash `tome write` takes back
+tome write <ident> [text] --base-hash H   # replace a body (frontmatter untouched); refuses on a stale hash
+tome append <ident> [text] [--under "## Heading"]   # accretion; needs no conflict token
 tome new <type> <slug> --project <name> --title "T" --desc "..." [--with-task "T"]
 tome describe <slug> "<one-liner>"   # the page's index summary — how anyone finds it later
 tome archive <slug> [--restore]   # status-less pages (ideas, reports, ...) to/from archive/
@@ -161,6 +164,14 @@ tome done <plan-slug> [--summary "..."] [--force]   # close-out ritual: archive 
 tome set-status <slug> <status>   # plan/decision lifecycle; moves plans to/from plans/archive/
 tome task <args...>       # passthrough to backlog.md
 ```
+
+`<ident>` on `read`/`write`/`append` is any address another tome surface
+prints — a bare slug, a `[[wikilink]]`, a wiki-relative path
+(`tome/ideas/x.md`), or a vault-relative one (`wiki/tome/ideas/x.md`),
+case-insensitive with `.md` optional. Those three commit and push by
+*default* (`--no-sync` opts out) where every other write command opts in with
+`--sync`: a hash conflict token is only meaningful against a synced state,
+and on a disposable remote clone an unsynced write is a lost one.
 
 Root resolution for the CLI: `--vault PATH`, else walk up from cwd looking
 for `conventions.toml`, else `$VAULT_ROOT` — the vault you're standing in
@@ -225,17 +236,26 @@ more (`TOME_OPS_PROFILE`, below).
 - **`VAULT_ROOT`** points the CLI at the clone when the process isn't
   standing in it (still overridden by `--vault` or a walk-up match).
 - **`TOME_OPS_PROFILE`** (optional) narrows the command surface for a
-  deployment you want structurally unable to do everything. One profile ships
-  today: `read-capture` allows `search`, `prime`, `doctor`, `help`, and
-  `inbox` — the reads plus the one write that's append-only, schema-free, and
-  conflict-free by design. It's the right setting for an untrusted or
-  shared-credential deployment and the wrong one for an agent expected to
-  maintain the vault. Anything outside the profile (including a command added
-  to tome later) is refused with a clear "this deployment is read-capture"
-  message; the guard lives at one dispatch point, so new commands are guarded
-  by default rather than needing to be added to an allowlist. `help`/`doctor`
-  always run, even under an unset or misconfigured profile, so the deployment
-  can always self-diagnose.
+  deployment you want structurally unable to do everything. Two profiles ship:
+  - `read-capture` allows `search`, `prime`, `doctor`, `help`, and `inbox` —
+    the reads plus the one write that's append-only, schema-free, and
+    conflict-free by design. It's the right setting for an untrusted or
+    shared-credential deployment and the wrong one for an agent expected to
+    maintain the vault.
+  - `authoring` adds the knowledge-half write surface on top: `read`, `write`,
+    `append`, `new`, `describe`, `set-status`, `archive`, `mv`, `log`. It
+    still refuses `rm` (deletion from a surface whose operator can't see what
+    they're losing), `sync` (the body-write verbs sync themselves; a
+    whole-tree sync is an operator action), and `task`/`start`/`done` (board
+    writes need Node on the instance, and are the project-management branch
+    rather than the memory trunk).
+
+  Anything outside the profile (including a command added to tome later) is
+  refused with a clear "this deployment is `<profile>`" message; the guard
+  lives at one dispatch point, so new commands are guarded by default rather
+  than needing to be added to an allowlist. `help`/`doctor` always run, even
+  under an unset or misconfigured profile, so the deployment can always
+  self-diagnose.
 - **`TOME_GIT_AUTHOR`** (`"Name <email>"`) is applied as the author (via
   `git commit --author`) and — unless `GIT_COMMITTER_*` is set explicitly —
   as the committer identity on every tome-driven git call, so `git log` on
@@ -243,10 +263,10 @@ more (`TOME_OPS_PROFILE`, below).
   no git config on the container at all (git refuses to commit without a
   committer identity; `--author` alone doesn't provide one).
 - **`tome doctor`** is the health gate: run it after bootstrap and treat any
-  `FAIL` line as a blocker. It's profile-aware — under `read-capture` the
-  node/npm/npx check is skipped (`tome task`, the only thing that needs
-  them, is guarded off anyway) instead of warning about binaries the
-  deployment was never going to use.
+  `FAIL` line as a blocker. It's profile-aware — under `read-capture` or
+  `authoring` the node/npm/npx check is skipped (`tome task`, the only thing
+  that needs them, is guarded off under both) instead of warning about
+  binaries the deployment was never going to use.
 - **Sync races**: two writers sharing a vault (a headless remote and a local
   session, say) will eventually collide on `tome sync`'s push. On rejection,
   sync retries once (`pull --rebase` + push); a second rejection fails loud

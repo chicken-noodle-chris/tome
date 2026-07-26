@@ -638,19 +638,42 @@ def create_task(vault_root, title, status, project, priority, description):
     return True, raw_id.lower()
 
 
-def _page_path(vault_root, rel):
-    """Resolve a wiki-relative path to an existing `.md` file under wiki/, or
-    None if it's unsafe, non-.md, or doesn't exist — the same path-safety
-    gate `_send_raw` applies, reused here since both routes accept a
-    client-supplied wiki-relative path."""
-    safe = _safe_join(rel)
-    if safe is None or safe.suffix != ".md":
+# A `cli.PageWriteResult.kind` as the HTTP status this server answers with.
+# The write core is transport-neutral ([[remote-authoring]]); this table is the
+# entire HTTP half of it.
+PAGE_WRITE_STATUS = {
+    "ok": 200,
+    "invalid": 400,
+    "not-found": 404,
+    "conflict": 409,
+    "lint-failed": 422,
+    "error": 500,
+}
+
+
+def _http(result):
+    """A `cli.PageWriteResult` as the (status, payload) pair every route
+    returns — or None passed straight through, since the conflict helpers
+    below use None for "nothing went wrong"."""
+    if result is None:
         return None
-    wiki_root = (vault_root / "wiki").resolve()
-    target = (wiki_root / str(safe)).resolve()
-    if wiki_root not in target.parents:
+    return PAGE_WRITE_STATUS[result.kind], result.payload
+
+
+def _page_path(vault_root, conventions, rel):
+    """Resolve a client-supplied page identifier to its file on disk, or None.
+
+    Backed by `cli.resolve_page`, so these routes accept every address form
+    `tome read`/`write`/`append` do — a slug, a `[[wikilink]]`, a wiki- or
+    vault-relative path — and inherit its safety property: only pages
+    `cli.collect` actually walked under wiki/ resolve at all, so a traversal,
+    an absolute path, or a non-page file simply doesn't."""
+    from tome_cli import cli
+
+    try:
+        return cli.resolve_page(vault_root, conventions, rel)["path"]
+    except cli.VaultError:
         return None
-    return target if target.is_file() else None
 
 
 # --------------------------------------------------------------------------- #
@@ -669,8 +692,9 @@ def _page_path(vault_root, rel):
 # to get it back out of.
 # --------------------------------------------------------------------------- #
 
-def _local_drift_conflict(target, current_hash):
-    """The 409 body for a stale `baseHash`: the sides the resolver needs plus
+def local_drift_conflict(target, current_hash):
+    """The conflict payload for a stale `baseHash` (a 409 over HTTP): the
+    sides the resolver needs plus
     who/when provenance. There's no author for an uncommitted local write —
     it was VS Code, an agent, or a `tome` command — so the *who* is honestly
     omitted rather than guessed, and mtime carries the *when*."""
@@ -782,11 +806,14 @@ def git_conflict_state(vault_root):
     }
 
 
-def _pull_or_conflict(vault_root):
+def pull_or_conflict(vault_root):
     """Every write path's first step. Returns None when the pull landed, else
-    the (status, payload) the caller should return: a 409 carrying the
-    `git-fork` conflict when the rebase stopped on one — the resolver's cue,
-    replacing the old dead-end 'resolve manually' — or a plain 500."""
+    the `cli.PageWriteResult` the caller should surface: a `conflict` carrying
+    the `git-fork` state when the rebase stopped on one — the resolver's cue,
+    replacing the old dead-end 'resolve manually' — or a plain `error`.
+
+    Transport-neutral because `cli`'s write core calls it too; the conflict
+    *model* stays here with the resolver that consumes it."""
     from tome_cli import cli
 
     pull = cli.run_git(vault_root, ["pull", "--rebase", "--autostash"])
@@ -794,26 +821,40 @@ def _pull_or_conflict(vault_root):
         return None
     state = git_conflict_state(vault_root)
     if state["rebase"]:
-        return 409, {"error": "the vault's history diverged from the remote",
-                     "conflict": {"type": "git-fork", **state}}
-    return 500, {"error": (pull.stderr or pull.stdout).strip() or "git pull failed"}
+        return cli.PageWriteResult("conflict", {
+            "error": "the vault's history diverged from the remote",
+            "conflict": {"type": "git-fork", **state}})
+    return cli.PageWriteResult("error", {
+        "error": (pull.stderr or pull.stdout).strip() or "git pull failed"})
 
 
-def _push_or_conflict(vault_root):
+def push_or_conflict(vault_root):
     """The tail of every write path. `cli._push_with_retry` re-pulls on a
-    rejected push, so its failure can also be a stopped rebase — same 409, so
-    a fork that shows up at push time lands in the resolver instead of the
-    same dead end."""
+    rejected push, so its failure can also be a stopped rebase — same
+    `conflict`, so a fork that shows up at push time lands in the resolver
+    instead of the same dead end."""
     from tome_cli import cli
 
     if cli._push_with_retry(vault_root) == 0:
         return None
     state = git_conflict_state(vault_root)
     if state["rebase"]:
-        return 409, {"error": "your commit landed locally, but the vault's "
-                              "history diverged from the remote",
-                     "conflict": {"type": "git-fork", **state}}
-    return 500, {"error": "commit landed locally but push failed — resolve manually"}
+        return cli.PageWriteResult("conflict", {
+            "error": "your commit landed locally, but the vault's history "
+                     "diverged from the remote",
+            "conflict": {"type": "git-fork", **state}})
+    return cli.PageWriteResult("error", {
+        "error": "commit landed locally but push failed — resolve manually"})
+
+
+# The HTTP-shaped forms, for the routes below that still own their own write
+# sequence (frontmatter, rename, create) rather than delegating to `cli`.
+def _pull_or_conflict(vault_root):
+    return _http(pull_or_conflict(vault_root))
+
+
+def _push_or_conflict(vault_root):
+    return _http(push_or_conflict(vault_root))
 
 
 def resolve_conflict_file(vault_root, rel, content):
@@ -890,71 +931,16 @@ def abort_rebase(vault_root):
 
 
 def save_page(vault_root, conventions, rel, body, base_hash):
-    """The [[page-editing]] save path: optimistic-concurrency write of one
-    page's body, gated by a lint check scoped to just that page. Returns
-    (http_status, payload_dict) — never raises, so the HTTP handler can pass
-    the pair straight through to `_send_json`.
-
-    1. Pull, so the conflict check below is against the latest remote. A pull
-       that stops on a forked history is itself a conflict (409, `git-fork`).
-    2. Hash the file's current bytes; a `base_hash` mismatch means the page
-       changed since the client opened it — refuse, write nothing, and return
-       the current text plus its provenance (409, `local-drift`) so the client
-       can open the three-way resolver instead of asking the user to
-       copy-and-reload ([[conflict-resolution]]).
-    3. Recombine the on-disk frontmatter with the new body via
-       `cli.write_page` (frontmatter itself is out of scope for this editor).
-    4. Lint the whole vault but gate only on findings whose `path` is this
-       page — an unrelated pre-existing error elsewhere must not block an
-       otherwise-clean save. Any error here restores the original bytes (422).
-    5. Commit + push, scoped to just this file, reusing `cli._push_with_retry`
-       (a scoped `cli.sync_core` call would re-pull and re-lint the whole
-       tree; this only needs its push-retry half).
-    """
+    """The [[page-editing]] save path, now an HTTP adapter over
+    `cli.write_page_body` — the optimistic-concurrency, lint-gated,
+    self-committing body write itself lives in the CLI ([[remote-authoring]]),
+    where `tome write` and any other consumer share the one path and the one
+    set of guarantees. Returns (http_status, payload_dict) as before, and
+    still never raises, so the handler can pass the pair straight to
+    `_send_json`."""
     from tome_cli import cli
 
-    target = _page_path(vault_root, rel)
-    if target is None:
-        return 404, {"error": "no such page"}
-
-    conflict = _pull_or_conflict(vault_root)
-    if conflict is not None:
-        return conflict
-
-    original_bytes = target.read_bytes()
-    current_hash = hashlib.sha256(original_bytes).hexdigest()
-    if base_hash != current_hash:
-        return 409, _local_drift_conflict(target, current_hash)
-
-    fm_lines, _old_body = cli.read_page(target)
-    try:
-        cli.write_page(target, fm_lines, body)
-    except cli.VaultError as e:
-        return 400, {"error": str(e)}
-
-    wiki_root = (vault_root / "wiki").resolve()
-    rel_str = target.relative_to(wiki_root).as_posix()  # lint findings key by this
-    pages, findings = cli.run_all_lint_checks(vault_root, conventions)
-    errors = [f for f in findings if f.severity == cli.ERROR and f.path == rel_str]
-    if errors:
-        target.write_bytes(original_bytes)
-        return 422, {"error": "lint failed", "findings": [f.as_dict() for f in errors]}
-
-    vault_rel_str = target.relative_to(vault_root).as_posix()  # git wants this one
-    add = cli.run_git(vault_root, ["add", "--", vault_rel_str])
-    if add.returncode != 0:
-        target.write_bytes(original_bytes)
-        return 500, {"error": (add.stderr or "git add failed").strip()}
-
-    commit = cli.run_git(vault_root, ["commit", "-m", f"edit: {target.stem}"])
-    if commit.returncode != 0:
-        return 500, {"error": (commit.stderr or commit.stdout).strip() or "git commit failed"}
-
-    push_conflict = _push_or_conflict(vault_root)
-    if push_conflict is not None:
-        return push_conflict
-
-    return 200, {"hash": hashlib.sha256(target.read_bytes()).hexdigest()}
+    return _http(cli.write_page_body(vault_root, conventions, rel, body, base_hash))
 
 
 _FM_EDITABLE_FIELDS = {"title", "tags", "description"}
@@ -1006,7 +992,7 @@ def save_frontmatter(vault_root, conventions, rel, fields, base_hash):
     """
     from tome_cli import cli
 
-    target = _page_path(vault_root, rel)
+    target = _page_path(vault_root, conventions, rel)
     if target is None:
         return 404, {"error": "no such page"}
 
@@ -1021,7 +1007,7 @@ def save_frontmatter(vault_root, conventions, rel, fields, base_hash):
     original_bytes = target.read_bytes()
     current_hash = hashlib.sha256(original_bytes).hexdigest()
     if base_hash != current_hash:
-        return 409, _local_drift_conflict(target, current_hash)
+        return 409, local_drift_conflict(target, current_hash)
 
     wiki_root = (vault_root / "wiki").resolve()
     rel_str = target.relative_to(wiki_root).as_posix()
@@ -1164,7 +1150,7 @@ def rename_page(vault_root, conventions, rel, new_slug, base_hash):
     """
     from tome_cli import cli
 
-    target = _page_path(vault_root, rel)
+    target = _page_path(vault_root, conventions, rel)
     if target is None:
         return 404, {"error": "no such page"}
 

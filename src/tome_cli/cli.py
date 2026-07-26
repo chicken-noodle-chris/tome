@@ -24,6 +24,8 @@ command.
 """
 
 import argparse
+import difflib
+import hashlib
 import importlib.resources
 import json
 import os
@@ -34,7 +36,7 @@ import sys
 import tomllib
 from collections import defaultdict, namedtuple
 from datetime import date
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from tome_cli import lint as tome_lint
 from tome_cli import search as tome_search
@@ -90,7 +92,23 @@ CROSS_CUTTING_DIRS = ("ideas", "general")
 ALWAYS_ALLOWED_COMMANDS = frozenset({"help", "doctor"})
 OPS_PROFILES = {
     "read-capture": frozenset({"search", "prime", "doctor", "help", "inbox"}),
+    # The knowledge-half write surface ([[remote-authoring]]): everything
+    # read-capture allows, plus authoring a page and editing its body and
+    # frontmatter-adjacent fields. Still refuses `rm` (deletion from a surface
+    # whose operator can't see what they're losing), `sync` (the write verbs
+    # sync themselves; a whole-tree sync is an operator action), and
+    # `task`/`start`/`done` (board writes need Node on the instance and are the
+    # project-management branch, not the memory trunk).
+    "authoring": frozenset({
+        "search", "prime", "doctor", "help", "inbox",
+        "read", "write", "append", "new", "describe", "set-status",
+        "archive", "mv", "log",
+    }),
 }
+
+# Ops profiles whose whole allowed surface is python-only — `doctor` reports
+# node as skipped rather than warning about a dependency nothing can reach.
+NODELESS_PROFILES = frozenset({"read-capture", "authoring"})
 
 
 def all_registered_commands():
@@ -276,6 +294,81 @@ def find_page(pages, slug):
 
 def all_slugs(pages):
     return {p["slug"] for p in pages}
+
+
+# --------------------------------------------------------------------------- #
+# Page addressing. The vault emits three incompatible page addresses and, until
+# this, nothing translated between them: wikilink slugs
+# (`[[render-layer-principle]]`), `tome search`'s display paths
+# (`tome/decisions/okf-deferred.md`), and the vault-relative paths `read`,
+# index.json and a task's `references:` print (`wiki/tome/...`). So a search
+# result pasted into a read failed, and the navigation primitive the vault
+# *tells* agents to use wasn't accepted by any read path at all.
+#
+# `resolve_page` is the one place those spaces collapse: every read/write verb
+# and `serve.py`'s page routes go through it, so what one surface prints is
+# always valid input to another.
+# --------------------------------------------------------------------------- #
+
+WIKILINK_IDENT_RE = re.compile(r"^\[\[([^\]|]+?)(?:\|[^\]]*)?\]\]$")
+
+
+def resolve_page(vault_root, conventions, ident, pages=None):
+    """One page identifier -> its collected page dict. Accepts a bare slug, a
+    wiki-relative path, a vault-relative path, or a whole `[[wikilink]]`,
+    matched case-insensitively and separator-agnostically (a path copied off a
+    Windows shell resolves too), with the `.md` suffix optional on paths.
+
+    Only pages `collect()` actually walked under `wiki/` can resolve, which is
+    also this function's safety property: a traversal, an absolute path, or a
+    non-page file simply doesn't resolve, so callers taking an identifier from
+    an untrusted client need no separate path gate."""
+    if pages is None:
+        _, pages = collect(vault_root, conventions)
+    live = [p for p in pages if "read_error" not in p]
+
+    raw = (ident or "").strip()
+    m = WIKILINK_IDENT_RE.match(raw)
+    if m:
+        raw = m.group(1).strip()
+    norm = raw.replace("\\", "/").strip("/")
+    if not norm:
+        raise VaultError("no page identifier given")
+    key = norm.lower()
+
+    path_keys = {key}
+    if key.startswith("wiki/"):
+        path_keys.add(key[len("wiki/"):])
+    path_keys |= {k + ".md" for k in set(path_keys) if not k.endswith(".md")}
+
+    matches = [p for p in live
+               if p["rel_path"].replace("\\", "/").lower() in path_keys]
+    if not matches:
+        matches = [p for p in live if p["slug"].lower() == key]
+    if len(matches) == 1:
+        return matches[0]
+    if matches:
+        raise VaultError(f"'{ident}' is ambiguous: "
+                          + ", ".join(sorted(p["rel_path"] for p in matches)))
+    raise VaultError(unresolved_page_message(vault_root, live, norm))
+
+
+def unresolved_page_message(vault_root, pages, ident):
+    """A corrective refusal, not a negative one. A remote agent can't run
+    `tome lint`, can't usefully browse SCHEMA.md, and learns the address
+    vocabulary exclusively from what tome says when it says no — and a bare
+    "no such page" makes it pattern-match the shape of the complaint instead
+    of the fix. So name the vault, the accepted forms, and the nearest slugs."""
+    stem = PurePosixPath(ident).stem.lower()
+    near = difflib.get_close_matches(stem, sorted({p["slug"] for p in pages}),
+                                      n=3, cutoff=0.5)
+    msg = (f"no page '{ident}' in the vault at {vault_root} — address a page by "
+           f"slug ('render-layer-principle'), by wiki-relative path "
+           f"('tome/decisions/okf-deferred.md'), or by vault-relative path "
+           f"('wiki/tome/decisions/okf-deferred.md')")
+    if near:
+        msg += f". Closest slugs: {', '.join(near)}"
+    return msg
 
 
 def validate_slug(slug, pages, allow_existing=False):
@@ -1073,6 +1166,286 @@ def cmd_archive(vault_root, conventions, args):
     if result is not None:
         return result
     return 0
+
+
+# --------------------------------------------------------------------------- #
+# Page bodies — read / write / append ([[remote-authoring]]).
+#
+# Locally an agent edits a page body with its native file tools, and `prime`'s
+# own text says so; remotely there are no file tools, so the absence of any
+# body-write verb is total — a surface reaching the vault through MCP could
+# scaffold a page with `tome new` and then not put a sentence in it. The
+# capability already existed and was well-tested, it was just reachable only
+# over HTTP, so this is mostly an exposure problem: the core lives here now and
+# `serve.py`'s routes are one consumer of it rather than its owner.
+#
+# `kind` is the transport-neutral outcome; `serve.PAGE_WRITE_STATUS` maps it to
+# HTTP and `report_page_write` renders it for a terminal.
+# --------------------------------------------------------------------------- #
+
+PageWriteResult = namedtuple("PageWriteResult", "kind payload")
+
+# One-clause fixes keyed by lint code, printed under a refused write. Same
+# reasoning as `unresolved_page_message`: the refusal is the only schema a
+# remote agent gets to see, so it has to carry the repair.
+LINT_FIX_HINTS = {
+    "BROKEN_LINK": "that [[target]] has no page — create it with `tome new`, or "
+                   "fix the slug (`tome search` finds the real one)",
+    "OVERSIZE_HARD": "split the page, or move detail onto a linked one",
+    "BAD_TAG": "use a tag from conventions.toml's [tags] taxonomy",
+    "BAD_TYPE": "use a type from conventions.toml's [types].enum",
+    "DESC_TOO_LONG": 'shorten it with `tome describe <slug> "..."`',
+    "MALFORMED_FRONTMATTER": "frontmatter must be a `---`-fenced block of "
+                             "`key: value` lines",
+    "PLAN_DIR": "move it with `tome set-status <slug> <status>`, not by hand",
+    "INDEX_MISSING": "run `tome index rebuild`",
+    "INDEX_BROKEN": "run `tome index rebuild`",
+    "INDEX_DRIFT": "run `tome index rebuild`",
+    "HUB_DRIFT": "run `tome index rebuild`",
+}
+
+HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
+FENCE_RE = re.compile(r"^\s*(?:```|~~~)")
+
+
+def page_read(vault_root, conventions, ident):
+    """(page, full_text, sha256-of-bytes) for one identifier. The hash is over
+    the file's raw bytes — the same token `serve`'s ETag emits and every write
+    path checks — so a read closes the read-modify-write loop without a second
+    call to obtain one."""
+    page = resolve_page(vault_root, conventions, ident)
+    raw = page["path"].read_bytes()
+    return page, raw.decode("utf-8"), hashlib.sha256(raw).hexdigest()
+
+
+def append_to_body(body, text, under=None):
+    """`text` at the end of `body`, or at the end of the section headed by
+    `under` — before the next heading at the same or a higher level, so the
+    addition lands *inside* the section rather than after the document. `under`
+    matches a heading's text with or without its `#` markers, case-insensitively.
+    Headings inside fenced code are skipped (a `# comment` in a shell sample is
+    not a section)."""
+    chunk = text.strip("\n")
+    if not chunk.strip():
+        raise VaultError("nothing to append")
+    if under is None:
+        return body.rstrip("\n") + "\n\n" + chunk + "\n"
+
+    want = under.strip().lstrip("#").strip().lower()
+    lines = body.split("\n")
+
+    headings = []  # (index, level, text), fenced lines excluded
+    in_fence = False
+    for i, line in enumerate(lines):
+        if FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        m = HEADING_RE.match(line)
+        if m:
+            headings.append((i, len(m.group(1)), m.group(2).strip()))
+
+    start = next(((i, level) for i, level, text_ in headings
+                  if text_.lower() == want), None)
+    if start is None:
+        known = ", ".join(f"'{t}'" for _, _, t in headings)
+        raise VaultError(f"no section headed '{under}' in this page"
+                          + (f" — it has {known}" if known else " (it has no headings)"))
+    start_idx, level = start
+
+    end = len(lines)
+    for i, lvl, _ in headings:
+        if i > start_idx and lvl <= level:
+            end = i
+            break
+    while end > start_idx + 1 and not lines[end - 1].strip():
+        end -= 1
+    return "\n".join(lines[:end] + ["", chunk] + lines[end:]).rstrip("\n") + "\n"
+
+
+def write_page_body(vault_root, conventions, ident, body, base_hash, sync=True):
+    """Replace a page's body, leaving its frontmatter untouched (`describe`/
+    `mv`/`set-status` own their own fields). `base_hash` is the conflict token
+    `page_read` hands back; None skips the check."""
+    return _page_body_write(vault_root, conventions, ident, base_hash,
+                             lambda _old: body, sync=sync, verb="edit")
+
+
+def append_page_body(vault_root, conventions, ident, text, under=None,
+                      base_hash=None, sync=True):
+    """Accretion — the shape memory actually wants. No conflict token is
+    required, precisely because an append doesn't overwrite: the ordering of
+    two concurrent appends is not a conflict worth refusing, and forcing a
+    whole-body round-trip for one new bullet is itself a lost-update risk."""
+    return _page_body_write(vault_root, conventions, ident, base_hash,
+                             lambda old: append_to_body(old, text, under),
+                             sync=sync, verb="append")
+
+
+def _page_body_write(vault_root, conventions, ident, base_hash, transform,
+                      sync, verb):
+    """The shared write path, in the order the guarantees depend on:
+
+    1. Resolve the identifier (a miss writes nothing and explains the address
+       vocabulary).
+    2. Pull, so the conflict check below is against the latest remote. A pull
+       that stops on a forked history is itself a conflict.
+    3. Hash the current bytes; a `base_hash` mismatch means the page moved
+       under the caller — refuse, write nothing, hand back the current text.
+    4. Recombine the on-disk frontmatter with the new body.
+    5. Lint the vault but gate only on findings keyed to *this* page — a
+       pre-existing error elsewhere must not block an otherwise clean write.
+       Any error restores the original bytes.
+    6. Commit + push, scoped to the one file.
+
+    Sync is on by default here where every other write command opts in, for
+    three reasons: the browser editor has behaved this way since
+    [[page-editing]] shipped, so this is newly *named*, not newly true; a
+    hash token is only meaningful against a synced state, so an unpushed write
+    is one whose next token is already suspect; and remotely the vault is a
+    disposable clone, where an unsynced write is simply a lost one. `--no-sync`
+    stays for a local agent batching several edits behind one commit."""
+    from tome_cli import serve  # the conflict model belongs to the resolver
+
+    try:
+        page = resolve_page(vault_root, conventions, ident)
+    except VaultError as e:
+        return PageWriteResult("not-found", {"error": str(e)})
+    target = page["path"]
+
+    if sync:
+        conflict = serve.pull_or_conflict(vault_root)
+        if conflict is not None:
+            return conflict
+
+    original_bytes = target.read_bytes()
+    current_hash = hashlib.sha256(original_bytes).hexdigest()
+    if base_hash is not None and base_hash != current_hash:
+        return PageWriteResult("conflict", serve.local_drift_conflict(target, current_hash))
+
+    try:
+        fm_lines, old_body = read_page(target)
+        write_page(target, fm_lines, transform(old_body))
+    except VaultError as e:
+        target.write_bytes(original_bytes)
+        return PageWriteResult("invalid", {"error": str(e)})
+
+    wiki_root = (vault_root / "wiki").resolve()
+    rel_str = target.relative_to(wiki_root).as_posix()  # lint findings key by this
+    _, findings = run_all_lint_checks(vault_root, conventions)
+    errors = [f for f in findings if f.severity == ERROR and f.path == rel_str]
+    if errors:
+        target.write_bytes(original_bytes)
+        return PageWriteResult("lint-failed", {"error": "lint failed",
+                                               "findings": [f.as_dict() for f in errors]})
+
+    def _ok(committed):
+        return PageWriteResult("ok", {
+            "hash": hashlib.sha256(target.read_bytes()).hexdigest(),
+            "path": f"wiki/{rel_str}",
+            "slug": page["slug"],
+            "committed": committed,
+        })
+
+    if not sync:
+        return _ok(False)
+
+    vault_rel_str = target.relative_to(vault_root).as_posix()  # git wants this one
+    add = run_git(vault_root, ["add", "--", vault_rel_str])
+    if add.returncode != 0:
+        target.write_bytes(original_bytes)
+        return PageWriteResult("error", {"error": (add.stderr or "git add failed").strip()})
+
+    commit = run_git(vault_root, ["commit", "-m", f"{verb}: {target.stem}"])
+    if commit.returncode != 0:
+        return PageWriteResult("error", {"error": (commit.stderr or commit.stdout).strip()
+                                                  or "git commit failed"})
+
+    push_conflict = serve.push_or_conflict(vault_root)
+    if push_conflict is not None:
+        return push_conflict
+
+    return _ok(True)
+
+
+def report_page_write(result, verb):
+    """Render a PageWriteResult for a terminal, returning the exit code."""
+    payload = result.payload
+    if result.kind == "ok":
+        state = "committed + pushed" if payload["committed"] else "not committed (--no-sync)"
+        print(f"{verb} {payload['path']} — {state}")
+        print(f"hash: {payload['hash']}")
+        return 0
+    if result.kind == "lint-failed":
+        print("tome: refusing the write — the page would fail lint:", file=sys.stderr)
+        for f in payload["findings"]:
+            print(f"  {f['path']}:{f['code']} {f['message']}", file=sys.stderr)
+            hint = LINT_FIX_HINTS.get(f["code"])
+            if hint:
+                print(f"    fix: {hint}", file=sys.stderr)
+        print("The page was restored; nothing was written.", file=sys.stderr)
+        return 1
+    if result.kind == "conflict":
+        print(f"tome: {payload.get('error', 'conflict')}", file=sys.stderr)
+        if payload.get("currentHash"):
+            print(f"Its current hash is {payload['currentHash']} — re-read the page "
+                  f"(`tome read <ident> --json`), re-apply your change, and write "
+                  f"again with that hash.", file=sys.stderr)
+        else:
+            print("Run `tome serve` to resolve the diverged history in the browser, "
+                  "or finish the rebase by hand with git.", file=sys.stderr)
+        return 1
+    print(f"tome: error: {payload.get('error', result.kind)}", file=sys.stderr)
+    return 1
+
+
+def _body_input(args):
+    """The text a write/append verb is given: the positional argument, else
+    --body-file, else stdin — one source only, so a caller that passes two
+    can't silently have one ignored."""
+    text = getattr(args, "text", None)
+    body_file = getattr(args, "body_file", None)
+    if text is not None and body_file:
+        raise VaultError("give the text as an argument or --body-file, not both")
+    if text is not None:
+        return text
+    if body_file:
+        path = Path(body_file)
+        if not path.is_file():
+            raise VaultError(f"no such file: {path}")
+        return path.read_text(encoding="utf-8")
+    return sys.stdin.read()
+
+
+def cmd_read(vault_root, conventions, args):
+    page, text, page_hash = page_read(vault_root, conventions, args.ident)
+    if not args.json:
+        print(text, end="" if text.endswith("\n") else "\n")
+        return 0
+    rel = page["rel_path"].replace("\\", "/")
+    _, body = read_page(page["path"])
+    print(json.dumps({
+        "path": f"wiki/{rel}",
+        "slug": page["slug"],
+        "hash": page_hash,
+        "frontmatter": page["meta"],
+        "body": body,
+    }, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_write(vault_root, conventions, args):
+    result = write_page_body(vault_root, conventions, args.ident, _body_input(args),
+                              args.base_hash, sync=not args.no_sync)
+    return report_page_write(result, "Wrote")
+
+
+def cmd_append(vault_root, conventions, args):
+    result = append_page_body(vault_root, conventions, args.ident, _body_input(args),
+                               under=args.under, base_hash=args.base_hash,
+                               sync=not args.no_sync)
+    return report_page_write(result, "Appended to")
 
 
 def cmd_search(vault_root, conventions, args):
@@ -2175,9 +2548,9 @@ def check_git_binary():
 
 
 def check_node(profile=None):
-    if profile == "read-capture":
+    if profile in NODELESS_PROFILES:
         return Check("node/npm/npx", DOC_INFO,
-                      "skipped — read-capture profile has no node-dependent "
+                      f"skipped — the {profile} profile has no node-dependent "
                       "commands (tome task is guarded off)")
     names = ["node", "npm", "npx"]
     missing = [n for n in names if not shutil.which(n)]
@@ -2427,6 +2800,35 @@ if you omit -m.
       the index; no link rewriting needed (slug is unchanged).
       e.g. tome archive my-idea
 
+  tome read <ident> [--json]
+      Print a page's markdown. --json emits {path, slug, hash, frontmatter,
+      body} instead — `body` is what `tome write` takes, and `hash` is the
+      conflict token it demands back, so one read closes the whole
+      read-modify-write loop.
+      e.g. tome read render-layer-principle --json
+
+  tome write <ident> [text] --base-hash H [--body-file PATH] [--no-sync]
+      Replace a page's body (frontmatter untouched — describe/mv/set-status
+      own their fields) from the argument, a file, or stdin. Refuses on a
+      stale --base-hash, and on any lint error keyed to this page (the
+      original bytes are restored either way).
+      e.g. tome write my-idea "# My idea\\n\\nRevised." --base-hash 4f3a...
+
+  tome append <ident> [text] [--under "## Heading"] [--body-file PATH] [--no-sync]
+      Append to the end of a page's body, or to the end of one named section.
+      Needs no --base-hash: an append doesn't overwrite, so concurrent
+      appends aren't a conflict worth refusing.
+      e.g. tome append truck "- New tyres 2026-07-01." --under "## Log"
+
+  <ident> above is any address another tome surface prints: a bare slug, a
+  [[wikilink]], a wiki-relative path (tome/ideas/x.md), or a vault-relative
+  one (wiki/tome/ideas/x.md) — case-insensitive, .md optional.
+
+  read/write/append commit and push by *default* (--no-sync opts out), unlike
+  every other write command's opt-in --sync: a hash token is only meaningful
+  against a synced state, and on a disposable remote clone an unsynced write
+  is a lost one.
+
   tome search "<query>" [--top N] [--type T] [--tag T ...] [--since YYYY-MM-DD]
       BM25 search over wiki pages (fallback when index-first navigation
       doesn't surface the right pages). Also: --backlinks <slug>,
@@ -2539,11 +2941,15 @@ keyboard — see README.md's "Headless bootstrap" section for the full recipe):
   TOME_OPS_PROFILE      Optional. Narrows the command surface for a
                         deployment that shouldn't be trusted with all of it;
                         unset (the default) is the full surface, since a
-                        memory an agent can't write is a library card. One
-                        profile ships: read-capture allows only search,
-                        prime, doctor, help, inbox — everything else
-                        (including a command added later) is refused with a
-                        clear message. help/doctor always run.
+                        memory an agent can't write is a library card. Two
+                        profiles ship: read-capture allows only search,
+                        prime, doctor, help, inbox; authoring adds the
+                        knowledge-half write surface (read, write, append,
+                        new, describe, set-status, archive, mv, log) while
+                        still refusing rm, sync, task, start and done.
+                        Everything else — including a command added later —
+                        is refused with a clear message. help/doctor always
+                        run.
   TOME_GIT_AUTHOR       "Name <email>" applied as author (via `git commit
                         --author`) and, unless GIT_COMMITTER_* is set
                         explicitly, as committer identity on every
@@ -2678,6 +3084,38 @@ def build_parser():
                    help="restore from archive/ instead of archiving")
     add_sync_flag(p)
 
+    p = sub.add_parser("read", help="print a page's markdown",
+                        epilog="e.g. tome read render-layer-principle --json")
+    p.add_argument("ident", help="a slug, a wiki-relative path, or a vault-relative one")
+    p.add_argument("--json", action="store_true",
+                   help="emit {path, slug, hash, frontmatter, body}; the hash is "
+                        "the conflict token `tome write` takes back")
+
+    p = sub.add_parser("write", help="replace a page's body",
+                        epilog='e.g. tome write my-idea "# My idea\\n\\nBody." --base-hash abc123')
+    p.add_argument("ident", help="a slug, a wiki-relative path, or a vault-relative one")
+    p.add_argument("text", nargs="?", help="the new body (else --body-file, else stdin)")
+    p.add_argument("--body-file", metavar="PATH", help="read the new body from a file")
+    p.add_argument("--base-hash", required=True,
+                   help="the hash `tome read --json` gave you; a mismatch refuses "
+                        "the write instead of clobbering someone else's edit")
+    p.add_argument("--no-sync", action="store_true",
+                   help="skip the commit+push that runs by default after this command")
+
+    p = sub.add_parser("append", help="append to a page's body or one of its sections",
+                        epilog='e.g. tome append truck "- New tyres 2026-07-01." --under "## Log"')
+    p.add_argument("ident", help="a slug, a wiki-relative path, or a vault-relative one")
+    p.add_argument("text", nargs="?", help="the text to append (else --body-file, else stdin)")
+    p.add_argument("--body-file", metavar="PATH", help="read the appended text from a file")
+    p.add_argument("--under", metavar="HEADING",
+                   help='append inside this section instead of at the end of the '
+                        'page (e.g. "## Notes")')
+    p.add_argument("--base-hash",
+                   help="optional — an append doesn't overwrite, so it needs no "
+                        "conflict token")
+    p.add_argument("--no-sync", action="store_true",
+                   help="skip the commit+push that runs by default after this command")
+
     p = sub.add_parser("search", help="BM25 search over wiki pages",
                         epilog='e.g. tome search "quartz spike" --top 5')
     p.add_argument("query", nargs="?", default="", help="query terms")
@@ -2789,6 +3227,12 @@ def main():
             return cmd_rm(vault_root, conventions, args)
         if args.command == "archive":
             return cmd_archive(vault_root, conventions, args)
+        if args.command == "read":
+            return cmd_read(vault_root, conventions, args)
+        if args.command == "write":
+            return cmd_write(vault_root, conventions, args)
+        if args.command == "append":
+            return cmd_append(vault_root, conventions, args)
         if args.command == "search":
             return cmd_search(vault_root, conventions, args)
         if args.command == "prime":
