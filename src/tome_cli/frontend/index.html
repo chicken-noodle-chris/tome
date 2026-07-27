@@ -105,7 +105,31 @@
 
       <main class="page">
         <template x-if="pageError">
-          <p class="error" x-text="pageError"></p>
+          <div class="missing-page">
+            <h1 class="missing-page-title">Page not found</h1>
+            <p class="error">No page with slug <code x-text="currentSlug"></code>.</p>
+
+            <button type="button" class="edit-btn" x-show="board.writable"
+                    @click="openMissingPageCreate()">Create this page</button>
+
+            <div class="missing-page-suggestions">
+              <h2 class="backlinks-title">Did you mean?</h2>
+              <p class="home-empty" x-show="!missingPageSuggestions().length">No close matches found.</p>
+              <ul class="backlinks-list" x-show="missingPageSuggestions().length">
+                <template x-for="p of missingPageSuggestions()" :key="p.slug">
+                  <li><a class="backlinks-link" :href="'?page=' + encodeURIComponent(p.slug)"
+                         @click.prevent="loadPage(p.slug)" x-text="p.title || p.slug"></a></li>
+                </template>
+              </ul>
+            </div>
+
+            <p class="missing-page-back" x-show="missingPageSource()">
+              &larr; Back to
+              <a class="backlinks-link" :href="'?page=' + encodeURIComponent(missingPageFrom)"
+                 @click.prevent="loadPage(missingPageFrom)"
+                 x-text="missingPageSource() ? (missingPageSource().title || missingPageFrom) : ''"></a>
+            </p>
+          </div>
         </template>
         <template x-if="!pageError && pageMeta">
           <article>

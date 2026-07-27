@@ -79,7 +79,7 @@ describe("renderMarkdown", () => {
     const html = renderMarkdown("[[missing]]");
     assert.equal(
       html,
-      '<p><a class="wikilink wikilink--broken" title="no page: missing">missing</a></p>\n',
+      '<p><a class="wikilink wikilink--broken" href="?page=missing" title="no page: missing">missing</a></p>\n',
     );
   });
 

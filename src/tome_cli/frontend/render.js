@@ -67,7 +67,11 @@ function wikilinkExtension(resolveWikilink) {
     renderer(token) {
       const resolved = resolveWikilink(token.slug);
       if (!resolved) {
-        return `<a class="wikilink wikilink--broken" title="no page: ${escapeHtml(token.slug)}">${escapeHtml(token.label)}</a>`;
+        // Still a real link — following it lands on the missing-page
+        // recovery view ([[missing-page-recovery]]) rather than doing
+        // nothing, which is what an href-less anchor used to mean here.
+        const href = `?page=${encodeURIComponent(token.slug)}`;
+        return `<a class="wikilink wikilink--broken" href="${href}" title="no page: ${escapeHtml(token.slug)}">${escapeHtml(token.label)}</a>`;
       }
       // A piped link's label was the author's choice — never overridden by the
       // title lookup, which only fills in bare [[slug]] links.

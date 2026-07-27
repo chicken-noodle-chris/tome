@@ -143,6 +143,78 @@ describe("syncFromUrl — every URL shape", () => {
   });
 });
 
+describe("missing-page recovery ([[missing-page-recovery]])", () => {
+  beforeEach(() => stubLocationAndHistory(""));
+
+  test("loading an unknown slug directly carries no way-back source", async () => {
+    const app = makeApp();
+    await app.loadPage("some-page", { push: false });
+    assert.equal(app.pageError, 'No page with slug "some-page".');
+    assert.equal(app.missingPageFrom, null);
+    assert.equal(app.missingPageSource(), null);
+  });
+
+  test("following a broken wikilink carries the referring page as a way back", async () => {
+    const app = makeApp({
+      currentSlug: "origin",
+      pages: [{ slug: "origin", title: "Origin Page" }],
+    });
+    app.bySlug = new Map(app.pages.map((p) => [p.slug, p]));
+    app.onContentClick({
+      target: {
+        closest: (sel) => (sel === "a.wikilink"
+          ? { getAttribute: () => "?page=does-not-exist", classList: { contains: () => true } }
+          : null),
+      },
+      preventDefault() {},
+    });
+    // onContentClick's loadPage call is fire-and-forget from the click
+    // handler's point of view; wait for it to settle before asserting.
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(app.currentSlug, "does-not-exist");
+    assert.equal(app.missingPageFrom, "origin");
+    assert.deepEqual(app.missingPageSource(), { slug: "origin", title: "Origin Page" });
+  });
+
+  test("a page found on reload clears the stale missingPageFrom", async () => {
+    const app = makeApp({ missingPageFrom: "origin" });
+    app.pages = [{ slug: "known", title: "Known", url: "/raw/known.md" }];
+    app.bySlug = new Map(app.pages.map((p) => [p.slug, p]));
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({
+      ok: true, headers: { get: () => '"h"' }, text: async () => "Body",
+    });
+    try {
+      await app.loadPage("known", { push: false });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    assert.equal(app.missingPageFrom, null);
+  });
+
+  test("openMissingPageCreate presets the modal's slug from the current missing slug", async () => {
+    const app = makeApp();
+    await app.loadPage("brand-new-idea", { push: false });
+    app.openMissingPageCreate();
+    assert.equal(app.newPageOpen, true);
+    assert.equal(app.newPageForm.slug, "brand-new-idea");
+    assert.equal(app.newPageSlugTouched, true); // so typing a title doesn't clobber the preset slug
+  });
+
+  test("nearest-page suggestions come from the pages already in memory", async () => {
+    const app = makeApp({
+      pages: [
+        { slug: "board-sort", title: "Board sort" },
+        { slug: "artikindle", title: "Artikindle" },
+      ],
+    });
+    app.bySlug = new Map(app.pages.map((p) => [p.slug, p]));
+    await app.loadPage("board-srot", { push: false });
+    assert.ok(app.missingPageSuggestions().map((p) => p.slug).includes("board-sort"));
+  });
+});
+
 describe("task panel reconciliation + popstate back/forward", () => {
   beforeEach(() => stubLocationAndHistory("?view=board"));
 

@@ -54,6 +54,7 @@ import { computeChains } from "./chains.js";
 import { recentPages, projectRoster, inFlightPlans } from "./home.js";
 import { searchVault } from "./search.js";
 import { linkifyLog } from "./log.js";
+import { nearestPages } from "./missing.js";
 
 // Document titles for the five base views that don't carry their own.
 const VIEW_TITLES = {
@@ -171,6 +172,10 @@ export function tomeApp() {
     pageBodyRaw: "", // markdown body only (frontmatter stripped) — feeds the editor
     pageError: "",
     currentHash: null, // ETag of the last-fetched /raw/ response — the save conflict token
+    // missing-page recovery ([[missing-page-recovery]]) — the referring
+    // page's slug, set only when arrival was via a broken wikilink, so the
+    // recovery view can offer a way back. null on a direct ?page= hit.
+    missingPageFrom: null,
 
     // task-detail panel ([[task-detail-panel]]) — a layer over the current
     // `view` (board/backlog/chains), not a view of its own. No fetch; renders
@@ -623,7 +628,7 @@ export function tomeApp() {
       this.showHome({ push });
     },
 
-    async loadPage(slug, { push = true } = {}) {
+    async loadPage(slug, { push = true, from = null } = {}) {
       if (this.editing) this.exitEdit(); // navigating away discards any in-progress edit
       if (this.fmEditing) this.cancelFmEdit();
       this.currentTaskId = null; // the page view is a different base — the panel goes with it
@@ -639,8 +644,11 @@ export function tomeApp() {
         this.pageMeta = null;
         this.pageHtml = "";
         this.pageError = `No page with slug "${slug}".`;
+        this.missingPageFrom = from; // recovery view's "way back" ([[missing-page-recovery]])
+        if (push) history.pushState({ slug }, "", `?page=${encodeURIComponent(slug)}`);
         return;
       }
+      this.missingPageFrom = null;
       try {
         const res = await fetch(page.url);
         if (!res.ok) throw new Error(`${res.status}`);
@@ -666,6 +674,28 @@ export function tomeApp() {
     // has loaded yet — mirrors showPage()'s own fallback.
     pageHref() {
       return this.currentSlug ? `?page=${encodeURIComponent(this.currentSlug)}` : "?view=home";
+    },
+
+    // -- missing-page recovery ([[missing-page-recovery]]) ---------------- //
+    // Rendered instead of the page body when loadPage() found no match:
+    // a create affordance (gated on board.writable, same as every other
+    // write path), the nearest existing pages by title/slug similarity, and
+    // — when arrival was via a broken wikilink — the referring page as a
+    // way back.
+
+    missingPageSuggestions() {
+      return nearestPages(this.currentSlug, this.pages);
+    },
+
+    missingPageSource() {
+      return this.missingPageFrom ? this.bySlug.get(this.missingPageFrom) || null : null;
+    },
+
+    // Reuses [[page-creation]]'s own modal — same POST /api/new, same lint
+    // gate — just entered from a second door, pre-filled with the slug the
+    // user was already looking for.
+    openMissingPageCreate() {
+      this.openNewPageModal(null, { presetSlug: this.currentSlug });
     },
 
     // -- hub / home view ([[wiki-hub-home]]) ------------------------------ //
@@ -701,11 +731,12 @@ export function tomeApp() {
     onContentClick(event) {
       const wikilink = event.target.closest("a.wikilink");
       if (wikilink) {
-        if (wikilink.classList.contains("wikilink--broken")) return;
         const slug = new URLSearchParams(wikilink.getAttribute("href").replace(/^\?/, "")).get("page");
         if (slug) {
           event.preventDefault();
-          this.loadPage(slug);
+          // A broken wikilink now carries the page it was followed from, so
+          // the recovery view can offer a way back ([[missing-page-recovery]]).
+          this.loadPage(slug, { from: this.currentSlug });
         }
         return;
       }
@@ -1405,15 +1436,18 @@ export function tomeApp() {
     // URL tells syncFromUrl() to auto-open the body editor once the freshly
     // scaffolded TBD page loads.
 
-    openNewPageModal(project, { linkTask = null } = {}) {
+    openNewPageModal(project, { linkTask = null, presetSlug = null } = {}) {
       this.newPageOpen = true;
       this.newPageBanner = "";
       this.newPageBannerKind = "";
       this.newPageFindings = [];
-      this.newPageSlugTouched = false;
+      // A preset slug is the thing the user actually came here for
+      // ([[missing-page-recovery]]) — mark it touched so title input doesn't
+      // silently overwrite it.
+      this.newPageSlugTouched = !!presetSlug;
       this.newPageLinkTask = linkTask;
       this.newPageForm = {
-        type: linkTask ? "plan" : "", project: project || "", slug: "", title: "", description: "",
+        type: linkTask ? "plan" : "", project: project || "", slug: presetSlug || "", title: "", description: "",
       };
     },
 
