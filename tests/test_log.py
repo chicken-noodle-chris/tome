@@ -1,6 +1,6 @@
 """tome log — appends a formatted entry to wiki/log.md."""
 
-from tome_cli import cli as tome
+from tome_cli import lib
 
 
 def test_log_appends_formatted_entry(make_vault, run_tome):
@@ -10,7 +10,7 @@ def test_log_appends_formatted_entry(make_vault, run_tome):
 
     assert code == 0
     log_text = (vault / "wiki" / "log.md").read_text(encoding="utf-8")
-    assert f"## [{tome.today()}] work-started | Began task-1" in log_text
+    assert f"## [{lib.today()}] work-started | Began task-1" in log_text
 
 
 def test_log_appends_body_when_given(make_vault, run_tome):

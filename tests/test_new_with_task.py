@@ -8,6 +8,8 @@ import subprocess
 
 import pytest
 
+from tome_cli import lib
+
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git not on PATH")
 
 
@@ -45,7 +47,6 @@ def fake_backlog_create(monkeypatch):
     issues: parses the argv the same way the real CLI would consume it and
     writes a plausible task file, printing the `File: <path>` line cmd_new
     parses back out to scope --sync."""
-    from tome_cli import cli as tome
 
     calls = []
     counter = {"n": 0}
@@ -111,7 +112,7 @@ def fake_backlog_create(monkeypatch):
         path.write_text(text, encoding="utf-8", newline="\n")
         return Result(stdout=f"File: {path}\n")
 
-    monkeypatch.setattr(tome, "run_backlog", _run)
+    monkeypatch.setattr(lib, "run_backlog", _run)
     return calls
 
 

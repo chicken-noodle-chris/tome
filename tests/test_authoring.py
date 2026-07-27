@@ -20,13 +20,13 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from tome_cli import cli as tome  # noqa: E402
+from tome_cli import lib  # noqa: E402
 
 needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git not on PATH")
 
 
 def _conv(vault):
-    return tome.load_conventions(vault)
+    return lib.load_conventions(vault)
 
 
 def _git(vault, *args):
@@ -91,15 +91,15 @@ def _hash(path):
 def test_resolver_accepts_every_address_form(make_vault, run_tome, ident):
     vault = make_vault()
     _scaffold_idea(vault, run_tome)
-    page = tome.resolve_page(vault, _conv(vault), ident)
+    page = lib.resolve_page(vault, _conv(vault), ident)
     assert page["slug"] == "alpha"
 
 
 def test_resolver_miss_names_the_vault_and_nearest_slugs(make_vault, run_tome):
     vault = make_vault()
     _scaffold_idea(vault, run_tome)
-    with pytest.raises(tome.VaultError) as excinfo:
-        tome.resolve_page(vault, _conv(vault), "alpah")
+    with pytest.raises(lib.VaultError) as excinfo:
+        lib.resolve_page(vault, _conv(vault), "alpah")
     message = str(excinfo.value)
     assert str(vault) in message
     assert "alpha" in message  # the closest-matching slug, not just a refusal
@@ -111,8 +111,8 @@ def test_resolver_refuses_traversal_and_non_pages(make_vault, run_tome):
     _scaffold_idea(vault, run_tome)
     (vault / "wiki" / "tome" / "notes.txt").write_text("not a page", encoding="utf-8")
     for ident in ("../../etc/passwd", "/etc/passwd", "tome/notes.txt", ""):
-        with pytest.raises(tome.VaultError):
-            tome.resolve_page(vault, _conv(vault), ident)
+        with pytest.raises(lib.VaultError):
+            lib.resolve_page(vault, _conv(vault), ident)
 
 
 # --------------------------------------------------------------------------- #
@@ -123,34 +123,34 @@ SECTIONED = "\n# Title\n\nIntro.\n\n## Log\n\n- first\n\n## Other\n\nTail.\n"
 
 
 def test_append_lands_at_the_end_by_default():
-    assert tome.append_to_body("\n# T\n\nBody.\n", "More.") == "\n# T\n\nBody.\n\nMore.\n"
+    assert lib.append_to_body("\n# T\n\nBody.\n", "More.") == "\n# T\n\nBody.\n\nMore.\n"
 
 
 def test_append_under_lands_inside_the_section():
-    out = tome.append_to_body(SECTIONED, "- second", under="## Log")
+    out = lib.append_to_body(SECTIONED, "- second", under="## Log")
     assert out.index("- second") < out.index("## Other")
     assert out.index("- first") < out.index("- second")
 
 
 def test_append_under_matches_heading_text_without_markers():
-    assert "- second" in tome.append_to_body(SECTIONED, "- second", under="log")
+    assert "- second" in lib.append_to_body(SECTIONED, "- second", under="log")
 
 
 def test_append_under_unknown_section_lists_the_real_ones():
-    with pytest.raises(tome.VaultError) as excinfo:
-        tome.append_to_body(SECTIONED, "x", under="## Nope")
+    with pytest.raises(lib.VaultError) as excinfo:
+        lib.append_to_body(SECTIONED, "x", under="## Nope")
     assert "'Log'" in str(excinfo.value) and "'Other'" in str(excinfo.value)
 
 
 def test_append_ignores_headings_inside_fenced_code():
     body = "\n# T\n\n```bash\n# Log\n```\n\n## Log\n\n- first\n"
-    out = tome.append_to_body(body, "- second", under="## Log")
+    out = lib.append_to_body(body, "- second", under="## Log")
     assert out.endswith("- first\n\n- second\n")
 
 
 def test_append_refuses_empty_text():
-    with pytest.raises(tome.VaultError):
-        tome.append_to_body("\n# T\n", "   \n  ")
+    with pytest.raises(lib.VaultError):
+        lib.append_to_body("\n# T\n", "   \n  ")
 
 
 # --------------------------------------------------------------------------- #
@@ -320,8 +320,8 @@ def test_append_adds_to_the_end_without_a_conflict_token(tmp_path, run_tome):
 def test_append_under_a_section(tmp_path, run_tome):
     vault, origin = _bootstrap_git_vault(tmp_path, run_tome)
     target = _committed(vault, run_tome)
-    fm_lines, _ = tome.read_page(target)
-    tome.write_page(target, fm_lines, "\n# Alpha\n\n## Log\n\n- first\n\n## Tail\n\nEnd.\n")
+    fm_lines, _ = lib.read_page(target)
+    lib.write_page(target, fm_lines, "\n# Alpha\n\n## Log\n\n- first\n\n## Tail\n\nEnd.\n")
     _git(vault, "add", "-A")
     _git(vault, "commit", "-m", "sections")
     _git(vault, "push")

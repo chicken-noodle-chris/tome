@@ -25,14 +25,14 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from tome_cli import cli as tome  # noqa: E402
+from tome_cli import lib  # noqa: E402
 from tome_cli import serve  # noqa: E402
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git not on PATH")
 
 
 def _conv(vault):
-    return tome.load_conventions(vault)
+    return lib.load_conventions(vault)
 
 
 def _git(cwd, *args):
@@ -111,7 +111,7 @@ def test_save_page_conflict_returns_their_text_and_provenance(tmp_path, run_tome
 
 def test_save_frontmatter_conflict_returns_their_text(tmp_path, run_tome):
     vault, _origin, target = _committed_idea(tmp_path, run_tome)
-    tome.run_git(vault, ["checkout", "--", VAULT_REL])
+    lib.run_git(vault, ["checkout", "--", VAULT_REL])
     text = target.read_text(encoding="utf-8").replace('description: "d"',
                                                        'description: "theirs"')
     target.write_text(text, encoding="utf-8")
@@ -201,7 +201,7 @@ def test_resolve_then_continue_finishes_the_rebase_and_pushes(tmp_path, run_tome
 
     assert status == 200, result
     assert result["done"] is True
-    assert not serve.rebase_in_progress(vault)
+    assert not lib.rebase_in_progress(vault)
     assert "MERGED LINE." in target.read_text(encoding="utf-8")
     log = _git(origin, "log", "--oneline").stdout
     assert "local edit" in log and "remote edit" in log
@@ -216,7 +216,7 @@ def test_continue_refuses_while_a_file_is_still_unmerged(tmp_path, run_tome):
 
     assert status == 400
     assert "unmerged" in result["error"]
-    assert serve.rebase_in_progress(vault)  # left exactly as it was
+    assert lib.rebase_in_progress(vault)  # left exactly as it was
 
 
 def test_resolve_refuses_a_path_git_did_not_flag(tmp_path, run_tome):
@@ -242,7 +242,7 @@ def test_abort_returns_the_tree_to_a_known_state(tmp_path, run_tome):
 
     assert status == 200
     assert result["aborted"] is True
-    assert not serve.rebase_in_progress(vault)
+    assert not lib.rebase_in_progress(vault)
     assert "LOCAL LINE." in target.read_text(encoding="utf-8")  # the local commit survives
     assert _git(vault, "status", "--porcelain").stdout.strip() == ""
 
@@ -250,7 +250,7 @@ def test_abort_returns_the_tree_to_a_known_state(tmp_path, run_tome):
 def test_conflict_state_is_empty_without_a_rebase(tmp_path, run_tome):
     vault, _origin, _target = _committed_idea(tmp_path, run_tome)
 
-    state = serve.git_conflict_state(vault)
+    state = lib.git_conflict_state(vault)
 
     assert state == {"rebase": False, "files": []}
     assert serve.continue_rebase(vault)[0] == 409

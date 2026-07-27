@@ -1,6 +1,6 @@
 """Lifecycle commands: new, describe, set-status, mv."""
 
-from tome_cli import cli as tome
+from tome_cli import lib
 
 
 def _new_project(run_tome, vault, name="proj", title="Proj"):
@@ -120,7 +120,7 @@ def test_describe_updates_description_and_regenerates_index(make_vault, run_tome
     assert code == 0
     page_text = (vault / "wiki" / "myproj" / "plans" / "p1.md").read_text(encoding="utf-8")
     assert 'description: "new one-liner"' in page_text
-    assert f"updated: {tome.today()}" in page_text
+    assert f"updated: {lib.today()}" in page_text
     index_text = (vault / "wiki" / "index.md").read_text(encoding="utf-8")
     assert "new one-liner" in index_text
 

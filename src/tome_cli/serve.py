@@ -12,7 +12,7 @@ tome_cli.serve — the local browse host for the no-build frontend.
     request so the render always reflects the markdown on disk — the
     render-from-markdown rule ([[render-layer-principle]]), never the reverse;
   * accepts one write, `POST /api/task/<id>/move`, which shells out to the
-    pinned backlog.md CLI (`cli.run_backlog`) rather than touching task YAML
+    pinned backlog.md CLI (`lib.run_backlog`) rather than touching task YAML
     directly — the writes-through-CLI boundary from [[kanban-render-side]].
     A move carries the drop column's status plus `afterId` (the card it now
     sits after, or null for the top slot); the server resolves that into an
@@ -27,16 +27,16 @@ tome_cli.serve — the local browse host for the no-build frontend.
     description, notes, priority, milestone, assignee, one label, or the
     acceptance criteria — translated into exactly one `backlog task edit`
     argv by `task_patch_argv()` below and shelled through the same
-    `cli.run_backlog`. Guarded by the per-card `hash` in `board.json`, whose
+    `lib.run_backlog`. Guarded by the per-card `hash` in `board.json`, whose
     409 carries the fresh card so the client can show what it would be
     overwriting. Status is *not* a patch field: that's what the move route
     below already is;
   * accepts a sibling write, `POST /api/task`, filing a brand-new bare task —
-    a kanban card with no wiki page — the same way, via `cli.run_backlog`
+    a kanban card with no wiki page — the same way, via `lib.run_backlog`
     (see `create_task()` below). Same uncommitted-until-`tome sync` contract
     as the status write, and the same `board.writable` gate;
   * accepts a second write, `POST /api/page`, editing a page's body through
-    `cli.write_page` + the lint gate ([[page-editing]]) — see `save_page()`
+    `lib.write_page` + the lint gate ([[page-editing]]) — see `save_page()`
     below for the conflict/lint contract. Also absent on a static export, and
     gated on the same `board.writable` flag client-side (no separate flag);
   * accepts a third write, `POST /api/frontmatter`, editing a page's title,
@@ -47,14 +47,14 @@ tome_cli.serve — the local browse host for the no-build frontend.
     owned by another surface (the board, `tome mv`). Same conflict model,
     same `board.writable` gate, same absence from the static export;
   * accepts a fourth write, `POST /api/rename`, renaming a page's slug through
-    `cli.move_page` — the `tome mv` core ([[slug-rename]]) — see `rename_page()`
+    `lib.move_page` — the `tome mv` core ([[slug-rename]]) — see `rename_page()`
     below. The slug is the filename, every `[[wikilink]]`'s target, and the
     page's URL at once, so this moves the file, rewrites inbound links wiki-
     wide, and returns the new URL for the client to redirect to. Same conflict
     model and `board.writable` gate, gated harder on lint (new-errors-only, not
     single-page-scoped), and likewise absent from the static export;
   * accepts a fifth write, `POST /api/new`, scaffolding a brand-new page
-    through `cli.new_page` — the `tome new` core ([[page-creation]]) — see
+    through `lib.new_page` — the `tome new` core ([[page-creation]]) — see
     `create_page()` below. Unlike the other three writes, creation has no
     prior version to race against, so there's no `baseHash`: its guard is
     slug uniqueness, re-checked after a pull. Same `board.writable` gate and
@@ -80,7 +80,9 @@ server internals and the frontend are rough by design and hardened in place by
 later phases. build_index()/build_board() return plain dicts so the
 static-export path (`--export`) can write them to disk unchanged.
 
-stdlib only, imports cli lazily to avoid an import cycle (cli dispatches here).
+stdlib only. The vault primitives and the git/conflict model this serves over
+live in tome_cli.lib, imported plainly at the top and shared with tome_cli.cli;
+neither command surface owns the other's core.
 """
 
 import hashlib
@@ -89,7 +91,6 @@ import json
 import os
 import queue
 import re
-import subprocess
 import sys
 import threading
 import time
@@ -97,6 +98,8 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
 from urllib.parse import unquote, urlparse
+
+from tome_cli import lib
 
 FRONTEND_DIR = importlib.resources.files("tome_cli") / "frontend"
 
@@ -126,9 +129,7 @@ def build_index(vault_root, conventions):
     outbound wikilink slugs (the graph the frontend resolves `[[wikilinks]]`
     against). Pages that failed to read are skipped — the linter is the
     loud channel for those."""
-    from tome_cli import cli
-
-    wiki_root, pages = cli.collect(vault_root, conventions)
+    wiki_root, pages = lib.collect(vault_root, conventions)
     out = []
     for p in pages:
         if "read_error" in p:
@@ -160,7 +161,7 @@ def build_index(vault_root, conventions):
         "tagTaxonomy": sorted(tag_conv.get("taxonomy", [])),
         "allowProjectTags": bool(tag_conv.get("allow_project_name_tags")),
         # The new-page form's ([[page-creation]]) type dropdown — the same
-        # enum `cli.new_page`/`tome new` validate against, so the client
+        # enum `lib.new_page`/`tome new` validate against, so the client
         # never hardcodes it separately.
         "typeEnum": sorted(conventions.get("types", {}).get("enum", [])),
     }
@@ -203,7 +204,7 @@ def build_board(vault_root, conventions):
     """The `/board.json` contract: the kanban read from backlog/tasks/*.md,
     plus backlog/completed/*.md so a shipped task stays linkable and
     viewable ([[completed-tasks-viewable]]) after `backlog task complete`
-    moves its file out of tasks/. Reuses cli's existing task
+    moves its file out of tasks/. Reuses lib's existing task
     frontmatter/body readers rather than adding another hand-rolled parser.
     Cards carry `description`, `acceptanceCriteria`, `dependencies`,
     `assignee`, `created`, `updated`, and `notes` (task-detail view fields,
@@ -223,8 +224,6 @@ def build_board(vault_root, conventions):
     `hash: ""` instead — it's not writable, so there's no conflict to guard
     and no reason to pay for a second full read of every archived file on
     every board build."""
-    from tome_cli import cli
-
     backlog_dir = vault_root / "backlog"
     statuses, default_status = _read_board_config(backlog_dir)
 
@@ -234,41 +233,41 @@ def build_board(vault_root, conventions):
         if not tasks_dir.is_dir():
             continue
         for path in sorted(tasks_dir.glob("*.md")):
-            fm_lines, body = cli.read_page(path)
-            raw_id = cli.fm_get(fm_lines, "id") or ""
+            fm_lines, body = lib.read_page(path)
+            raw_id = lib.fm_get(fm_lines, "id") or ""
             if not raw_id:
                 continue
-            labels = cli.task_block_list(fm_lines, "labels")
+            labels = lib.task_block_list(fm_lines, "labels")
             project = next((l[len("project:"):] for l in labels
                             if l.startswith("project:")), None)
             agent = next((l[len("agent:"):] for l in labels
                           if l.startswith("agent:")), None)
-            ordinal_raw = cli.fm_get(fm_lines, "ordinal")
+            ordinal_raw = lib.fm_get(fm_lines, "ordinal")
             try:
                 ordinal = int(ordinal_raw) if ordinal_raw not in (None, "") else None
             except ValueError:
                 ordinal = None
             dependencies = [_normalize_card_id(d)
-                             for d in cli.task_block_list(fm_lines, "dependencies")]
+                             for d in lib.task_block_list(fm_lines, "dependencies")]
             cards.append({
                 "id": raw_id.lower(),
                 "rawId": raw_id,
-                "title": cli.task_title(fm_lines) or raw_id,
-                "status": cli.fm_get(fm_lines, "status") or "",
+                "title": lib.task_title(fm_lines) or raw_id,
+                "status": lib.fm_get(fm_lines, "status") or "",
                 "project": project,
                 "agent": agent,
-                "priority": cli.fm_get(fm_lines, "priority"),
+                "priority": lib.fm_get(fm_lines, "priority"),
                 "ordinal": ordinal,
-                "milestone": cli.fm_get(fm_lines, "milestone"),
+                "milestone": lib.fm_get(fm_lines, "milestone"),
                 "labels": labels,
-                "references": cli.task_block_list(fm_lines, "references"),
+                "references": lib.task_block_list(fm_lines, "references"),
                 "dependencies": [d for d in dependencies if d],
-                "assignee": cli.task_block_list(fm_lines, "assignee"),
-                "created": cli.fm_get(fm_lines, "created_date") or "",
-                "updated": cli.fm_get(fm_lines, "updated_date") or "",
-                "description": cli.task_description(body),
-                "acceptanceCriteria": cli.task_acceptance_criteria(body),
-                "notes": cli.task_notes(body),
+                "assignee": lib.task_block_list(fm_lines, "assignee"),
+                "created": lib.fm_get(fm_lines, "created_date") or "",
+                "updated": lib.fm_get(fm_lines, "updated_date") or "",
+                "description": lib.task_description(body),
+                "acceptanceCriteria": lib.task_acceptance_criteria(body),
+                "notes": lib.task_notes(body),
                 "completed": completed,
                 "hash": "" if completed else hashlib.sha256(path.read_bytes()).hexdigest(),
             })
@@ -320,20 +319,18 @@ def _column_cards(vault_root, status, exclude_id=None):
     parser. `exclude_id` (the card being moved) is left out so its own old
     ordinal never enters the neighbour math, including for an in-column
     reorder."""
-    from tome_cli import cli
-
     tasks_dir = vault_root / "backlog" / "tasks"
     cards = []
     if tasks_dir.is_dir():
         for path in sorted(tasks_dir.glob("*.md")):
-            fm_lines, _ = cli.read_page(path)
-            raw_id = cli.fm_get(fm_lines, "id") or ""
+            fm_lines, _ = lib.read_page(path)
+            raw_id = lib.fm_get(fm_lines, "id") or ""
             if not raw_id:
                 continue
             card_id = raw_id.lower()
-            if card_id == exclude_id or (cli.fm_get(fm_lines, "status") or "") != status:
+            if card_id == exclude_id or (lib.fm_get(fm_lines, "status") or "") != status:
                 continue
-            ordinal_raw = cli.fm_get(fm_lines, "ordinal")
+            ordinal_raw = lib.fm_get(fm_lines, "ordinal")
             try:
                 ordinal = int(ordinal_raw) if ordinal_raw not in (None, "") else None
             except ValueError:
@@ -386,8 +383,6 @@ def apply_task_move(vault_root, raw_task_id, status, raw_after_id):
     lives in backlog/completed/, not backlog/tasks/, so shelling `backlog
     task edit` against it would either miss the file or resurrect it into a
     column, neither of which is "move" ([[completed-tasks-viewable]])."""
-    from tome_cli import cli
-
     task_id = raw_task_id.strip()
     if task_id.upper().startswith("TASK-"):
         task_id = task_id[len("TASK-"):]
@@ -396,7 +391,7 @@ def apply_task_move(vault_root, raw_task_id, status, raw_after_id):
     if not status:
         return False, "status is required"
 
-    task_path = cli.find_task_file(vault_root, task_id)
+    task_path = lib.find_task_file(vault_root, task_id)
     if task_path is not None and task_path.parent.name == "completed":
         return False, f"task-{task_id} is completed and can't be moved"
 
@@ -411,14 +406,14 @@ def apply_task_move(vault_root, raw_task_id, status, raw_after_id):
             new_ordinal = _ORDINAL_BASE + i * _ORDINAL_GAP
             renumbered.append((cid, new_ordinal))
             raw_cid = cid[len("task-"):]
-            proc = cli.run_backlog(vault_root, ["task", "edit", raw_cid, "--ordinal", str(new_ordinal)],
+            proc = lib.run_backlog(vault_root, ["task", "edit", raw_cid, "--ordinal", str(new_ordinal)],
                                     capture=True)
             if proc.returncode != 0:
                 message = (proc.stderr or proc.stdout).strip() or "backlog task edit failed"
                 return False, message
         ordinal, _ = _compute_ordinal(renumbered, after_id)
 
-    proc = cli.run_backlog(vault_root, ["task", "edit", task_id, "-s", status, "--ordinal", str(ordinal)],
+    proc = lib.run_backlog(vault_root, ["task", "edit", task_id, "-s", status, "--ordinal", str(ordinal)],
                             capture=True)
     if proc.returncode != 0:
         message = (proc.stderr or proc.stdout).strip() or "backlog task edit failed"
@@ -569,8 +564,6 @@ def apply_task_edit(vault_root, conventions, raw_task_id, patch, base_hash):
     `base_hash` would otherwise read as a plain conflict instead of the
     clearer "this task is done" error.
     """
-    from tome_cli import cli
-
     task_id = str(raw_task_id or "").strip()
     if task_id.upper().startswith("TASK-"):
         task_id = task_id[len("TASK-"):]
@@ -594,7 +587,7 @@ def apply_task_edit(vault_root, conventions, raw_task_id, patch, base_hash):
     except ValueError as e:
         return 400, {"error": str(e)}
 
-    proc = cli.run_backlog(vault_root, argv, capture=True)
+    proc = lib.run_backlog(vault_root, argv, capture=True)
     if proc.returncode != 0:
         return 400, {"error": (proc.stderr or proc.stdout).strip() or "backlog task edit failed"}
 
@@ -608,8 +601,6 @@ def create_task(vault_root, title, status, project, priority, description):
     and (like a drag-to-move) no commit here either — task writes stay
     uncommitted, picked up by the next `tome sync`. Returns (ok, message);
     on success message is the new card's board id (e.g. "task-79")."""
-    from tome_cli import cli
-
     title = (title or "").strip()
     if not title:
         return False, "title is required"
@@ -624,21 +615,21 @@ def create_task(vault_root, title, status, project, priority, description):
     if priority:
         argv += ["--priority", priority]
 
-    proc = cli.run_backlog(vault_root, argv, capture=True)
+    proc = lib.run_backlog(vault_root, argv, capture=True)
     if proc.returncode != 0:
         return False, (proc.stderr or proc.stdout).strip() or "backlog task create failed"
 
     m = re.search(r"^File: (.+)$", proc.stdout, re.MULTILINE)
     if not m:
         return False, "task created but its file path could not be parsed"
-    fm_lines, _ = cli.read_page(Path(m.group(1).strip()))
-    raw_id = cli.fm_get(fm_lines, "id") or ""
+    fm_lines, _ = lib.read_page(Path(m.group(1).strip()))
+    raw_id = lib.fm_get(fm_lines, "id") or ""
     if not raw_id:
         return False, "task created but its id could not be read"
     return True, raw_id.lower()
 
 
-# A `cli.PageWriteResult.kind` as the HTTP status this server answers with.
+# A `lib.PageWriteResult.kind` as the HTTP status this server answers with.
 # The write core is transport-neutral ([[remote-authoring]]); this table is the
 # entire HTTP half of it.
 PAGE_WRITE_STATUS = {
@@ -652,7 +643,7 @@ PAGE_WRITE_STATUS = {
 
 
 def _http(result):
-    """A `cli.PageWriteResult` as the (status, payload) pair every route
+    """A `lib.PageWriteResult` as the (status, payload) pair every route
     returns — or None passed straight through, since the conflict helpers
     below use None for "nothing went wrong"."""
     if result is None:
@@ -663,198 +654,35 @@ def _http(result):
 def _page_path(vault_root, conventions, rel):
     """Resolve a client-supplied page identifier to its file on disk, or None.
 
-    Backed by `cli.resolve_page`, so these routes accept every address form
+    Backed by `lib.resolve_page`, so these routes accept every address form
     `tome read`/`write`/`append` do — a slug, a `[[wikilink]]`, a wiki- or
     vault-relative path — and inherit its safety property: only pages
-    `cli.collect` actually walked under wiki/ resolve at all, so a traversal,
+    `lib.collect` actually walked under wiki/ resolve at all, so a traversal,
     an absolute path, or a non-page file simply doesn't."""
-    from tome_cli import cli
-
     try:
-        return cli.resolve_page(vault_root, conventions, rel)["path"]
-    except cli.VaultError:
+        return lib.resolve_page(vault_root, conventions, rel)["path"]
+    except lib.VaultError:
         return None
 
 
 # --------------------------------------------------------------------------- #
-# Conflicts ([[conflict-resolution]]). Two triggers, one three-way model: a
-# save racing a local write (A), and a `git pull --rebase` whose history forked
-# (B). Both hand the resolver a base, the user's buffer, and an external
-# version — only the *sources* differ, so both are described by the same
-# `conflict` object on the wire:
-#
-#   {"type": "local-drift"|"git-fork", ...provenance..., + sides}
-#
-# A is the workhorse: every write path pulls before its conflict gate, so a
-# remote change that rebases cleanly arrives looking like plain disk drift. B
-# is the residual — committed histories that genuinely conflict — and is the
-# only case that leaves the tree mid-rebase, which the endpoints below exist
-# to get it back out of.
+# Conflicts ([[conflict-resolution]]). The model — `local_drift_conflict`,
+# `git_conflict_state`, and the `pull_or_conflict`/`push_or_conflict` gates
+# every write path opens and closes with — is `lib`'s, since the CLI's write
+# verbs need the same guarantees. What's here is the browser resolver's own
+# surface: the endpoints that get a tree back out of a stopped rebase, and the
+# HTTP shaping of the model's results.
 # --------------------------------------------------------------------------- #
 
-def local_drift_conflict(target, current_hash):
-    """The conflict payload for a stale `baseHash` (a 409 over HTTP): the
-    sides the resolver needs plus
-    who/when provenance. There's no author for an uncommitted local write —
-    it was VS Code, an agent, or a `tome` command — so the *who* is honestly
-    omitted rather than guessed, and mtime carries the *when*."""
-    return {
-        "error": "page changed since you opened it",
-        "currentHash": current_hash,
-        "conflict": {
-            "type": "local-drift",
-            "source": "disk",
-            "theirs": target.read_text(encoding="utf-8"),
-            "mtime": target.stat().st_mtime,
-        },
-    }
-
-
-def _git_bytes(vault_root, args):
-    """`cli.run_git` decodes with the locale codec (cp1252 on Windows), which
-    would mangle any non-ASCII page. Blob reads must be byte-exact, so this
-    runs git itself and decodes UTF-8 explicitly."""
-    from tome_cli import cli
-
-    return subprocess.run(["git", *args], cwd=str(vault_root),
-                          capture_output=True, env=cli._git_env())
-
-
-def _git_text(vault_root, args):
-    """The stdout of `args` as UTF-8 text, or None if git failed."""
-    proc = _git_bytes(vault_root, args)
-    if proc.returncode != 0:
-        return None
-    return proc.stdout.decode("utf-8", "replace")
-
-
-_COMMIT_FORMAT = "%an%x00%ae%x00%aI%x00%h%x00%s"
-
-
-def _commit_meta(vault_root, rev):
-    """{author, email, date, sha, subject} for `rev`, or None if it doesn't
-    resolve (REBASE_HEAD only exists mid-rebase, for instance)."""
-    out = _git_text(vault_root, ["log", "-1", f"--format={_COMMIT_FORMAT}", rev])
-    if out is None:
-        return None
-    parts = out.rstrip("\n").split("\0")
-    if len(parts) < 5:
-        return None
-    return {"author": parts[0], "email": parts[1], "date": parts[2],
-            "sha": parts[3], "subject": parts[4]}
-
-
-def rebase_in_progress(vault_root):
-    """True while a rebase is stopped part-way — the state a conflicted
-    `git pull --rebase` leaves behind. Public because cli.py checks it too,
-    to point a failed `tome sync` at the browser resolver."""
-    from tome_cli import cli
-
-    for name in ("rebase-merge", "rebase-apply"):
-        probe = cli.run_git(vault_root, ["rev-parse", "--git-path", name])
-        if probe.returncode != 0:
-            continue
-        path = Path(probe.stdout.strip())
-        if not path.is_absolute():
-            path = vault_root / path
-        if path.exists():
-            return True
-    return False
-
-
-def git_conflict_state(vault_root):
-    """The `git-fork` conflict object: every file the stopped rebase left
-    unmerged, each with the three sides the resolver wants, plus provenance
-    for both.
-
-    The stage-to-side mapping is the one thing here that is easy to get
-    backwards. During a rebase git replays *your* commits onto the upstream,
-    so HEAD is the upstream side: stage `:2:` ("ours") is the **remote**, and
-    stage `:3:` ("theirs") is **your** commit being replayed. The resolver's
-    `mine`/`theirs` therefore come from `:3:`/`:2:` respectively — inverted
-    from the raw git labels, and named from the user's point of view.
-
-    Returns {"rebase": False} when no rebase is in flight.
-    """
-    if not rebase_in_progress(vault_root):
-        return {"rebase": False, "files": []}
-
-    listing = _git_text(vault_root, ["diff", "--name-only", "--diff-filter=U"]) or ""
-    files = []
-    for rel in [line for line in listing.splitlines() if line.strip()]:
-        base = _git_text(vault_root, ["show", f":1:{rel}"])
-        remote = _git_text(vault_root, ["show", f":2:{rel}"])
-        local = _git_text(vault_root, ["show", f":3:{rel}"])
-        files.append({
-            "path": rel,
-            # An add/add conflict has no stage 1; the resolver treats a missing
-            # ancestor as an empty one, which makes every line a conflict —
-            # honest, since there genuinely is no common ancestor.
-            "base": base or "",
-            "mine": local or "",
-            "theirs": remote or "",
-        })
-
-    return {
-        "rebase": True,
-        "files": files,
-        # HEAD mid-rebase is the upstream tip the replay is landing on: the
-        # remote commit whose lines the user is being asked to weigh.
-        "theirsCommit": _commit_meta(vault_root, "HEAD"),
-        # REBASE_HEAD is the commit currently being replayed — the user's own.
-        "mineCommit": _commit_meta(vault_root, "REBASE_HEAD"),
-    }
-
-
-def pull_or_conflict(vault_root):
-    """Every write path's first step. Returns None when the pull landed, else
-    the `cli.PageWriteResult` the caller should surface: a `conflict` carrying
-    the `git-fork` state when the rebase stopped on one — the resolver's cue,
-    replacing the old dead-end 'resolve manually' — or a plain `error`.
-
-    Transport-neutral because `cli`'s write core calls it too; the conflict
-    *model* stays here with the resolver that consumes it."""
-    from tome_cli import cli
-
-    pull = cli.run_git(vault_root, ["pull", "--rebase", "--autostash"])
-    if pull.returncode == 0:
-        return None
-    state = git_conflict_state(vault_root)
-    if state["rebase"]:
-        return cli.PageWriteResult("conflict", {
-            "error": "the vault's history diverged from the remote",
-            "conflict": {"type": "git-fork", **state}})
-    return cli.PageWriteResult("error", {
-        "error": (pull.stderr or pull.stdout).strip() or "git pull failed"})
-
-
-def push_or_conflict(vault_root):
-    """The tail of every write path. `cli._push_with_retry` re-pulls on a
-    rejected push, so its failure can also be a stopped rebase — same
-    `conflict`, so a fork that shows up at push time lands in the resolver
-    instead of the same dead end."""
-    from tome_cli import cli
-
-    if cli._push_with_retry(vault_root) == 0:
-        return None
-    state = git_conflict_state(vault_root)
-    if state["rebase"]:
-        return cli.PageWriteResult("conflict", {
-            "error": "your commit landed locally, but the vault's history "
-                     "diverged from the remote",
-            "conflict": {"type": "git-fork", **state}})
-    return cli.PageWriteResult("error", {
-        "error": "commit landed locally but push failed — resolve manually"})
-
-
-# The HTTP-shaped forms, for the routes below that still own their own write
-# sequence (frontmatter, rename, create) rather than delegating to `cli`.
+# The HTTP-shaped forms of `lib`'s gates, for the routes below that still own
+# their own write sequence (frontmatter, rename, create) rather than delegating
+# to `lib`'s page-write core.
 def _pull_or_conflict(vault_root):
-    return _http(pull_or_conflict(vault_root))
+    return _http(lib.pull_or_conflict(vault_root))
 
 
 def _push_or_conflict(vault_root):
-    return _http(push_or_conflict(vault_root))
+    return _http(lib.push_or_conflict(vault_root))
 
 
 def resolve_conflict_file(vault_root, rel, content):
@@ -862,9 +690,7 @@ def resolve_conflict_file(vault_root, rel, content):
     Scoped hard to the paths git itself reports as unmerged: the resolver is
     only ever allowed to finish a conflict git handed it, never to write an
     arbitrary path."""
-    from tome_cli import cli
-
-    state = git_conflict_state(vault_root)
+    state = lib.git_conflict_state(vault_root)
     if not state["rebase"]:
         return 409, {"error": "no rebase is in progress"}
     if rel not in [f["path"] for f in state["files"]]:
@@ -873,10 +699,10 @@ def resolve_conflict_file(vault_root, rel, content):
         return 400, {"error": "content must be a string"}
 
     (vault_root / rel).write_text(content, encoding="utf-8", newline="\n")
-    add = cli.run_git(vault_root, ["add", "--", rel])
+    add = lib.run_git(vault_root, ["add", "--", rel])
     if add.returncode != 0:
         return 500, {"error": (add.stderr or "git add failed").strip()}
-    return 200, {"conflict": git_conflict_state(vault_root)}
+    return 200, {"conflict": lib.git_conflict_state(vault_root)}
 
 
 def continue_rebase(vault_root):
@@ -888,17 +714,15 @@ def continue_rebase(vault_root):
     `-c core.editor=true` keeps git from opening an editor for the replayed
     commit's message: there is no terminal behind this server to host one.
     """
-    from tome_cli import cli
-
-    state = git_conflict_state(vault_root)
+    state = lib.git_conflict_state(vault_root)
     if not state["rebase"]:
         return 409, {"error": "no rebase is in progress"}
     if state["files"]:
         return 400, {"error": f"{len(state['files'])} file(s) still unmerged",
                      "conflict": state}
 
-    cont = cli.run_git(vault_root, ["-c", "core.editor=true", "rebase", "--continue"])
-    after = git_conflict_state(vault_root)
+    cont = lib.run_git(vault_root, ["-c", "core.editor=true", "rebase", "--continue"])
+    after = lib.git_conflict_state(vault_root)
     if after["rebase"]:
         if after["files"]:
             return 200, {"done": False, "conflict": after}
@@ -909,7 +733,7 @@ def continue_rebase(vault_root):
         return 500, {"error": (cont.stderr or cont.stdout).strip()
                               or "git rebase --continue failed"}
 
-    push = cli._push_with_retry(vault_root)
+    push = lib._push_with_retry(vault_root)
     if push != 0:
         return 500, {"done": True, "error": "rebase finished but the push failed — "
                                             "run `tome sync` to retry"}
@@ -919,11 +743,9 @@ def continue_rebase(vault_root):
 def abort_rebase(vault_root):
     """The cancel path: `git rebase --abort` returns the tree to the known
     state it had before the pull, rather than leaving it half-resolved."""
-    from tome_cli import cli
-
-    if not rebase_in_progress(vault_root):
+    if not lib.rebase_in_progress(vault_root):
         return 409, {"error": "no rebase is in progress"}
-    proc = cli.run_git(vault_root, ["rebase", "--abort"])
+    proc = lib.run_git(vault_root, ["rebase", "--abort"])
     if proc.returncode != 0:
         return 500, {"error": (proc.stderr or proc.stdout).strip()
                               or "git rebase --abort failed"}
@@ -932,15 +754,13 @@ def abort_rebase(vault_root):
 
 def save_page(vault_root, conventions, rel, body, base_hash):
     """The [[page-editing]] save path, now an HTTP adapter over
-    `cli.write_page_body` — the optimistic-concurrency, lint-gated,
+    `lib.write_page_body` — the optimistic-concurrency, lint-gated,
     self-committing body write itself lives in the CLI ([[remote-authoring]]),
     where `tome write` and any other consumer share the one path and the one
     set of guarantees. Returns (http_status, payload_dict) as before, and
     still never raises, so the handler can pass the pair straight to
     `_send_json`."""
-    from tome_cli import cli
-
-    return _http(cli.write_page_body(vault_root, conventions, rel, body, base_hash))
+    return _http(lib.write_page_body(vault_root, conventions, rel, body, base_hash))
 
 
 _FM_EDITABLE_FIELDS = {"title", "tags", "description"}
@@ -954,11 +774,9 @@ def _rebuild_derived(vault_root, conventions, wiki_root, ptype, project):
     new state current) and to undo a rejected save (regenerating from the
     just-restored bytes, so a failed edit never leaves index.md/the hub
     pointing at frontmatter that no longer exists on disk)."""
-    from tome_cli import cli
-
-    _, pages = cli.collect(vault_root, conventions)
-    index_path = cli.rebuild_index(vault_root, conventions, wiki_root, pages)
-    hub_path = cli.regenerate_hub(conventions, wiki_root, pages, project) if ptype == "plan" else None
+    _, pages = lib.collect(vault_root, conventions)
+    index_path = lib.rebuild_index(vault_root, conventions, wiki_root, pages)
+    hub_path = lib.regenerate_hub(conventions, wiki_root, pages, project) if ptype == "plan" else None
     return index_path, hub_path
 
 
@@ -970,14 +788,14 @@ def save_frontmatter(vault_root, conventions, rel, fields, base_hash):
     1. Pull, hash-check `base_hash` exactly as `save_page` does (409 on a
        stale base, nothing written).
     2. Diff each editable field against the page's *parsed* frontmatter
-       (`cli.collect`'s dict, not raw fm_lines — tags is a list there, so the
+       (`lib.collect`'s dict, not raw fm_lines — tags is a list there, so the
        comparison doesn't need its own list-vs-string parsing) and reject
        (400, nothing written) any value that would corrupt the hand-rolled
        frontmatter subset once quoted/inlined: a literal quote or newline, or
        — for tags — a comma/bracket that would split a inline-list entry.
        No changed fields is a no-op 200, not a write.
     3. Apply changed fields via `fm_set` — the same primitive `cmd_describe`
-       uses — bump `updated`, and write through `cli.write_page`.
+       uses — bump `updated`, and write through `lib.write_page`.
     4. Regenerate the index (+ hub, if this is a plan): unlike `save_page`'s
        body edits, title/tags/description feed the generated index, so this
        must happen *before* the lint gate below or every save would trip
@@ -988,10 +806,8 @@ def save_frontmatter(vault_root, conventions, rel, fields, base_hash):
        regenerate the index/hub again so they don't keep pointing at
        frontmatter that no longer exists (422).
     6. Commit every touched path (page, index, hub) + push, reusing
-       `cli._push_with_retry` like `save_page`.
+       `lib._push_with_retry` like `save_page`.
     """
-    from tome_cli import cli
-
     target = _page_path(vault_root, conventions, rel)
     if target is None:
         return 404, {"error": "no such page"}
@@ -1007,11 +823,11 @@ def save_frontmatter(vault_root, conventions, rel, fields, base_hash):
     original_bytes = target.read_bytes()
     current_hash = hashlib.sha256(original_bytes).hexdigest()
     if base_hash != current_hash:
-        return 409, local_drift_conflict(target, current_hash)
+        return 409, lib.local_drift_conflict(target, current_hash)
 
     wiki_root = (vault_root / "wiki").resolve()
     rel_str = target.relative_to(wiki_root).as_posix()
-    _, pages = cli.collect(vault_root, conventions)
+    _, pages = lib.collect(vault_root, conventions)
     page = next((p for p in pages if p["rel_path"] == rel_str and "read_error" not in p), None)
     if page is None:
         return 400, {"error": "page frontmatter could not be parsed"}
@@ -1022,8 +838,8 @@ def save_frontmatter(vault_root, conventions, rel, fields, base_hash):
         if not isinstance(new_title, str) or not new_title.strip():
             return 400, {"error": "title must be a non-empty string"}
         try:
-            cli.validate_oneline(new_title, "title")
-        except cli.VaultError as e:
+            lib.validate_oneline(new_title, "title")
+        except lib.VaultError as e:
             return 400, {"error": str(e)}
         if new_title != (page["meta"].get("title") or ""):
             changed["title"] = new_title
@@ -1047,8 +863,8 @@ def save_frontmatter(vault_root, conventions, rel, fields, base_hash):
             return 400, {"error": "description must be a string"}
         max_chars = conventions.get("description", {}).get("max_chars", 140)
         try:
-            cli.validate_oneline(new_desc, "description", max_chars)
-        except cli.VaultError as e:
+            lib.validate_oneline(new_desc, "description", max_chars)
+        except lib.VaultError as e:
             return 400, {"error": str(e)}
         if new_desc != (page["meta"].get("description") or ""):
             changed["description"] = new_desc
@@ -1056,25 +872,25 @@ def save_frontmatter(vault_root, conventions, rel, fields, base_hash):
     if not changed:
         return 200, {"hash": current_hash}
 
-    fm_lines, body = cli.read_page(target)
+    fm_lines, body = lib.read_page(target)
     if "title" in changed:
-        cli.fm_set(fm_lines, "title", changed["title"], quote=True)
+        lib.fm_set(fm_lines, "title", changed["title"], quote=True)
     if "tags" in changed:
-        cli.fm_set(fm_lines, "tags", "[" + ", ".join(changed["tags"]) + "]")
+        lib.fm_set(fm_lines, "tags", "[" + ", ".join(changed["tags"]) + "]")
     if "description" in changed:
-        cli.fm_set(fm_lines, "description", changed["description"], quote=True)
-    cli.fm_set(fm_lines, "updated", cli.today())
+        lib.fm_set(fm_lines, "description", changed["description"], quote=True)
+    lib.fm_set(fm_lines, "updated", lib.today())
     try:
-        cli.write_page(target, fm_lines, body)
-    except cli.VaultError as e:
+        lib.write_page(target, fm_lines, body)
+    except lib.VaultError as e:
         return 400, {"error": str(e)}
 
     ptype = page["meta"].get("type")
     project = PurePosixPath(rel_str).parts[0]
     index_path, hub_path = _rebuild_derived(vault_root, conventions, wiki_root, ptype, project)
 
-    _, findings = cli.run_all_lint_checks(vault_root, conventions)
-    errors = [f for f in findings if f.severity == cli.ERROR and f.path == rel_str]
+    _, findings = lib.run_all_lint_checks(vault_root, conventions)
+    errors = [f for f in findings if f.severity == lib.ERROR and f.path == rel_str]
     if errors:
         target.write_bytes(original_bytes)
         _rebuild_derived(vault_root, conventions, wiki_root, ptype, project)
@@ -1082,13 +898,13 @@ def save_frontmatter(vault_root, conventions, rel, fields, base_hash):
 
     touched = [target, index_path] + ([hub_path] if hub_path is not None else [])
     rel_paths = [str(p.resolve().relative_to(vault_root)) for p in touched]
-    add = cli.run_git(vault_root, ["add", "--", *rel_paths])
+    add = lib.run_git(vault_root, ["add", "--", *rel_paths])
     if add.returncode != 0:
         target.write_bytes(original_bytes)
         _rebuild_derived(vault_root, conventions, wiki_root, ptype, project)
         return 500, {"error": (add.stderr or "git add failed").strip()}
 
-    commit = cli.run_git(vault_root, ["commit", "-m", f"edit frontmatter: {target.stem}"])
+    commit = lib.run_git(vault_root, ["commit", "-m", f"edit frontmatter: {target.stem}"])
     if commit.returncode != 0:
         return 500, {"error": (commit.stderr or commit.stdout).strip() or "git commit failed"}
 
@@ -1100,7 +916,7 @@ def save_frontmatter(vault_root, conventions, rel, fields, base_hash):
 
 
 def _reset_move(vault_root, result):
-    """Undo `cli.move_page`'s on-disk changes when a rename is rejected after
+    """Undo `lib.move_page`'s on-disk changes when a rename is rejected after
     the move ran. Unlike save_page/save_frontmatter — which snapshot the one
     edited file's bytes — a rename spans many files (the renamed page, every
     rewritten linker, the index, the hub), so the reset is scoped to exactly
@@ -1108,19 +924,17 @@ def _reset_move(vault_root, result):
     every other touched path from HEAD (the deleted original, the rewritten
     linkers, the regenerated index/hub). Nothing outside `touched_paths` is
     reset, so a concurrent unrelated dirty file is left alone."""
-    from tome_cli import cli
-
     if result.new_path.exists():
         result.new_path.unlink()
     rel_paths = [str(p.resolve().relative_to(vault_root)) for p in result.touched_paths
                  if p != result.new_path]
     if rel_paths:
-        cli.run_git(vault_root, ["checkout", "HEAD", "--", *rel_paths])
+        lib.run_git(vault_root, ["checkout", "HEAD", "--", *rel_paths])
 
 
 def rename_page(vault_root, conventions, rel, new_slug, base_hash):
     """The [[slug-rename]] save path: rename a page's slug through
-    `cli.move_page` — the same core `tome mv` uses — under the same optimistic-
+    `lib.move_page` — the same core `tome mv` uses — under the same optimistic-
     concurrency gate as the body/frontmatter editors. Returns (http_status,
     payload_dict), never raising, mirroring `save_page`/`save_frontmatter`.
 
@@ -1133,7 +947,7 @@ def rename_page(vault_root, conventions, rel, new_slug, base_hash):
        against the latest remote.
     2. Hash the file's current bytes; a `base_hash` mismatch means the page
        changed since the client opened it — refuse, rename nothing (409).
-    3. Snapshot the pre-move lint errors, then call `cli.move_page` (file move
+    3. Snapshot the pre-move lint errors, then call `lib.move_page` (file move
        + wiki-wide link rewrite + index/hub regen). A VaultError from it
        (bad/taken slug, project hub, collision) is a 400, nothing moved.
     4. Lint gate: any error present after the move that wasn't there before is
@@ -1143,18 +957,16 @@ def rename_page(vault_root, conventions, rel, new_slug, base_hash):
        ignored. On failure the move is reset (there's no single buffer to
        restore — the whole touched set is rolled back from HEAD).
     5. Commit the union of touched paths (old path's deletion, new path, rebuilt
-       index/hub, every rewritten linker) + push, reusing `cli._push_with_retry`
+       index/hub, every rewritten linker) + push, reusing `lib._push_with_retry`
        like the other write paths. Return the new slug's in-app URL.
 
     As with every write route, this endpoint is absent from the static export.
     """
-    from tome_cli import cli
-
     target = _page_path(vault_root, conventions, rel)
     if target is None:
         return 404, {"error": "no such page"}
 
-    if not isinstance(new_slug, str) or not cli.SLUG_RE.match(new_slug):
+    if not isinstance(new_slug, str) or not lib.SLUG_RE.match(new_slug):
         return 400, {"error": f"{new_slug!r} is not a valid slug (lowercase kebab-case)"}
 
     conflict = _pull_or_conflict(vault_root)
@@ -1177,30 +989,30 @@ def rename_page(vault_root, conventions, rel, new_slug, base_hash):
 
     def _err_sig(findings):
         return {(f.code, f.path, f.message) for f in findings
-                if f.severity == cli.ERROR}
+                if f.severity == lib.ERROR}
 
-    _, pre_findings = cli.run_all_lint_checks(vault_root, conventions)
+    _, pre_findings = lib.run_all_lint_checks(vault_root, conventions)
     pre_errors = _err_sig(pre_findings)
 
     try:
-        result = cli.move_page(vault_root, conventions, slug, new_slug)
-    except cli.VaultError as e:
+        result = lib.move_page(vault_root, conventions, slug, new_slug)
+    except lib.VaultError as e:
         return 400, {"error": str(e)}
 
-    _, post_findings = cli.run_all_lint_checks(vault_root, conventions)
+    _, post_findings = lib.run_all_lint_checks(vault_root, conventions)
     new_errors = [f for f in post_findings
-                  if f.severity == cli.ERROR and (f.code, f.path, f.message) not in pre_errors]
+                  if f.severity == lib.ERROR and (f.code, f.path, f.message) not in pre_errors]
     if new_errors:
         _reset_move(vault_root, result)
         return 422, {"error": "lint failed", "findings": [f.as_dict() for f in new_errors]}
 
     rel_paths = [str(p.resolve().relative_to(vault_root)) for p in result.touched_paths]
-    add = cli.run_git(vault_root, ["add", "-A", "--", *rel_paths])
+    add = lib.run_git(vault_root, ["add", "-A", "--", *rel_paths])
     if add.returncode != 0:
         _reset_move(vault_root, result)
         return 500, {"error": (add.stderr or "git add failed").strip()}
 
-    commit = cli.run_git(vault_root, ["commit", "-m", f"mv: {slug} -> {new_slug}"])
+    commit = lib.run_git(vault_root, ["commit", "-m", f"mv: {slug} -> {new_slug}"])
     if commit.returncode != 0:
         _reset_move(vault_root, result)
         return 500, {"error": (commit.stderr or commit.stdout).strip() or "git commit failed"}
@@ -1214,23 +1026,21 @@ def rename_page(vault_root, conventions, rel, new_slug, base_hash):
 
 
 def _reset_create(vault_root, result):
-    """Undo `cli.new_page`'s on-disk changes when a create is rejected after
+    """Undo `lib.new_page`'s on-disk changes when a create is rejected after
     scaffolding ran — mirrors `_reset_move`: unlink the new (untracked) page,
     then restore every other touched path from HEAD (the regenerated index
     and, for a plan/project, the hub)."""
-    from tome_cli import cli
-
     if result.path.exists():
         result.path.unlink()
     rel_paths = [str(p.resolve().relative_to(vault_root)) for p in result.touched_paths
                  if p != result.path]
     if rel_paths:
-        cli.run_git(vault_root, ["checkout", "HEAD", "--", *rel_paths])
+        lib.run_git(vault_root, ["checkout", "HEAD", "--", *rel_paths])
 
 
 def create_page(vault_root, conventions, type_, project, slug, title, desc, link_task=None):
     """The [[page-creation]] save path: scaffold a new page through
-    `cli.new_page` — the same core `tome new` uses. Returns (http_status,
+    `lib.new_page` — the same core `tome new` uses. Returns (http_status,
     payload_dict), never raising, mirroring save_page/save_frontmatter/
     rename_page.
 
@@ -1238,10 +1048,10 @@ def create_page(vault_root, conventions, type_, project, slug, title, desc, link
     Its analogous guard is slug uniqueness, checked fresh against the vault
     state after the pull below rather than against a client-supplied hash.
 
-    1. Pull, so the uniqueness check inside `cli.new_page` runs against the
+    1. Pull, so the uniqueness check inside `lib.new_page` runs against the
        latest remote — a slug someone else just created elsewhere is caught
        here, not after the write.
-    2. Call `cli.new_page`. A VaultError (bad type, missing/unknown project,
+    2. Call `lib.new_page`. A VaultError (bad type, missing/unknown project,
        bad/taken slug, path collision) is a 422 with the reason, not a CLI
        traceback — nothing is written.
     3. Lint gate scoped to the new page's path — a freshly scaffolded page is
@@ -1259,27 +1069,25 @@ def create_page(vault_root, conventions, type_, project, slug, title, desc, link
        failure; a failed edit rolls back both the scaffold and, if the task
        file was already touched, restores it from HEAD too.
     5. Commit the touched set (new page, index, hub for a plan/project, and
-       the linked task if any) + push, reusing `cli._push_with_retry`.
+       the linked task if any) + push, reusing `lib._push_with_retry`.
        Returns the new page's in-app URL for the client to redirect to.
 
     As with every write route, this endpoint is absent from the static
     export.
     """
-    from tome_cli import cli
-
     conflict = _pull_or_conflict(vault_root)
     if conflict is not None:
         return conflict
 
     try:
-        result = cli.new_page(vault_root, conventions, type_, project, slug, title, desc)
-    except cli.VaultError as e:
+        result = lib.new_page(vault_root, conventions, type_, project, slug, title, desc)
+    except lib.VaultError as e:
         return 422, {"error": str(e)}
 
     wiki_root = (vault_root / "wiki").resolve()
     rel_str = result.path.relative_to(wiki_root).as_posix()
-    _, findings = cli.run_all_lint_checks(vault_root, conventions)
-    errors = [f for f in findings if f.severity == cli.ERROR and f.path == rel_str]
+    _, findings = lib.run_all_lint_checks(vault_root, conventions)
+    errors = [f for f in findings if f.severity == lib.ERROR and f.path == rel_str]
     if errors:
         _reset_create(vault_root, result)
         return 422, {"error": "lint failed", "findings": [f.as_dict() for f in errors]}
@@ -1289,20 +1097,20 @@ def create_page(vault_root, conventions, type_, project, slug, title, desc, link
         task_num = str(link_task).strip()
         if task_num.upper().startswith("TASK-"):
             task_num = task_num[len("TASK-"):]
-        task_path = cli.find_task_file(vault_root, task_num)
+        task_path = lib.find_task_file(vault_root, task_num)
         if task_path is None:
             _reset_create(vault_root, result)
             return 400, {"error": f"no such task: {link_task}"}
 
         plan_ref = f"wiki/{rel_str}"
-        fm_lines, _ = cli.read_page(task_path)
-        refs = cli.task_references(fm_lines)
-        task_id = cli.task_id_from_path(task_path)
+        fm_lines, _ = lib.read_page(task_path)
+        refs = lib.task_references(fm_lines)
+        task_id = lib.task_id_from_path(task_path)
         edit_argv = ["task", "edit", task_id]
         for r in refs:
             edit_argv += ["--ref", r]
         edit_argv += ["--ref", plan_ref]
-        proc = cli.run_backlog(vault_root, edit_argv, capture=True)
+        proc = lib.run_backlog(vault_root, edit_argv, capture=True)
         if proc.returncode != 0:
             _reset_create(vault_root, result)
             return 400, {"error": (proc.stderr or proc.stdout).strip() or "linking task failed"}
@@ -1310,19 +1118,19 @@ def create_page(vault_root, conventions, type_, project, slug, title, desc, link
     rel_paths = [str(p.resolve().relative_to(vault_root)) for p in result.touched_paths]
     if task_path is not None:
         rel_paths.append(str(task_path.resolve().relative_to(vault_root)))
-    add = cli.run_git(vault_root, ["add", "--", *rel_paths])
+    add = lib.run_git(vault_root, ["add", "--", *rel_paths])
     if add.returncode != 0:
         _reset_create(vault_root, result)
         if task_path is not None:
-            cli.run_git(vault_root, ["checkout", "HEAD", "--", str(task_path.resolve().relative_to(vault_root))])
+            lib.run_git(vault_root, ["checkout", "HEAD", "--", str(task_path.resolve().relative_to(vault_root))])
         return 500, {"error": (add.stderr or "git add failed").strip()}
 
     commit_msg = f"new: {result.slug}" + (f" (linked {link_task})" if task_path is not None else "")
-    commit = cli.run_git(vault_root, ["commit", "-m", commit_msg])
+    commit = lib.run_git(vault_root, ["commit", "-m", commit_msg])
     if commit.returncode != 0:
         _reset_create(vault_root, result)
         if task_path is not None:
-            cli.run_git(vault_root, ["checkout", "HEAD", "--", str(task_path.resolve().relative_to(vault_root))])
+            lib.run_git(vault_root, ["checkout", "HEAD", "--", str(task_path.resolve().relative_to(vault_root))])
         return 500, {"error": (commit.stderr or commit.stdout).strip() or "git commit failed"}
 
     push_conflict = _push_or_conflict(vault_root)
@@ -1471,7 +1279,7 @@ class TomeHandler(BaseHTTPRequestHandler):
                 # Polled once on load so a tree left mid-rebase by a failed
                 # `tome sync` surfaces in the resolver on its own, without
                 # waiting for the user's next save to trip it.
-                return self._send_json(git_conflict_state(self.vault_root))
+                return self._send_json(lib.git_conflict_state(self.vault_root))
             if path.startswith("/raw/"):
                 return self._send_raw(path[len("/raw/"):])
             if path.startswith("/app/"):
@@ -1777,7 +1585,7 @@ def _idle_watchdog(httpd, timeout_seconds, watcher):
 
 
 # --------------------------------------------------------------------------- #
-# Command entry point (dispatched from cli.main()).
+# Command entry point (dispatched from lib.main()).
 # --------------------------------------------------------------------------- #
 
 def cmd_serve(vault_root, conventions, args):
@@ -1847,12 +1655,10 @@ def launch_gui():
 
     from types import SimpleNamespace
 
-    from tome_cli import cli
-
     try:
-        vault_root = cli.resolve_vault_root(None)
-        conventions = cli.load_conventions(vault_root)
-    except cli.VaultError as e:
+        vault_root = lib.resolve_vault_root(None)
+        conventions = lib.load_conventions(vault_root)
+    except lib.VaultError as e:
         print(f"tome-serve: {e}")
         return 1
 

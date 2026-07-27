@@ -2,7 +2,7 @@
 
 from datetime import date, timedelta
 
-from tome_cli import cli as tome
+from tome_cli import lib
 from tome_cli import lint as tome_lint
 
 
@@ -14,7 +14,7 @@ def _write_raw(vault, rel_path, text):
 
 
 def _lint(vault):
-    conventions = tome.load_conventions(vault)
+    conventions = lib.load_conventions(vault)
     wiki_root = vault / "wiki"
     index_path = wiki_root / conventions["index"]["file"]
     return tome_lint.run(wiki_root, conventions, index_path)
@@ -269,10 +269,10 @@ def test_desc_too_long(make_vault, make_page):
     make_page(vault, "proj/proj.md", type="project", title="Proj")
     make_page(vault, "proj/notes/longdesc.md", type="concept", title="Long",
               desc="x" * 150)
-    conventions = tome.load_conventions(vault)
-    _, pages = tome.collect(vault, conventions)
+    conventions = lib.load_conventions(vault)
+    _, pages = lib.collect(vault, conventions)
 
-    findings = tome.check_description_cap(pages, conventions)
+    findings = lib.check_description_cap(pages, conventions)
 
     assert any(f.code == "DESC_TOO_LONG" and f.path == "proj/notes/longdesc.md"
                for f in findings)
@@ -282,14 +282,14 @@ def test_index_oversize_warns_past_soft_cap(make_vault, run_tome):
     vault = make_vault()
     run_tome("--vault", str(vault), "new", "project", "proj",
              "--title", "Proj", "--desc", "d")
-    conventions = tome.load_conventions(vault)
+    conventions = lib.load_conventions(vault)
     conventions["index"]["soft_cap_lines"] = 5
     index_path = vault / "wiki" / "index.md"
 
-    findings = tome.check_index_oversize(conventions, index_path)
+    findings = lib.check_index_oversize(conventions, index_path)
 
     assert any(f.code == "INDEX_OVERSIZE" for f in findings)
-    assert findings[0].severity == tome.WARNING
+    assert findings[0].severity == lib.WARNING
 
 
 def _seed_inbox(vault, names):
@@ -302,23 +302,23 @@ def _seed_inbox(vault, names):
 def test_inbox_stalled_flags_deep_queue(make_vault):
     vault = make_vault()
     today = date.today().isoformat()
-    conventions = tome.load_conventions(vault)
+    conventions = lib.load_conventions(vault)
     _seed_inbox(vault, [f"{today}-note-{i}.md" for i in range(conventions["inbox"]["max_items"] + 1)])
 
-    findings = tome.check_inbox_backlog(vault, conventions)
+    findings = lib.check_inbox_backlog(vault, conventions)
 
     assert [f.code for f in findings] == ["INBOX_STALLED"]
-    assert findings[0].severity == tome.WARNING
+    assert findings[0].severity == lib.WARNING
     assert "notes waiting" in findings[0].message
 
 
 def test_inbox_stalled_flags_old_note_alone(make_vault):
     vault = make_vault()
-    conventions = tome.load_conventions(vault)
+    conventions = lib.load_conventions(vault)
     old = (date.today() - timedelta(days=conventions["inbox"]["max_age_days"] + 1)).isoformat()
     _seed_inbox(vault, [f"{old}-ancient.md"])
 
-    findings = tome.check_inbox_backlog(vault, conventions)
+    findings = lib.check_inbox_backlog(vault, conventions)
 
     assert [f.code for f in findings] == ["INBOX_STALLED"]
     assert "days old" in findings[0].message
@@ -326,10 +326,10 @@ def test_inbox_stalled_flags_old_note_alone(make_vault):
 
 def test_inbox_quiet_when_queue_is_shallow_and_fresh(make_vault):
     vault = make_vault()
-    conventions = tome.load_conventions(vault)
+    conventions = lib.load_conventions(vault)
     _seed_inbox(vault, [f"{date.today().isoformat()}-fresh.md"])
 
-    assert tome.check_inbox_backlog(vault, conventions) == []
+    assert lib.check_inbox_backlog(vault, conventions) == []
 
 
 def test_inbox_check_is_opt_in(make_vault):
@@ -338,19 +338,19 @@ def test_inbox_check_is_opt_in(make_vault):
     vault = make_vault()
     old = (date.today() - timedelta(days=365)).isoformat()
     _seed_inbox(vault, [f"{old}-note-{i}.md" for i in range(20)])
-    conventions = tome.load_conventions(vault)
+    conventions = lib.load_conventions(vault)
     del conventions["inbox"]
 
-    assert tome.check_inbox_backlog(vault, conventions) == []
+    assert lib.check_inbox_backlog(vault, conventions) == []
 
 
 def test_inbox_undated_filename_counts_but_does_not_crash(make_vault):
     """A hand-named note has no date to judge; it still counts toward depth."""
     vault = make_vault()
-    conventions = tome.load_conventions(vault)
+    conventions = lib.load_conventions(vault)
     _seed_inbox(vault, [f"hand-named-{i}.md" for i in range(conventions["inbox"]["max_items"] + 1)])
 
-    findings = tome.check_inbox_backlog(vault, conventions)
+    findings = lib.check_inbox_backlog(vault, conventions)
 
     assert [f.code for f in findings] == ["INBOX_STALLED"]
     assert "days old" not in findings[0].message
@@ -389,7 +389,7 @@ def test_stale_silent_when_recently_updated(make_vault, make_page):
     vault = make_vault()
     make_page(vault, "proj/proj.md", type="project", title="Proj")
     make_page(vault, "proj/notes/hub.md", type="concept", title="Hub",
-              updated=tome.today())
+              updated=lib.today())
     for i in range(5):
         make_page(vault, f"proj/notes/linker{i}.md", type="concept", title=f"Linker {i}",
                   body="\nSee [[hub]].\n")
@@ -407,7 +407,7 @@ def test_stale_opt_out_without_conventions_section(make_vault, make_page):
     for i in range(5):
         make_page(vault, f"proj/notes/linker{i}.md", type="concept", title=f"Linker {i}",
                   body="\nSee [[hub]].\n")
-    conventions = tome.load_conventions(vault)
+    conventions = lib.load_conventions(vault)
     del conventions["staleness"]
     wiki_root = vault / "wiki"
     index_path = wiki_root / conventions["index"]["file"]
@@ -476,13 +476,13 @@ def test_index_oversize_missing_key_defaults(make_vault, run_tome):
     vault = make_vault()
     run_tome("--vault", str(vault), "new", "project", "proj",
              "--title", "Proj", "--desc", "d")
-    conventions = tome.load_conventions(vault)
+    conventions = lib.load_conventions(vault)
     del conventions["index"]["soft_cap_lines"]
     index_path = vault / "wiki" / "index.md"
     with index_path.open("a", encoding="utf-8", newline="\n") as fh:
         fh.write("x\n" * 500)
 
-    findings = tome.check_index_oversize(conventions, index_path)
+    findings = lib.check_index_oversize(conventions, index_path)
 
     assert any(f.code == "INDEX_OVERSIZE" and "cap 400" in f.message
                for f in findings)
@@ -553,9 +553,9 @@ def test_write_page_rejects_frontmatter_that_cannot_round_trip(tmp_path):
     bad_fm_lines = ["title: test", "---", "other: bad"]
 
     try:
-        tome.write_page(path, bad_fm_lines, "\nbody\n")
+        lib.write_page(path, bad_fm_lines, "\nbody\n")
         assert False, "expected VaultError"
-    except tome.VaultError:
+    except lib.VaultError:
         pass
     assert not path.exists()
 
@@ -564,7 +564,7 @@ def test_write_page_accepts_valid_frontmatter(tmp_path):
     path = tmp_path / "good.md"
     fm_lines = ['title: "Good"', "tags: [a, b]"]
 
-    tome.write_page(path, fm_lines, "\nbody\n")
+    lib.write_page(path, fm_lines, "\nbody\n")
 
     assert path.is_file()
     assert '"Good"' in path.read_text(encoding="utf-8")

@@ -25,12 +25,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from tome_cli import cli as tome  # noqa: E402
+from tome_cli import lib  # noqa: E402
 from tome_cli import serve  # noqa: E402
 
 
 def _conv(vault):
-    return tome.load_conventions(vault)
+    return lib.load_conventions(vault)
 
 
 def _git(vault, *args):
@@ -174,7 +174,7 @@ def test_build_board_empty_without_backlog(make_vault):
 # --------------------------------------------------------------------------- #
 # apply_task_move — the one write `tome serve` accepts, always shelled
 # through backlog.md ([[kanban-render-side]]). Tests fake out
-# tome.run_backlog rather than shelling out to the real npx CLI, same
+# lib.run_backlog rather than shelling out to the real npx CLI, same
 # pattern as test_start_done.py's fake_backlog; column state for the
 # midpoint math is real on-disk task files via make_task, since
 # apply_task_move reads those directly rather than trusting a client ordinal.
@@ -194,7 +194,7 @@ def _fake_run_backlog(monkeypatch, result=None):
         calls.append(list(argv))
         return result or _Result()
 
-    monkeypatch.setattr(tome, "run_backlog", _run)
+    monkeypatch.setattr(lib, "run_backlog", _run)
     return calls
 
 
@@ -609,7 +609,7 @@ def test_create_task_happy_path_returns_lowercase_id(monkeypatch, make_vault, ma
         calls.append(list(argv))
         return _Result(returncode=0, stdout=f"File: {task_path}\n")
 
-    monkeypatch.setattr(tome, "run_backlog", _run)
+    monkeypatch.setattr(lib, "run_backlog", _run)
 
     ok, result = serve.create_task(vault, "New task", "To Do", "tome", "high", "desc")
 
@@ -657,7 +657,7 @@ def test_create_task_missing_file_line_is_reported(monkeypatch, make_vault):
     def _run(vault_root, argv, capture=False):
         return _Result(returncode=0, stdout="created ok, no file line\n")
 
-    monkeypatch.setattr(tome, "run_backlog", _run)
+    monkeypatch.setattr(lib, "run_backlog", _run)
 
     ok, message = serve.create_task(vault, "New task", "To Do", None, None, None)
 
@@ -674,7 +674,7 @@ def test_create_task_missing_id_is_reported(monkeypatch, make_vault):
     def _run(vault_root, argv, capture=False):
         return _Result(returncode=0, stdout=f"File: {task_path}\n")
 
-    monkeypatch.setattr(tome, "run_backlog", _run)
+    monkeypatch.setattr(lib, "run_backlog", _run)
 
     ok, message = serve.create_task(vault, "New task", "To Do", None, None, None)
 
@@ -1016,8 +1016,8 @@ def _scaffold_two_ideas(vault, run_tome):
     run_tome("--vault", str(vault), "new", "idea", "beta", "--project", "tome",
               "--title", "Beta", "--desc", "d")
     beta = vault / "wiki" / "tome" / "ideas" / "beta.md"
-    fm, body = tome.read_page(beta)
-    tome.write_page(beta, fm, body + "\nSee [[alpha]] for context.\n")
+    fm, body = lib.read_page(beta)
+    lib.write_page(beta, fm, body + "\nSee [[alpha]] for context.\n")
     _git(vault, "add", "-A")
     _git(vault, "commit", "-m", "scaffold ideas")
     _git(vault, "push")
@@ -1156,18 +1156,18 @@ def test_rename_page_lint_failure_resets_move(tmp_path, run_tome, monkeypatch):
 
     # Force a fabricated *new* error on the post-move lint pass only, so the
     # gate fires and _reset_move runs — the pre-move pass stays clean.
-    real = tome.run_all_lint_checks
+    real = lib.run_all_lint_checks
     calls = {"n": 0}
 
     def fake(vault_root, conventions):
         pages, findings = real(vault_root, conventions)
         calls["n"] += 1
         if calls["n"] >= 2:
-            findings = findings + [tome.Finding(tome.ERROR, "BROKEN_LINK",
+            findings = findings + [lib.Finding(lib.ERROR, "BROKEN_LINK",
                                                 "tome/ideas/beta.md", "fabricated")]
         return pages, findings
 
-    monkeypatch.setattr(tome, "run_all_lint_checks", fake)
+    monkeypatch.setattr(lib, "run_all_lint_checks", fake)
 
     status, result = serve.rename_page(vault, _conv(vault), "tome/ideas/alpha.md",
                                         "gamma", base_hash)
@@ -1261,8 +1261,8 @@ def test_create_page_regenerates_hub_for_plan(tmp_path, run_tome):
     assert status == 200
     hub_text = (vault / "wiki" / "tome" / "tome.md").read_text(encoding="utf-8")
     assert "[[my-plan]]" in hub_text
-    fm, _body = tome.read_page(vault / "wiki" / "tome" / "plans" / "my-plan.md")
-    assert tome.fm_get(fm, "status") == "proposed"
+    fm, _body = lib.read_page(vault / "wiki" / "tome" / "plans" / "my-plan.md")
+    assert lib.fm_get(fm, "status") == "proposed"
 
 
 @pytestmark_git
@@ -1335,15 +1335,15 @@ def test_create_page_lint_failure_removes_scaffolded_file(tmp_path, run_tome, mo
     _git(vault, "commit", "-m", "add project")
     _git(vault, "push")
 
-    real = tome.run_all_lint_checks
+    real = lib.run_all_lint_checks
 
     def fake(vault_root, conventions):
         pages, findings = real(vault_root, conventions)
-        findings = findings + [tome.Finding(tome.ERROR, "BROKEN_LINK",
+        findings = findings + [lib.Finding(lib.ERROR, "BROKEN_LINK",
                                             "tome/ideas/my-idea.md", "fabricated")]
         return pages, findings
 
-    monkeypatch.setattr(tome, "run_all_lint_checks", fake)
+    monkeypatch.setattr(lib, "run_all_lint_checks", fake)
 
     status, result = serve.create_page(vault, _conv(vault), "idea", "tome", "my-idea",
                                         "My Idea", "d")
@@ -1802,7 +1802,7 @@ def test_post_task_create_success(monkeypatch, start_server, make_vault, make_ta
     def _run(vault_root, argv, capture=False):
         return _Result(returncode=0, stdout=f"File: {task_path}\n")
 
-    monkeypatch.setattr(tome, "run_backlog", _run)
+    monkeypatch.setattr(lib, "run_backlog", _run)
     base = start_server(vault)
 
     status, body = _post(base, "/api/task",

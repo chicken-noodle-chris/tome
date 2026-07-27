@@ -1,6 +1,6 @@
 """tome task — passthrough to a pinned backlog.md release."""
 
-from tome_cli import cli as tome
+from tome_cli import lib
 
 
 def test_task_pins_backlog_version(make_vault, run_tome, monkeypatch):
@@ -13,12 +13,12 @@ def test_task_pins_backlog_version(make_vault, run_tome, monkeypatch):
             returncode = 0
         return Result()
 
-    monkeypatch.setattr(tome.subprocess, "run", fake_run)
+    monkeypatch.setattr(lib.subprocess, "run", fake_run)
 
     code = run_tome("--vault", str(vault), "task", "list", "--plain")
 
     assert code == 0
-    assert captured["cmd"][:3] == ["npx", "--yes", f"backlog.md@{tome.BACKLOG_VERSION}"]
+    assert captured["cmd"][:3] == ["npx", "--yes", f"backlog.md@{lib.BACKLOG_VERSION}"]
     assert captured["cmd"][3:] == ["list", "--plain"]
 
 
@@ -41,8 +41,8 @@ def test_run_backlog_uses_npx_for_single_line_args(make_vault, monkeypatch):
             returncode = 0
         return Result()
 
-    monkeypatch.setattr(tome.subprocess, "run", fake_run)
-    tome.run_backlog(vault, ["task", "edit", "1", "-d", "one line"])
+    monkeypatch.setattr(lib.subprocess, "run", fake_run)
+    lib.run_backlog(vault, ["task", "edit", "1", "-d", "one line"])
 
     assert captured["cmd"][0] == "npx"
 
@@ -51,7 +51,7 @@ def test_run_backlog_runs_node_directly_for_multiline_args(make_vault, monkeypat
     vault = make_vault()
     script = tmp_path / "cli.js"
     script.write_text("//", encoding="utf-8")
-    monkeypatch.setattr(tome, "backlog_script", lambda refresh=True: script)
+    monkeypatch.setattr(lib, "backlog_script", lambda refresh=True: script)
     captured = {}
 
     def fake_run(cmd, **kwargs):
@@ -61,8 +61,8 @@ def test_run_backlog_runs_node_directly_for_multiline_args(make_vault, monkeypat
             returncode = 0
         return Result()
 
-    monkeypatch.setattr(tome.subprocess, "run", fake_run)
-    tome.run_backlog(vault, ["task", "edit", "1", "--notes", "one\n\ntwo"])
+    monkeypatch.setattr(lib.subprocess, "run", fake_run)
+    lib.run_backlog(vault, ["task", "edit", "1", "--notes", "one\n\ntwo"])
 
     assert captured["cmd"] == ["node", str(script), "task", "edit", "1", "--notes", "one\n\ntwo"]
     # No shell anywhere in the path — that's the entire point.
@@ -71,13 +71,13 @@ def test_run_backlog_runs_node_directly_for_multiline_args(make_vault, monkeypat
 
 def test_run_backlog_refuses_multiline_when_the_script_is_missing(make_vault, monkeypatch):
     vault = make_vault()
-    monkeypatch.setattr(tome, "backlog_script", lambda refresh=True: None)
+    monkeypatch.setattr(lib, "backlog_script", lambda refresh=True: None)
 
     def fake_run(cmd, **kwargs):
         raise AssertionError("nothing should be invoked when the script is unresolvable")
 
-    monkeypatch.setattr(tome.subprocess, "run", fake_run)
-    proc = tome.run_backlog(vault, ["task", "edit", "1", "--notes", "one\ntwo"], capture=True)
+    monkeypatch.setattr(lib.subprocess, "run", fake_run)
+    proc = lib.run_backlog(vault, ["task", "edit", "1", "--notes", "one\ntwo"], capture=True)
 
     # A loud failure, not a quietly truncated write.
     assert proc.returncode != 0
@@ -86,7 +86,7 @@ def test_run_backlog_refuses_multiline_when_the_script_is_missing(make_vault, mo
 
 def test_find_backlog_script_only_accepts_the_pinned_version(monkeypatch, tmp_path):
     cache = tmp_path / "npm-cache"
-    for version in (tome.BACKLOG_VERSION, "9.9.9"):
+    for version in (lib.BACKLOG_VERSION, "9.9.9"):
         pkg = cache / "_npx" / version.replace(".", "") / "node_modules" / "backlog.md"
         pkg.mkdir(parents=True)
         (pkg / "package.json").write_text(f'{{"version": "{version}"}}', encoding="utf-8")
@@ -96,8 +96,8 @@ def test_find_backlog_script_only_accepts_the_pinned_version(monkeypatch, tmp_pa
         returncode = 0
         stdout = str(cache)
 
-    monkeypatch.setattr(tome.subprocess, "run", lambda *a, **k: Result())
-    found = tome._find_backlog_script()
+    monkeypatch.setattr(lib.subprocess, "run", lambda *a, **k: Result())
+    found = lib._find_backlog_script()
 
     assert found is not None
-    assert tome.BACKLOG_VERSION.replace(".", "") in found.parts
+    assert lib.BACKLOG_VERSION.replace(".", "") in found.parts

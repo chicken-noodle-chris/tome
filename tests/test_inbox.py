@@ -1,5 +1,6 @@
 """tome inbox — schema-free capture notes in inbox/, never scanned by lint."""
 
+from tome_cli import lib
 from tome_cli import cli as tome
 
 
@@ -9,10 +10,10 @@ def test_inbox_writes_expected_name_and_content(make_vault, run_tome):
     code = run_tome("--vault", str(vault), "inbox", "Remember: X does Y because Z")
 
     assert code == 0
-    expected = vault / "inbox" / f"{tome.today()}-remember-x-does-y-because-z.md"
+    expected = vault / "inbox" / f"{lib.today()}-remember-x-does-y-because-z.md"
     assert expected.is_file()
     text = expected.read_text(encoding="utf-8")
-    assert text.startswith(f"# {tome.today()} capture\n\n")
+    assert text.startswith(f"# {lib.today()} capture\n\n")
     assert "Remember: X does Y because Z" in text
 
 
@@ -23,9 +24,9 @@ def test_inbox_collision_suffixes(make_vault, run_tome):
     run_tome("--vault", str(vault), "inbox", "same note")
     run_tome("--vault", str(vault), "inbox", "same note")
 
-    base = vault / "inbox" / f"{tome.today()}-same-note.md"
-    dup2 = vault / "inbox" / f"{tome.today()}-same-note-2.md"
-    dup3 = vault / "inbox" / f"{tome.today()}-same-note-3.md"
+    base = vault / "inbox" / f"{lib.today()}-same-note.md"
+    dup2 = vault / "inbox" / f"{lib.today()}-same-note-2.md"
+    dup3 = vault / "inbox" / f"{lib.today()}-same-note-3.md"
     assert base.is_file() and dup2.is_file() and dup3.is_file()
 
 
@@ -36,7 +37,7 @@ def test_inbox_title_overrides_derived_slug(make_vault, run_tome):
                      "--title", "Custom Title Here")
 
     assert code == 0
-    expected = vault / "inbox" / f"{tome.today()}-custom-title-here.md"
+    expected = vault / "inbox" / f"{lib.today()}-custom-title-here.md"
     assert expected.is_file()
     assert "the note body itself" in expected.read_text(encoding="utf-8")
 
@@ -62,7 +63,7 @@ def test_inbox_slug_handles_punctuation_and_unicode_without_crashing(make_vault,
     matches = list((vault / "inbox").glob("*.md"))
     assert len(matches) == 1
     # No ASCII alnum survives punctuation/unicode-only input: falls back cleanly.
-    assert matches[0].name == f"{tome.today()}-capture.md"
+    assert matches[0].name == f"{lib.today()}-capture.md"
 
 
 def test_inbox_slug_truncated_to_max_chars(make_vault, run_tome):
@@ -74,7 +75,7 @@ def test_inbox_slug_truncated_to_max_chars(make_vault, run_tome):
     assert code == 0
     matches = list((vault / "inbox").glob("*.md"))
     assert len(matches) == 1
-    slug = matches[0].stem.removeprefix(f"{tome.today()}-")
+    slug = matches[0].stem.removeprefix(f"{lib.today()}-")
     assert len(slug) <= tome.INBOX_SLUG_MAX_CHARS
 
 

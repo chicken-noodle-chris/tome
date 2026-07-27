@@ -2,7 +2,7 @@
 lint, and the commands that hang off it (new plan, set-status, mv, rm,
 describe, index rebuild). workflow-compression piece 2."""
 
-from tome_cli import cli as tome
+from tome_cli import lib
 
 
 def _hub_text(vault, project):
@@ -17,8 +17,8 @@ def test_new_project_scaffolds_hub_with_markers(make_vault, run_tome):
 
     assert code == 0
     text = _hub_text(vault, "proj")
-    assert tome.HUB_MARKER_START in text
-    assert tome.HUB_MARKER_END in text
+    assert lib.HUB_MARKER_START in text
+    assert lib.HUB_MARKER_END in text
 
 
 def test_new_plan_appears_in_hub_live_list(make_vault, run_tome):
@@ -123,8 +123,8 @@ def test_hub_without_markers_is_never_touched(make_vault, run_tome):
     hub_path = vault / "wiki" / "proj" / "proj.md"
     # Strip the markers out — an opted-out hub.
     hub_path.write_text(
-        hub_path.read_text(encoding="utf-8").replace(tome.HUB_MARKER_START, "")
-        .replace(tome.HUB_MARKER_END, ""),
+        hub_path.read_text(encoding="utf-8").replace(lib.HUB_MARKER_START, "")
+        .replace(lib.HUB_MARKER_END, ""),
         encoding="utf-8",
     )
     before = hub_path.read_text(encoding="utf-8")

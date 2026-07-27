@@ -355,7 +355,9 @@ also how to pick up local changes before pushing.
 
 ```
 tome/
-├─ src/tome_cli/      the package: cli.py, lint.py, search.py, serve.py, frontend/, templates/
+├─ src/tome_cli/      the package: lib.py (the vault primitives cli.py and
+│                     serve.py share), cli.py, serve.py, lint.py, search.py,
+│                     frontend/, templates/
 ├─ scripts/           thin shims (tome.py, tome_lint.py, wiki_search.py) —
 │                     the plugin's actual invocation path via $CLAUDE_PLUGIN_ROOT
 ├─ skills/            pickup-task, write-a-plan, retrospect, ingest, query, capture

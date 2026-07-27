@@ -1,6 +1,6 @@
 """tome start / tome done — the pickup-task skill's bundled start/close
 rituals (workflow-compression piece 3). Tests fake out backlog.md itself
-(monkeypatching tome.run_backlog) rather than shelling out to the real npx
+(monkeypatching lib.run_backlog) rather than shelling out to the real npx
 CLI — slow, network-dependent, and not what these tests are checking."""
 
 import re
@@ -8,6 +8,8 @@ import shutil
 import subprocess
 
 import pytest
+
+from tome_cli import lib
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git not on PATH")
 
@@ -42,11 +44,10 @@ def _bootstrap_git_vault(tmp_path, run_tome, name="vault"):
 
 @pytest.fixture
 def fake_backlog(monkeypatch):
-    """Monkeypatch tome.run_backlog with a stand-in that mutates the on-disk
+    """Monkeypatch lib.run_backlog with a stand-in that mutates the on-disk
     task fixture the way the real backlog.md CLI would for exactly the
     invocation shapes cmd_start/cmd_done issue. Returns the list of argv
     calls made, for assertions."""
-    from tome_cli import cli as tome
 
     calls = []
 
@@ -115,7 +116,7 @@ def fake_backlog(monkeypatch):
 
         return Result()  # e.g. ["task", "<id>", "--plain"] — a no-op read in tests
 
-    monkeypatch.setattr(tome, "run_backlog", _run)
+    monkeypatch.setattr(lib, "run_backlog", _run)
     return calls
 
 

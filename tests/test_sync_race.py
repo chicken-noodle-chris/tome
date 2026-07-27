@@ -8,7 +8,7 @@ import subprocess
 
 import pytest
 
-from tome_cli import cli as tome
+from tome_cli import lib
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git not on PATH")
 
@@ -52,7 +52,7 @@ def test_sync_retries_once_after_push_rejection(tmp_path, run_tome, monkeypatch,
     with (vault / "wiki" / "log.md").open("a", encoding="utf-8") as fh:
         fh.write("\nour scratch note\n")
 
-    real_run_git = tome.run_git
+    real_run_git = lib.run_git
     raced = {"done": False}
 
     def racing_run_git(vault_root, args):
@@ -64,7 +64,7 @@ def test_sync_retries_once_after_push_rejection(tmp_path, run_tome, monkeypatch,
             _git(other, "push")
         return real_run_git(vault_root, args)
 
-    monkeypatch.setattr(tome, "run_git", racing_run_git)
+    monkeypatch.setattr(lib, "run_git", racing_run_git)
 
     code = run_tome("--vault", str(vault), "sync", "-m", "our commit")
 
@@ -85,7 +85,7 @@ def test_sync_fails_loud_when_retry_rebase_conflicts(tmp_path, run_tome, monkeyp
     original = log_path.read_text(encoding="utf-8")
     log_path.write_text(original + "\nOUR LINE\n", encoding="utf-8")
 
-    real_run_git = tome.run_git
+    real_run_git = lib.run_git
     raced = {"done": False}
 
     def racing_run_git(vault_root, args):
@@ -98,7 +98,7 @@ def test_sync_fails_loud_when_retry_rebase_conflicts(tmp_path, run_tome, monkeyp
             _git(other, "push")
         return real_run_git(vault_root, args)
 
-    monkeypatch.setattr(tome, "run_git", racing_run_git)
+    monkeypatch.setattr(lib, "run_git", racing_run_git)
 
     code = run_tome("--vault", str(vault), "sync", "-m", "our commit")
 
