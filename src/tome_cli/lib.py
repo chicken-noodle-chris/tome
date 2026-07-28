@@ -46,7 +46,17 @@ TASK_ID_RE = re.compile(r"^(?:task-)?(\d+)$", re.IGNORECASE)
 # floating on @latest. Bump deliberately: check `npm view backlog.md
 # version`, update this constant, run `tome task task list --plain` against
 # a real vault to confirm the new release still behaves, then commit.
-BACKLOG_VERSION = "1.47.1"
+#
+# One non-obvious failure mode of pinning: backlog.md ships an *unsigned*
+# native binary, and Windows Smart App Control allows those on cloud
+# reputation, which is per-version and can be withdrawn. A pin that ran
+# yesterday can start failing with "An Application Control policy has blocked
+# this file" (spawn UNKNOWN / errno -4094 through the npm shim) with nothing
+# on this machine having changed. It presents as a broken `tome task`,
+# `start`, `done`, and `--with-task`. Confirm by running the pinned
+# `backlog.exe` directly, then bump — 1.47.1 was blocked this way while
+# 1.48.0 ran. Disabling Smart App Control is not the fix.
+BACKLOG_VERSION = "1.48.0"
 
 # type -> the taxonomy tag paired with the project-name tag on new pages.
 # Everything not listed here gets "project" (matches the observed convention
