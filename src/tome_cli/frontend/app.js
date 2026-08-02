@@ -1,9 +1,12 @@
 // tome browse frontend.
 //
 // One Alpine component drives four base views, each at its own path
-// ([[page-routes]], route table in routes.js): a page view — a sidebar
-// navigating the whole vault (grouped like the wiki tree) beside a content
-// area that renders the selected page, with client-side wikilink navigation —
+// ([[page-routes]], route table in routes.js), all rendering inside one shell
+// ([[persistent-sidebar]]): the sidebar — the four pinned destinations above a
+// tree navigating the whole vault, grouped like the wiki — is chrome on every
+// view rather than the page view's own furniture, and collapses to a rail whose
+// state persists. The views themselves are a page view rendering the selected
+// page with client-side wikilink navigation,
 // a full-width board carrying the backlog list beneath its columns
 // ([[deferred-backlog]]), and a dependency-chains tree (`/chains`,
 // [[dependency-chains]]) rendered from
@@ -147,6 +150,11 @@ const BACKLOG_OPEN_KEY = "tome.board.backlogOpen";
 // a vault key (vaultKey()) so two vaults served from the same origin don't
 // share collapse state.
 const SIDEBAR_FOLDERS_KEY_PREFIX = "tome.sidebar.folders:";
+// Sidebar collapse ([[persistent-sidebar]]) — deliberately *not* vault-scoped
+// like the folder state above: which folders are open is a fact about a
+// vault's content, whereas whether the tree is showing at all is a chrome
+// preference, in the same family as the board's sort/group lenses.
+const SIDEBAR_COLLAPSED_KEY = "tome.sidebar.collapsed";
 const PRIORITY_RANK = { high: 0, medium: 1, low: 2 };
 const DEFAULT_PRIORITY = "medium";
 
@@ -272,6 +280,10 @@ export function tomeApp() {
     // default. Only holds folders the user has explicitly touched; the
     // default lives in folderCollapsed() so untouched folders track it live.
     collapsedFolders: {},
+    // Whole-sidebar collapse ([[persistent-sidebar]]) — a rail keeping the
+    // pinned four and the toggle, never zero-width; read from localStorage in
+    // init() and written by toggleSidebar().
+    sidebarCollapsed: false,
     sidebarStorageKey: null, // set once pages load (vault-scoped, see vaultKey())
     // Keyboard cursor over the sidebar tree ([[browse-ui-polish]], AC5) —
     // j/k move it, Enter opens it; independent of currentSlug so arrowing
@@ -354,6 +366,8 @@ export function tomeApp() {
       const savedGroup = localStorage.getItem(GROUP_MODE_KEY);
       if (savedGroup === "none" || savedGroup === "milestone") this.groupMode = savedGroup;
       this.$watch("groupMode", (mode) => localStorage.setItem(GROUP_MODE_KEY, mode));
+
+      this.sidebarCollapsed = localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
 
       this.backlogOpen = localStorage.getItem(BACKLOG_OPEN_KEY) === "1";
       this.$watch("backlogOpen", (open) => localStorage.setItem(BACKLOG_OPEN_KEY, open ? "1" : "0"));
@@ -487,7 +501,15 @@ export function tomeApp() {
         this.focusSearch();
         return;
       }
-      if (this.view !== "page") return;
+      if (event.key === "[") {
+        event.preventDefault();
+        this.toggleSidebar();
+        return;
+      }
+      // j/k walk the tree, so they're live wherever the tree is — every view
+      // now that the sidebar is chrome ([[persistent-sidebar]]) — and dead
+      // only while it's collapsed out of sight.
+      if (this.sidebarCollapsed) return;
       if (event.key === "j") {
         event.preventDefault();
         this.moveSidebarCursor(1);
@@ -595,7 +617,7 @@ export function tomeApp() {
     },
 
     // The board's route, `/tasks` — titled Tasks, and carrying the backlog
-    // list beneath its columns ([[deferred-backlog]]). A topbar nav click is
+    // list beneath its columns ([[deferred-backlog]]). A sidebar nav click is
     // one of the ways back to a *plain* base view, so it closes any open task
     // panel rather than carrying it over silently.
     showBoard({ push = true } = {}) {
@@ -703,7 +725,7 @@ export function tomeApp() {
       if (push) history.pushState({ slug }, "", hrefFor({ view: "page", slug }));
     },
 
-    // The topbar's "Page" link target: the current page, or the hub if none
+    // The sidebar's pinned "Page" entry target: the current page, or the hub if none
     // has loaded yet — mirrors showPage()'s own fallback.
     pageHref() {
       return this.currentSlug
@@ -1988,6 +2010,19 @@ export function tomeApp() {
     folderRank(name) {
       const i = FOLDER_ORDER.indexOf(name);
       return i === -1 ? FOLDER_ORDER.length : i;
+    },
+
+    // Collapse the sidebar to its rail, or restore it ([[persistent-sidebar]]).
+    // Writes through immediately rather than via a $watch so the toggle is the
+    // one place the preference is decided — a collapse that resets on reload is
+    // worse than no collapse at all.
+    toggleSidebar() {
+      this.sidebarCollapsed = !this.sidebarCollapsed;
+      localStorage.setItem(SIDEBAR_COLLAPSED_KEY, this.sidebarCollapsed ? "1" : "0");
+      // Expanding re-centres the current page ([[sidebar-orientation]], AC1):
+      // loading a page while the rail was up scrolled nothing, since the tree
+      // wasn't rendered to scroll.
+      if (!this.sidebarCollapsed) this.$nextTick(() => this.scrollSidebarToCurrent());
     },
 
     // Reassign the object (not mutate a key) so Alpine tracks the change.

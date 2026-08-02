@@ -758,3 +758,61 @@ describe("sidebar tree ([[sidebar-orientation]])", () => {
     assert.equal(sidebar.scrollTop, 500 - 200 / 2 + 20 / 2); // 410
   });
 });
+
+describe("sidebar collapse ([[persistent-sidebar]])", () => {
+  // onGlobalKeydown's typing guard does `target instanceof Element`; node has
+  // no DOM, so the constructor has to exist for the check to reach `false`.
+  beforeEach(() => { globalThis.Element = class Element {}; });
+
+  function stubStorage() {
+    const saved = {};
+    globalThis.localStorage = {
+      setItem: (k, v) => { saved[k] = v; },
+      getItem: (k) => saved[k] ?? null,
+    };
+    return saved;
+  }
+
+  test("toggleSidebar flips the state and persists it under a vault-agnostic key", () => {
+    const saved = stubStorage();
+    const app = makeApp();
+    app.toggleSidebar();
+    assert.equal(app.sidebarCollapsed, true);
+    assert.equal(saved["tome.sidebar.collapsed"], "1");
+    app.toggleSidebar();
+    assert.equal(app.sidebarCollapsed, false);
+    assert.equal(saved["tome.sidebar.collapsed"], "0");
+  });
+
+  test("'[' toggles the sidebar from any view, '/' still wins for search", () => {
+    stubStorage();
+    const focused = [];
+    const app = makeApp({ view: "board", focusSearch: () => focused.push(true) });
+    const key = (k) => app.onGlobalKeydown({ key: k, target: null, preventDefault() {} });
+
+    key("[");
+    assert.equal(app.sidebarCollapsed, true);
+    key("[");
+    assert.equal(app.sidebarCollapsed, false);
+    key("/");
+    assert.equal(focused.length, 1);
+  });
+
+  test("j/k walk the tree on every view now, and go dead while it's collapsed", () => {
+    stubStorage();
+    const moved = [];
+    const app = makeApp({
+      view: "board", // no longer the page view's alone
+      moveSidebarCursor: (d) => moved.push(d),
+    });
+    const key = (k) => app.onGlobalKeydown({ key: k, target: null, preventDefault() {} });
+
+    key("j");
+    key("k");
+    assert.deepEqual(moved, [1, -1]);
+
+    app.sidebarCollapsed = true;
+    key("j");
+    assert.deepEqual(moved, [1, -1]); // unchanged — no tree to walk
+  });
+});

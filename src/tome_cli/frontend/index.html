@@ -14,18 +14,12 @@
   <body x-data="tomeApp" x-cloak>
     <header class="topbar">
       <a class="brand" href="/" @click.prevent="showHome()">tome</a>
-      <!-- Four pinned destinations, each at its own path ([[page-routes]]).
-           Chains is deliberately not pinned: it's a lens reached from the
-           board and from a task's dependency list, not a place you navigate
-           to cold. -->
-      <nav class="views">
-        <a :class="{ active: view === 'home' }" href="/" @click.prevent="showHome()">Home</a>
-        <a :class="{ active: view === 'page' }" :href="pageHref()" @click.prevent="showPage()">Page</a>
-        <a :class="{ active: view === 'board' }" href="/tasks" @click.prevent="showBoard()">Tasks</a>
-        <a :class="{ active: view === 'log' }" href="/log" @click.prevent="showLog()">Log</a>
-      </nav>
 
-      <!-- Search ([[browse-ui-polish]], AC1) — a live filter over pages/tasks
+      <!-- The topbar is down to the brand and search ([[persistent-sidebar]]):
+           the view nav moved into the sidebar, which is where navigation now
+           lives. Search stays here because it is global, `/` focuses it from
+           anywhere, and its dropdown wants width the collapsed rail can't give.
+           Search ([[browse-ui-polish]], AC1) — a live filter over pages/tasks
            already in memory; "/" focuses it from anywhere (AC5). -->
       <div class="search-box" @click.outside="searchActive = false">
         <input type="search" class="search-input" placeholder="Search… ( / )"
@@ -61,15 +55,66 @@
           </template>
         </div>
       </div>
-
-      <span class="hint" x-show="view === 'page'" x-text="pages.length + ' pages'"></span>
     </header>
 
-    <!-- Page view: sidebar (vault tree) + content area -->
-    <div class="layout" x-show="view === 'page'">
-      <aside class="sidebar">
-        <button type="button" class="new-page-btn" x-show="board.writable"
-                @click="openNewPageModal()">+ New page</button>
+    <!-- One shell ([[persistent-sidebar]]): the sidebar as the first column on
+         every view, the active view's <main> as the second, and the task panel
+         as the third when `?task=` is set. The per-view x-shows all sit one
+         level deeper than they used to; each view keeps its own padding and
+         max-width, because a hub that reads at 46rem and a board that wants the
+         full row are both right. -->
+    <div class="shell">
+      <!-- Chrome, not the page view's furniture: one instance outside every
+           x-show, so the tree keeps its scroll position, collapse state and
+           current-page highlight while you move between views instead of being
+           torn down and rebuilt. -->
+      <aside class="sidebar" :class="{ 'sidebar--collapsed': sidebarCollapsed }">
+        <div class="sidebar-head">
+          <!-- Collapse never hides itself: the rail keeps this button and the
+               four pinned entries, so there is a way back from inside the
+               collapsed state. -->
+          <button type="button" class="sidebar-toggle" @click="toggleSidebar()"
+                  :aria-expanded="sidebarCollapsed ? 'false' : 'true'"
+                  :aria-label="sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'"
+                  :title="(sidebarCollapsed ? 'Expand' : 'Collapse') + ' sidebar ( [ )'"
+                  x-text="sidebarCollapsed ? '»' : '«'"></button>
+          <!-- Reachable from the board now too, not just the page view. The
+               rail hides it in CSS rather than in x-show, so the narrow
+               breakpoint below can ignore the collapse preference — an inline
+               display:none no media query can override would not let it. -->
+          <button type="button" class="new-page-btn" x-show="board.writable"
+                  @click="openNewPageModal()">+ New page</button>
+        </div>
+
+        <!-- The four pinned destinations, each at its own path
+             ([[page-routes]]), moved off the topbar. Chains is deliberately
+             not pinned: it's a lens reached from the board and from a task's
+             dependency list, not a place you navigate to cold. Page keeps its
+             contextual target — the current page, or the hub if none has
+             loaded — which is why it alone reads pageHref(). -->
+        <nav class="sidebar-nav">
+          <a class="sidebar-nav-item" :class="{ active: view === 'home' }"
+             href="/" title="Home" @click.prevent="showHome()">
+            <span class="sidebar-nav-icon" aria-hidden="true">&#8962;</span>
+            <span class="sidebar-nav-label">Home</span>
+          </a>
+          <a class="sidebar-nav-item" :class="{ active: view === 'page' }"
+             :href="pageHref()" title="Page" @click.prevent="showPage()">
+            <span class="sidebar-nav-icon" aria-hidden="true">&#9636;</span>
+            <span class="sidebar-nav-label">Page</span>
+          </a>
+          <a class="sidebar-nav-item" :class="{ active: view === 'board' }"
+             href="/tasks" title="Tasks" @click.prevent="showBoard()">
+            <span class="sidebar-nav-icon" aria-hidden="true">&#9745;</span>
+            <span class="sidebar-nav-label">Tasks</span>
+          </a>
+          <a class="sidebar-nav-item" :class="{ active: view === 'log' }"
+             href="/log" title="Log" @click.prevent="showLog()">
+            <span class="sidebar-nav-icon" aria-hidden="true">&#9201;</span>
+            <span class="sidebar-nav-label">Log</span>
+          </a>
+        </nav>
+
         <nav class="tree">
           <template x-for="group of tree()" :key="group.project">
             <section class="tree-project">
@@ -105,7 +150,9 @@
         </nav>
       </aside>
 
-      <main class="page">
+    <div class="shell-main">
+
+      <main class="page" x-show="view === 'page'">
         <template x-if="pageError">
           <div class="missing-page">
             <h1 class="missing-page-title">Page not found</h1>
@@ -300,8 +347,7 @@
             </template>
           </article>
         </template>
-      </main>
-    </div>
+    </main>
 
     <!-- Hub / home view ([[wiki-hub-home]]) — the landing page: recently
          updated pages, a project roster, and every plan in flight. Every
@@ -361,6 +407,563 @@
         <div class="markdown log-markdown" x-html="logHtml" @click="onContentClick($event)"></div>
       </template>
     </main>
+
+    <!-- Tasks view (full-width): the board's columns, with the backlog list
+         folded in beneath them ([[page-routes]]). -->
+    <main class="board-wrap board-view" x-show="view === 'board'">
+      <div class="board-toolbar">
+        <label>
+          Project
+          <select x-model="projectFilter">
+            <option value="__all__">All projects</option>
+            <template x-for="p of projects()" :key="p">
+              <option :value="p" x-text="p"></option>
+            </template>
+          </select>
+        </label>
+        <label>
+          Sort
+          <select x-model="sortMode">
+            <option value="manual">Manual</option>
+            <option value="priority">Priority</option>
+            <option value="title">Title</option>
+          </select>
+        </label>
+        <label>
+          Group
+          <select x-model="groupMode">
+            <option value="none">None</option>
+            <option value="milestone">Milestone</option>
+          </select>
+        </label>
+        <span class="total" x-text="pluralise(visibleCards().length, 'task')"></span>
+        <span class="chip chip--readonly" x-show="!board.writable">read-only</span>
+        <button type="button" class="new-page-btn" x-show="board.writable"
+                @click="openNewTaskModal()">+ New task</button>
+      </div>
+      <p class="board-error" x-show="boardError" x-text="boardError"></p>
+      <template x-if="groupMode === 'none'">
+        <div class="board-columns">
+          <template x-for="status of columns()" :key="status">
+            <section class="board-column">
+              <div class="col-head">
+                <h2 x-text="status"></h2>
+                <span class="count" x-text="cardsFor(status).length"></span>
+              </div>
+              <div class="col-body"
+                   @dragover.prevent="onDragOver($event, status)"
+                   @dragleave="onDragLeave($event)"
+                   @drop.prevent="onDrop($event, status)">
+                <p class="col-empty" x-show="cardsFor(status).length === 0">No tasks</p>
+                <div class="drop-line" x-show="cardsFor(status).length === 0
+                       && dropTarget && dropTarget.status === status"></div>
+                <template x-for="(card, idx) of cardsFor(status)" :key="card.id">
+                  <div>
+                    <div class="drop-line" x-show="dropIndicator(status, card, idx) === 'above'"></div>
+                    <article class="card"
+                             :data-card-id="card.id"
+                             :draggable="board.writable && sortMode === 'manual'"
+                             :class="{ dragging: draggingId === card.id, moving: movingCardId === card.id,
+                                       selected: card.id === currentTaskId }"
+                             @dragstart="onDragStart($event, card)"
+                             @dragend="onDragEnd"
+                             @click="openTask(card.id)">
+                      <div class="card-meta">
+                        <span class="card-id" x-text="card.rawId"></span>
+                        <span class="card-prio" :data-prio="card.priority" x-show="showPrio(card.priority)" x-text="card.priority"></span>
+                      </div>
+                      <div class="card-title" x-text="card.title"></div>
+                      <div class="card-chips">
+                        <span class="chip" x-show="card.project" x-text="card.project"></span>
+                        <span class="chip chip--milestone" x-show="card.milestone" x-text="card.milestone"></span>
+                      </div>
+                      <button type="button" class="card-action" x-show="board.writable"
+                              @click.stop="deferCard(card)">Defer</button>
+                    </article>
+                    <div class="drop-line" x-show="dropIndicator(status, card, idx) === 'below'"></div>
+                  </div>
+                </template>
+              </div>
+            </section>
+          </template>
+        </div>
+      </template>
+
+      <!-- Milestone swimlanes ([[browse-ui-polish]], AC4) — a read-only
+           reorganization of the same cards/columns above: one labelled row
+           per milestone, unassigned cards last. No drag-and-drop here (the
+           column-relative index math dropIndicator/onDragOver rely on
+           doesn't hold once cards are also split by lane); reordering stays
+           the plain board's job. -->
+      <template x-if="groupMode === 'milestone'">
+        <div class="board-swimlanes">
+          <template x-for="lane of boardSwimlanes()" :key="lane.key">
+            <section class="board-swimlane">
+              <h3 class="swimlane-title" x-text="lane.label"></h3>
+              <div class="board-columns board-columns--lane">
+                <template x-for="status of columns()" :key="status">
+                  <section class="board-column">
+                    <div class="col-head">
+                      <h2 x-text="status"></h2>
+                      <span class="count" x-text="cardsForColumn(status, lane.milestone).length"></span>
+                    </div>
+                    <div class="col-body">
+                      <p class="col-empty" x-show="cardsForColumn(status, lane.milestone).length === 0">No tasks</p>
+                      <template x-for="card of cardsForColumn(status, lane.milestone)" :key="card.id">
+                        <article class="card" :class="{ selected: card.id === currentTaskId }"
+                                 @click="openTask(card.id)">
+                          <div class="card-meta">
+                            <span class="card-id" x-text="card.rawId"></span>
+                            <span class="card-prio" :data-prio="card.priority" x-show="showPrio(card.priority)" x-text="card.priority"></span>
+                          </div>
+                          <div class="card-title" x-text="card.title"></div>
+                          <div class="card-chips">
+                            <span class="chip" x-show="card.project" x-text="card.project"></span>
+                          </div>
+                        </article>
+                      </template>
+                    </div>
+                  </section>
+                </template>
+              </div>
+            </section>
+          </template>
+        </div>
+      </template>
+
+      <!-- The backlog ([[deferred-backlog]]), folded in beneath the columns
+           ([[page-routes]]): the same cards, drag handlers and drop
+           indicators the columns use, so dragging between a column and this
+           list is now one drag within one page rather than a status change
+           you had to navigate to make. The board's project filter reaches it
+           too, via cardsFor() -> visibleCards(). Collapsed by default so the
+           columns keep the height; the disclosure persists in localStorage
+           like the sort and group lenses. -->
+      <section class="backlog-section">
+        <div class="backlog-head">
+          <button type="button" class="backlog-toggle" @click="backlogOpen = !backlogOpen"
+                  :aria-expanded="backlogOpen ? 'true' : 'false'">
+            <span class="twisty" x-text="backlogOpen ? '▾' : '▸'"></span>
+            <h2>Backlog</h2>
+            <span class="count" x-text="cardsFor(board.backlogStatus).length"></span>
+          </button>
+          <button type="button" class="new-page-btn" x-show="board.writable && backlogOpen"
+                  @click="openNewTaskModal({ fromBacklog: true })">+ New item</button>
+        </div>
+        <div class="backlog-list col-body" x-show="backlogOpen"
+             @dragover.prevent="onDragOver($event, board.backlogStatus)"
+             @dragleave="onDragLeave($event)"
+             @drop.prevent="onDrop($event, board.backlogStatus)">
+          <p class="col-empty" x-show="cardsFor(board.backlogStatus).length === 0">Nothing deferred</p>
+          <div class="drop-line" x-show="cardsFor(board.backlogStatus).length === 0
+                 && dropTarget && dropTarget.status === board.backlogStatus"></div>
+          <template x-for="(card, idx) of cardsFor(board.backlogStatus)" :key="card.id">
+            <div>
+              <div class="drop-line" x-show="dropIndicator(board.backlogStatus, card, idx) === 'above'"></div>
+              <article class="card"
+                       :data-card-id="card.id"
+                       :draggable="board.writable && sortMode === 'manual'"
+                       :class="{ dragging: draggingId === card.id, moving: movingCardId === card.id,
+                                 selected: card.id === currentTaskId }"
+                       @dragstart="onDragStart($event, card)"
+                       @dragend="onDragEnd"
+                       @click="openTask(card.id)">
+                <div class="card-meta">
+                  <span class="card-id" x-text="card.rawId"></span>
+                  <span class="card-prio" :data-prio="card.priority" x-show="showPrio(card.priority)" x-text="card.priority"></span>
+                </div>
+                <div class="card-title" x-text="card.title"></div>
+                <div class="card-chips">
+                  <span class="chip" x-show="card.project" x-text="card.project"></span>
+                  <span class="chip chip--milestone" x-show="card.milestone" x-text="card.milestone"></span>
+                </div>
+                <button type="button" class="card-action" x-show="board.writable"
+                        @click.stop="promoteCard(card)">Promote →</button>
+              </article>
+              <div class="drop-line" x-show="dropIndicator(board.backlogStatus, card, idx) === 'below'"></div>
+            </div>
+          </template>
+        </div>
+      </section>
+    </main>
+
+    <!-- Dependency chains view ([[dependency-chains]]) — read-only, computed
+         client-side from the same board.json cards by chains.js; no fetch,
+         no new server route, identical on a --export snapshot. -->
+    <main class="board-wrap chains-wrap" x-show="view === 'chains'">
+      <div class="board-toolbar">
+        <span class="total"
+              x-text="chainsData().chains.length + ' chain' + (chainsData().chains.length === 1 ? '' : 's')
+                + ' · ' + chainsData().unchained.length + ' unchained'"></span>
+      </div>
+
+      <p class="chains-empty" x-show="!hasAnyDependency()">
+        No task on the board carries a dependency yet. Set one with
+        <code>tome task edit &lt;id&gt; --dep &lt;id&gt;</code>.
+      </p>
+
+      <template x-if="hasAnyDependency()">
+        <div>
+          <template x-for="(chain, i) of chainsData().chains" :key="chain.id">
+            <section class="chain-group">
+              <h2 class="chain-title"
+                  x-text="'Chain ' + (i + 1) + ' — ' + chain.size + (chain.size === 1 ? ' task' : ' tasks')"></h2>
+              <div class="chain-rows">
+                <template x-for="row of chain.rows" :key="row.key">
+                  <div class="chain-row"
+                       :class="{ 'chain-row--backref': row.backref, 'chain-row--offboard': row.offboard,
+                                 'chain-row--current': row.id === currentTaskId }"
+                       @click="!row.offboard && openTask(row.id)">
+                    <span class="chain-prefix" x-text="row.prefix"></span>
+                    <span class="chain-backref-mark" x-show="row.backref" title="Shown in full above">&uarr;</span>
+                    <span class="chain-id" x-text="row.rawId"></span>
+                    <span class="chain-row-title"
+                          x-text="row.offboard ? '(not on this board)' : row.title"></span>
+                    <span class="card-prio" :data-prio="row.card && row.card.priority"
+                          x-show="row.card && showPrio(row.card.priority)" x-text="row.card && row.card.priority"></span>
+                    <span class="chip" x-show="row.card && row.card.status" x-text="row.card && row.card.status"></span>
+                    <span class="chain-deps" x-show="row.deps.length"
+                          x-text="'needs ' + row.deps.map(depLabel).join(', ')"></span>
+                  </div>
+                </template>
+              </div>
+            </section>
+          </template>
+
+          <section class="chain-group chain-unchained" x-show="chainsData().unchained.length">
+            <button type="button" class="chain-unchained-toggle"
+                    @click="chainsUnchainedOpen = !chainsUnchainedOpen">
+              <span class="twisty" x-text="chainsUnchainedOpen ? '▾' : '▸'"></span>
+              <span x-text="chainsData().unchained.length + ' unchained task'
+                + (chainsData().unchained.length === 1 ? '' : 's')"></span>
+            </button>
+            <div class="chain-rows" x-show="chainsUnchainedOpen">
+              <template x-for="card of chainsData().unchained" :key="card.id">
+                <div class="chain-row" :class="{ 'chain-row--current': card.id === currentTaskId }"
+                     @click="openTask(card.id)">
+                  <span class="chain-id" x-text="card.rawId"></span>
+                  <span class="chain-row-title" x-text="card.title"></span>
+                </div>
+              </template>
+            </div>
+          </section>
+        </div>
+      </template>
+    </main>
+
+    </div><!-- /.shell-main -->
+
+    <!-- Task-detail panel ([[task-detail-panel]]) — the shell's third column
+         when `?task=` is set, layered over whichever base view (board/chains)
+         can host it ([[persistent-sidebar]]). Rendered entirely
+         from the clicked card's board.json entry; no fetch on open, identical
+         on a frozen static export. The scrim is only visible (via CSS) below
+         the narrow-viewport breakpoint, where the panel becomes a full-width
+         overlay instead of a side track.
+
+         Its fields are editable on a live serve ([[task-editing]]): there is
+         no edit mode, each field carries its own affordance, and everything
+         below is gated on `pane.editable` — false on a static export and
+         false for the on-disk pane. That pane is the whole point of rendering
+         this body inside `x-for="pane of taskPanes()"` rather than once: on a
+         409 the very same markup is instantiated a second time against the
+         card the server refused the write over, so "what you'd overwrite"
+         costs one extra data source instead of a second read-only view. -->
+    <div class="task-panel-scrim" x-show="currentTaskId" @click="closeTaskPanel()"></div>
+    <aside class="task-panel" :class="{ 'task-panel--conflict': taskConflict }"
+           x-show="currentTaskId">
+      <div class="task-panel-head">
+        <span class="card-id" x-show="currentTask()" x-text="currentTask() && currentTask().rawId"></span>
+        <span class="card-prio" :data-prio="currentTask() && currentTask().priority"
+              x-show="currentTask() && showPrio(currentTask().priority)" x-text="currentTask() && currentTask().priority"></span>
+        <span class="card-completed" x-show="currentTask() && currentTask().completed">Completed</span>
+        <button type="button" class="task-panel-close" @click="closeTaskPanel()" aria-label="Close task panel">&times;</button>
+      </div>
+      <template x-if="taskErrorMessage()">
+        <p class="error" x-text="taskErrorMessage()"></p>
+      </template>
+
+      <p class="task-banner" :class="'task-banner--' + taskBannerKind"
+         x-show="taskBanner && currentTask()" x-text="taskBanner"></p>
+
+      <!-- Outside the pane loop: one datalist, or the two panes would render
+           duplicate ids for it. -->
+      <datalist id="task-label-suggestions">
+        <template x-for="l of labelSuggestions()" :key="l">
+          <option :value="l"></option>
+        </template>
+      </datalist>
+
+      <div class="task-panes" x-show="!taskErrorMessage() && currentTask()">
+        <template x-for="pane of taskPanes()" :key="pane.key">
+          <article class="task-detail" :class="{ 'task-detail--disk': pane.disk }"
+                   x-data="{ get editable() { return !pane.disk && taskWritable(); } }">
+
+            <div class="task-pane-head" x-show="pane.disk">
+              <h2>On disk</h2>
+              <span class="task-pane-when" x-text="taskConflictAgo()"></span>
+              <button type="button" class="task-pane-dismiss" @click="dismissTaskConflict()">Dismiss</button>
+            </div>
+
+            <div class="fm-card">
+              <div class="fm-head">
+                <!-- Title: click to edit in place; a plain input, since a
+                     title is one line and never markdown. -->
+                <template x-if="!taskEditing('title') || pane.disk">
+                  <h1 class="task-title" :class="{ 'task-title--editable': editable }"
+                      @click="editable && beginTaskEdit('title', pane.card.title)"
+                      x-text="pane.card.title"></h1>
+                </template>
+                <template x-if="taskEditing('title') && !pane.disk">
+                  <div class="task-field-edit">
+                    <input type="text" x-model="taskEdit.value"
+                           @keydown.enter="saveTaskEdit()" @keydown.escape="cancelTaskEdit()" />
+                    <div class="task-field-actions">
+                      <button type="button" class="editor-btn-save" :disabled="!!taskSavingField"
+                              @click="saveTaskEdit()">Save</button>
+                      <button type="button" @click="cancelTaskEdit()">Cancel</button>
+                    </div>
+                  </div>
+                </template>
+                <div class="task-pane-take" x-show="pane.disk">
+                  <button type="button" @click="copyText(pane.card.title)" title="Copy">&#9099;</button>
+                  <button type="button" @click="takeDiskText('title', pane.card.title)"
+                          title="Take the disk version">&larr;</button>
+                </div>
+              </div>
+              <dl>
+                <div class="fm-row" x-show="pane.card.status || editable">
+                  <dt>status</dt>
+                  <dd>
+                    <select x-show="editable" class="task-select"
+                            :value="pane.card.status" @change="setTaskStatus($event.target.value)">
+                      <template x-for="s of board.statuses" :key="s">
+                        <option :value="s" :selected="s === pane.card.status" x-text="s"></option>
+                      </template>
+                    </select>
+                    <span x-show="!editable" x-text="pane.card.status"></span>
+                  </dd>
+                </div>
+                <div class="fm-row" x-show="pane.card.priority || editable">
+                  <dt>priority</dt>
+                  <dd>
+                    <select x-show="editable" class="task-select"
+                            :value="pane.card.priority" @change="setTaskPriority($event.target.value)">
+                      <template x-for="p of ['high', 'medium', 'low']" :key="p">
+                        <option :value="p" :selected="p === pane.card.priority" x-text="p"></option>
+                      </template>
+                    </select>
+                    <span x-show="!editable" x-text="pane.card.priority"></span>
+                  </dd>
+                </div>
+                <!-- project is derived from the project: label, so it's set by
+                     editing labels below rather than by a field of its own. -->
+                <div class="fm-row" x-show="pane.card.project">
+                  <dt>project</dt><dd x-text="pane.card.project"></dd>
+                </div>
+                <div class="fm-row" x-show="pane.card.milestone || editable">
+                  <dt>milestone</dt>
+                  <dd>
+                    <select x-show="editable" class="task-select"
+                            :value="pane.card.milestone || ''" @change="setTaskMilestone($event.target.value)">
+                      <option value="">(none)</option>
+                      <template x-for="m of milestoneOptions()" :key="m">
+                        <option :value="m" :selected="m === pane.card.milestone" x-text="m"></option>
+                      </template>
+                    </select>
+                    <span x-show="!editable" x-text="pane.card.milestone"></span>
+                  </dd>
+                </div>
+                <div class="fm-row" x-show="pane.card.agent">
+                  <dt>agent</dt><dd x-text="pane.card.agent"></dd>
+                </div>
+                <div class="fm-row" x-show="pane.card.assignee.length || editable">
+                  <dt>assignee</dt>
+                  <dd>
+                    <!-- Set-and-replace, not chips: backlog.md has no flag
+                         that clears an assignee, so a remove affordance would
+                         promise something it can't deliver. -->
+                    <input x-show="editable" type="text" class="task-inline-input"
+                           :value="pane.card.assignee.join(', ')"
+                           @change="setTaskAssignee($event.target.value)"
+                           @keydown.enter="$event.target.blur()" />
+                    <span x-show="!editable" x-text="pane.card.assignee.join(', ')"></span>
+                  </dd>
+                </div>
+                <div class="fm-row" x-show="pane.card.labels.length || editable">
+                  <dt>labels</dt>
+                  <dd class="task-chips">
+                    <template x-for="label of pane.card.labels" :key="label">
+                      <span class="chip">
+                        <span x-text="label"></span>
+                        <button type="button" class="chip-remove" x-show="editable"
+                                @click="removeTaskLabel(label)" aria-label="Remove label">&times;</button>
+                      </span>
+                    </template>
+                    <input x-show="editable" type="text" class="task-inline-input task-label-add"
+                           list="task-label-suggestions" placeholder="+ label"
+                           x-model="taskLabelDraft"
+                           @change="addTaskLabel(taskLabelDraft)"
+                           @keydown.enter="addTaskLabel(taskLabelDraft)" />
+                  </dd>
+                </div>
+                <!-- Read-only by design: backlog.md owns the dates, drag owns
+                     the ordinal, and `references` is the link a plan is found
+                     by ([[task-editing]]). -->
+                <div class="fm-row" x-show="pane.card.created">
+                  <dt>created</dt><dd x-text="pane.card.created"></dd>
+                </div>
+                <div class="fm-row" x-show="pane.card.updated">
+                  <dt>updated</dt><dd x-text="pane.card.updated"></dd>
+                </div>
+              </dl>
+              <p class="task-wiki-link" x-show="!pane.disk && taskWikiPage(pane.card)">
+                <a :href="pageUrl(taskWikiPage(pane.card)?.slug)"
+                   @click.prevent="loadPage(taskWikiPage(pane.card).slug)">
+                  View wiki page: <span x-text="taskWikiPage(pane.card)?.title"></span>
+                </a>
+              </p>
+            </div>
+
+            <section class="task-block" x-show="pane.card.description || editable">
+              <h2>
+                Description
+                <span class="task-block-actions">
+                  <button type="button" x-show="editable && !taskEditing('description')"
+                          @click="beginTaskEdit('description', pane.card.description)"
+                          title="Edit">&#9998;</button>
+                  <template x-if="pane.disk">
+                    <span>
+                      <button type="button" @click="copyText(pane.card.description)" title="Copy">&#9099;</button>
+                      <button type="button" @click="takeDiskText('description', pane.card.description)"
+                              title="Take the disk version">&larr;</button>
+                    </span>
+                  </template>
+                </span>
+              </h2>
+              <template x-if="taskEditing('description') && !pane.disk">
+                <div class="task-field-edit">
+                  <textarea rows="5" x-model="taskEdit.value" @keydown.escape="cancelTaskEdit()"></textarea>
+                  <div class="task-field-actions">
+                    <button type="button" class="editor-btn-save" :disabled="!!taskSavingField"
+                            @click="saveTaskEdit()">Save</button>
+                    <button type="button" @click="cancelTaskEdit()">Cancel</button>
+                  </div>
+                </div>
+              </template>
+              <div class="markdown task-description" x-show="!taskEditing('description') || pane.disk"
+                   x-html="renderTaskMarkdown(pane.card.description)" @click="onContentClick($event)"></div>
+            </section>
+
+            <section class="task-acs" x-show="pane.card.acceptanceCriteria.length || editable">
+              <h2>
+                Acceptance Criteria
+                <span class="task-block-actions" x-show="pane.disk">
+                  <button type="button" title="Copy"
+                          @click="copyText(pane.card.acceptanceCriteria
+                            .map((a, i) => `- [${a.checked ? 'x' : ' '}] #${i + 1} ${a.text}`).join('\n'))">&#9099;</button>
+                </span>
+              </h2>
+              <ul>
+                <template x-for="(ac, i) of pane.card.acceptanceCriteria" :key="i">
+                  <li class="task-ac" :class="{ 'task-ac--checked': ac.checked }">
+                    <input type="checkbox" :disabled="!editable" :checked="ac.checked"
+                           @change="toggleAc(i)" />
+                    <template x-if="taskEditing('ac', i) && !pane.disk">
+                      <div class="task-field-edit">
+                        <input type="text" x-model="taskEdit.value"
+                               @keydown.enter="saveTaskEdit()" @keydown.escape="cancelTaskEdit()" />
+                        <div class="task-field-actions">
+                          <button type="button" class="editor-btn-save" :disabled="!!taskSavingField"
+                                  @click="saveTaskEdit()">Save</button>
+                          <button type="button" @click="cancelTaskEdit()">Cancel</button>
+                        </div>
+                      </div>
+                    </template>
+                    <template x-if="!taskEditing('ac', i) || pane.disk">
+                      <span class="task-ac-text" x-text="ac.text"></span>
+                    </template>
+                    <span class="task-ac-actions" x-show="editable && !taskEditing('ac', i)">
+                      <button type="button" @click="beginTaskEdit('ac', ac.text, i)" title="Edit">&#9998;</button>
+                      <button type="button" @click="removeAc(i)" title="Remove">&times;</button>
+                    </span>
+                  </li>
+                </template>
+              </ul>
+              <input x-show="editable" type="text" class="task-inline-input task-ac-add"
+                     placeholder="+ add criterion" x-model="taskAcDraft"
+                     @keydown.enter="addAc(taskAcDraft)" />
+            </section>
+
+            <section class="task-deps" x-show="!pane.disk && pane.card.dependencies.length">
+              <h2>Dependencies</h2>
+              <ul>
+                <template x-for="depId of pane.card.dependencies" :key="depId">
+                  <li>
+                    <a :class="{ 'task-dep--offboard': !dependencyCard(depId) }"
+                       :href="dependencyCard(depId) ? taskUrl(depId) : null"
+                       @click.prevent="dependencyCard(depId) && openTask(depId)"
+                       x-text="dependencyCard(depId)
+                         ? dependencyCard(depId).rawId + ' — ' + dependencyCard(depId).title
+                         : depId.toUpperCase() + ' (not on this board)'"></a>
+                  </li>
+                </template>
+              </ul>
+            </section>
+
+            <section class="task-chain" x-show="!pane.disk && currentTaskChain()">
+              <h2>
+                Dependency chain
+                <a class="chain-context-link" href="/chains" @click.prevent="showChains()">View full chains &rarr;</a>
+              </h2>
+              <div class="chain-rows chain-rows--mini">
+                <template x-for="row of (currentTaskChain() ? currentTaskChain().rows : [])" :key="row.key">
+                  <div class="chain-row"
+                       :class="{ 'chain-row--backref': row.backref, 'chain-row--offboard': row.offboard,
+                                 'chain-row--current': row.id === currentTaskId }"
+                       @click="!row.offboard && row.id !== currentTaskId && openTask(row.id)">
+                    <span class="chain-prefix" x-text="row.prefix"></span>
+                    <span class="chain-backref-mark" x-show="row.backref" title="Shown in full above">&uarr;</span>
+                    <span class="chain-id" x-text="row.rawId"></span>
+                    <span class="chain-row-title" x-text="row.offboard ? '(not on this board)' : row.title"></span>
+                  </div>
+                </template>
+              </div>
+            </section>
+
+            <section class="task-block task-notes" x-show="pane.card.notes || editable">
+              <h2>
+                Implementation Notes
+                <span class="task-block-actions">
+                  <button type="button" x-show="editable && !taskEditing('notes')"
+                          @click="beginTaskEdit('notes', pane.card.notes)" title="Edit">&#9998;</button>
+                  <template x-if="pane.disk">
+                    <span>
+                      <button type="button" @click="copyText(pane.card.notes)" title="Copy">&#9099;</button>
+                      <button type="button" @click="takeDiskText('notes', pane.card.notes)"
+                              title="Take the disk version">&larr;</button>
+                    </span>
+                  </template>
+                </span>
+              </h2>
+              <template x-if="taskEditing('notes') && !pane.disk">
+                <div class="task-field-edit">
+                  <textarea rows="8" x-model="taskEdit.value" @keydown.escape="cancelTaskEdit()"></textarea>
+                  <div class="task-field-actions">
+                    <button type="button" class="editor-btn-save" :disabled="!!taskSavingField"
+                            @click="saveTaskEdit()">Save</button>
+                    <button type="button" @click="cancelTaskEdit()">Cancel</button>
+                  </div>
+                </div>
+              </template>
+              <div class="markdown" x-show="!taskEditing('notes') || pane.disk"
+                   x-html="renderTaskMarkdown(pane.card.notes)" @click="onContentClick($event)"></div>
+            </section>
+          </article>
+        </template>
+      </div>
+    </aside>
+    </div><!-- /.shell -->
 
     <!-- New page modal ([[page-creation]]) -->
     <div class="modal-overlay" x-show="newPageOpen" x-cloak @click.self="closeNewPageModal()">
@@ -676,567 +1279,6 @@
           </div>
         </template>
       </div>
-    </div>
-
-    <!-- Board and chains share one layout: main content plus, when a task
-         panel is open ([[task-detail-panel]]), a fixed-width side track. The
-         two x-show'd <main>s below are the layout's first flex child; the
-         panel and its narrow-viewport scrim are the second. -->
-    <div class="board-layout" x-show="view === 'board' || view === 'chains'">
-    <div class="board-layout-main">
-    <!-- Tasks view (full-width): the board's columns, with the backlog list
-         folded in beneath them ([[page-routes]]). -->
-    <main class="board-wrap board-view" x-show="view === 'board'">
-      <div class="board-toolbar">
-        <label>
-          Project
-          <select x-model="projectFilter">
-            <option value="__all__">All projects</option>
-            <template x-for="p of projects()" :key="p">
-              <option :value="p" x-text="p"></option>
-            </template>
-          </select>
-        </label>
-        <label>
-          Sort
-          <select x-model="sortMode">
-            <option value="manual">Manual</option>
-            <option value="priority">Priority</option>
-            <option value="title">Title</option>
-          </select>
-        </label>
-        <label>
-          Group
-          <select x-model="groupMode">
-            <option value="none">None</option>
-            <option value="milestone">Milestone</option>
-          </select>
-        </label>
-        <span class="total" x-text="pluralise(visibleCards().length, 'task')"></span>
-        <span class="chip chip--readonly" x-show="!board.writable">read-only</span>
-        <button type="button" class="new-page-btn" x-show="board.writable"
-                @click="openNewTaskModal()">+ New task</button>
-      </div>
-      <p class="board-error" x-show="boardError" x-text="boardError"></p>
-      <template x-if="groupMode === 'none'">
-        <div class="board-columns">
-          <template x-for="status of columns()" :key="status">
-            <section class="board-column">
-              <div class="col-head">
-                <h2 x-text="status"></h2>
-                <span class="count" x-text="cardsFor(status).length"></span>
-              </div>
-              <div class="col-body"
-                   @dragover.prevent="onDragOver($event, status)"
-                   @dragleave="onDragLeave($event)"
-                   @drop.prevent="onDrop($event, status)">
-                <p class="col-empty" x-show="cardsFor(status).length === 0">No tasks</p>
-                <div class="drop-line" x-show="cardsFor(status).length === 0
-                       && dropTarget && dropTarget.status === status"></div>
-                <template x-for="(card, idx) of cardsFor(status)" :key="card.id">
-                  <div>
-                    <div class="drop-line" x-show="dropIndicator(status, card, idx) === 'above'"></div>
-                    <article class="card"
-                             :data-card-id="card.id"
-                             :draggable="board.writable && sortMode === 'manual'"
-                             :class="{ dragging: draggingId === card.id, moving: movingCardId === card.id,
-                                       selected: card.id === currentTaskId }"
-                             @dragstart="onDragStart($event, card)"
-                             @dragend="onDragEnd"
-                             @click="openTask(card.id)">
-                      <div class="card-meta">
-                        <span class="card-id" x-text="card.rawId"></span>
-                        <span class="card-prio" :data-prio="card.priority" x-show="showPrio(card.priority)" x-text="card.priority"></span>
-                      </div>
-                      <div class="card-title" x-text="card.title"></div>
-                      <div class="card-chips">
-                        <span class="chip" x-show="card.project" x-text="card.project"></span>
-                        <span class="chip chip--milestone" x-show="card.milestone" x-text="card.milestone"></span>
-                      </div>
-                      <button type="button" class="card-action" x-show="board.writable"
-                              @click.stop="deferCard(card)">Defer</button>
-                    </article>
-                    <div class="drop-line" x-show="dropIndicator(status, card, idx) === 'below'"></div>
-                  </div>
-                </template>
-              </div>
-            </section>
-          </template>
-        </div>
-      </template>
-
-      <!-- Milestone swimlanes ([[browse-ui-polish]], AC4) — a read-only
-           reorganization of the same cards/columns above: one labelled row
-           per milestone, unassigned cards last. No drag-and-drop here (the
-           column-relative index math dropIndicator/onDragOver rely on
-           doesn't hold once cards are also split by lane); reordering stays
-           the plain board's job. -->
-      <template x-if="groupMode === 'milestone'">
-        <div class="board-swimlanes">
-          <template x-for="lane of boardSwimlanes()" :key="lane.key">
-            <section class="board-swimlane">
-              <h3 class="swimlane-title" x-text="lane.label"></h3>
-              <div class="board-columns board-columns--lane">
-                <template x-for="status of columns()" :key="status">
-                  <section class="board-column">
-                    <div class="col-head">
-                      <h2 x-text="status"></h2>
-                      <span class="count" x-text="cardsForColumn(status, lane.milestone).length"></span>
-                    </div>
-                    <div class="col-body">
-                      <p class="col-empty" x-show="cardsForColumn(status, lane.milestone).length === 0">No tasks</p>
-                      <template x-for="card of cardsForColumn(status, lane.milestone)" :key="card.id">
-                        <article class="card" :class="{ selected: card.id === currentTaskId }"
-                                 @click="openTask(card.id)">
-                          <div class="card-meta">
-                            <span class="card-id" x-text="card.rawId"></span>
-                            <span class="card-prio" :data-prio="card.priority" x-show="showPrio(card.priority)" x-text="card.priority"></span>
-                          </div>
-                          <div class="card-title" x-text="card.title"></div>
-                          <div class="card-chips">
-                            <span class="chip" x-show="card.project" x-text="card.project"></span>
-                          </div>
-                        </article>
-                      </template>
-                    </div>
-                  </section>
-                </template>
-              </div>
-            </section>
-          </template>
-        </div>
-      </template>
-
-      <!-- The backlog ([[deferred-backlog]]), folded in beneath the columns
-           ([[page-routes]]): the same cards, drag handlers and drop
-           indicators the columns use, so dragging between a column and this
-           list is now one drag within one page rather than a status change
-           you had to navigate to make. The board's project filter reaches it
-           too, via cardsFor() -> visibleCards(). Collapsed by default so the
-           columns keep the height; the disclosure persists in localStorage
-           like the sort and group lenses. -->
-      <section class="backlog-section">
-        <div class="backlog-head">
-          <button type="button" class="backlog-toggle" @click="backlogOpen = !backlogOpen"
-                  :aria-expanded="backlogOpen ? 'true' : 'false'">
-            <span class="twisty" x-text="backlogOpen ? '▾' : '▸'"></span>
-            <h2>Backlog</h2>
-            <span class="count" x-text="cardsFor(board.backlogStatus).length"></span>
-          </button>
-          <button type="button" class="new-page-btn" x-show="board.writable && backlogOpen"
-                  @click="openNewTaskModal({ fromBacklog: true })">+ New item</button>
-        </div>
-        <div class="backlog-list col-body" x-show="backlogOpen"
-             @dragover.prevent="onDragOver($event, board.backlogStatus)"
-             @dragleave="onDragLeave($event)"
-             @drop.prevent="onDrop($event, board.backlogStatus)">
-          <p class="col-empty" x-show="cardsFor(board.backlogStatus).length === 0">Nothing deferred</p>
-          <div class="drop-line" x-show="cardsFor(board.backlogStatus).length === 0
-                 && dropTarget && dropTarget.status === board.backlogStatus"></div>
-          <template x-for="(card, idx) of cardsFor(board.backlogStatus)" :key="card.id">
-            <div>
-              <div class="drop-line" x-show="dropIndicator(board.backlogStatus, card, idx) === 'above'"></div>
-              <article class="card"
-                       :data-card-id="card.id"
-                       :draggable="board.writable && sortMode === 'manual'"
-                       :class="{ dragging: draggingId === card.id, moving: movingCardId === card.id,
-                                 selected: card.id === currentTaskId }"
-                       @dragstart="onDragStart($event, card)"
-                       @dragend="onDragEnd"
-                       @click="openTask(card.id)">
-                <div class="card-meta">
-                  <span class="card-id" x-text="card.rawId"></span>
-                  <span class="card-prio" :data-prio="card.priority" x-show="showPrio(card.priority)" x-text="card.priority"></span>
-                </div>
-                <div class="card-title" x-text="card.title"></div>
-                <div class="card-chips">
-                  <span class="chip" x-show="card.project" x-text="card.project"></span>
-                  <span class="chip chip--milestone" x-show="card.milestone" x-text="card.milestone"></span>
-                </div>
-                <button type="button" class="card-action" x-show="board.writable"
-                        @click.stop="promoteCard(card)">Promote →</button>
-              </article>
-              <div class="drop-line" x-show="dropIndicator(board.backlogStatus, card, idx) === 'below'"></div>
-            </div>
-          </template>
-        </div>
-      </section>
-    </main>
-
-    <!-- Dependency chains view ([[dependency-chains]]) — read-only, computed
-         client-side from the same board.json cards by chains.js; no fetch,
-         no new server route, identical on a --export snapshot. -->
-    <main class="board-wrap chains-wrap" x-show="view === 'chains'">
-      <div class="board-toolbar">
-        <span class="total"
-              x-text="chainsData().chains.length + ' chain' + (chainsData().chains.length === 1 ? '' : 's')
-                + ' · ' + chainsData().unchained.length + ' unchained'"></span>
-      </div>
-
-      <p class="chains-empty" x-show="!hasAnyDependency()">
-        No task on the board carries a dependency yet. Set one with
-        <code>tome task edit &lt;id&gt; --dep &lt;id&gt;</code>.
-      </p>
-
-      <template x-if="hasAnyDependency()">
-        <div>
-          <template x-for="(chain, i) of chainsData().chains" :key="chain.id">
-            <section class="chain-group">
-              <h2 class="chain-title"
-                  x-text="'Chain ' + (i + 1) + ' — ' + chain.size + (chain.size === 1 ? ' task' : ' tasks')"></h2>
-              <div class="chain-rows">
-                <template x-for="row of chain.rows" :key="row.key">
-                  <div class="chain-row"
-                       :class="{ 'chain-row--backref': row.backref, 'chain-row--offboard': row.offboard,
-                                 'chain-row--current': row.id === currentTaskId }"
-                       @click="!row.offboard && openTask(row.id)">
-                    <span class="chain-prefix" x-text="row.prefix"></span>
-                    <span class="chain-backref-mark" x-show="row.backref" title="Shown in full above">&uarr;</span>
-                    <span class="chain-id" x-text="row.rawId"></span>
-                    <span class="chain-row-title"
-                          x-text="row.offboard ? '(not on this board)' : row.title"></span>
-                    <span class="card-prio" :data-prio="row.card && row.card.priority"
-                          x-show="row.card && showPrio(row.card.priority)" x-text="row.card && row.card.priority"></span>
-                    <span class="chip" x-show="row.card && row.card.status" x-text="row.card && row.card.status"></span>
-                    <span class="chain-deps" x-show="row.deps.length"
-                          x-text="'needs ' + row.deps.map(depLabel).join(', ')"></span>
-                  </div>
-                </template>
-              </div>
-            </section>
-          </template>
-
-          <section class="chain-group chain-unchained" x-show="chainsData().unchained.length">
-            <button type="button" class="chain-unchained-toggle"
-                    @click="chainsUnchainedOpen = !chainsUnchainedOpen">
-              <span class="twisty" x-text="chainsUnchainedOpen ? '▾' : '▸'"></span>
-              <span x-text="chainsData().unchained.length + ' unchained task'
-                + (chainsData().unchained.length === 1 ? '' : 's')"></span>
-            </button>
-            <div class="chain-rows" x-show="chainsUnchainedOpen">
-              <template x-for="card of chainsData().unchained" :key="card.id">
-                <div class="chain-row" :class="{ 'chain-row--current': card.id === currentTaskId }"
-                     @click="openTask(card.id)">
-                  <span class="chain-id" x-text="card.rawId"></span>
-                  <span class="chain-row-title" x-text="card.title"></span>
-                </div>
-              </template>
-            </div>
-          </section>
-        </div>
-      </template>
-    </main>
-    </div>
-
-    <!-- Task-detail panel ([[task-detail-panel]]) — a layer over whichever
-         base view (board/chains) is active above, rendered entirely
-         from the clicked card's board.json entry; no fetch on open, identical
-         on a frozen static export. The scrim is only visible (via CSS) below
-         the narrow-viewport breakpoint, where the panel becomes a full-width
-         overlay instead of a side track.
-
-         Its fields are editable on a live serve ([[task-editing]]): there is
-         no edit mode, each field carries its own affordance, and everything
-         below is gated on `pane.editable` — false on a static export and
-         false for the on-disk pane. That pane is the whole point of rendering
-         this body inside `x-for="pane of taskPanes()"` rather than once: on a
-         409 the very same markup is instantiated a second time against the
-         card the server refused the write over, so "what you'd overwrite"
-         costs one extra data source instead of a second read-only view. -->
-    <div class="task-panel-scrim" x-show="currentTaskId" @click="closeTaskPanel()"></div>
-    <aside class="task-panel" :class="{ 'task-panel--conflict': taskConflict }"
-           x-show="currentTaskId">
-      <div class="task-panel-head">
-        <span class="card-id" x-show="currentTask()" x-text="currentTask() && currentTask().rawId"></span>
-        <span class="card-prio" :data-prio="currentTask() && currentTask().priority"
-              x-show="currentTask() && showPrio(currentTask().priority)" x-text="currentTask() && currentTask().priority"></span>
-        <span class="card-completed" x-show="currentTask() && currentTask().completed">Completed</span>
-        <button type="button" class="task-panel-close" @click="closeTaskPanel()" aria-label="Close task panel">&times;</button>
-      </div>
-      <template x-if="taskErrorMessage()">
-        <p class="error" x-text="taskErrorMessage()"></p>
-      </template>
-
-      <p class="task-banner" :class="'task-banner--' + taskBannerKind"
-         x-show="taskBanner && currentTask()" x-text="taskBanner"></p>
-
-      <!-- Outside the pane loop: one datalist, or the two panes would render
-           duplicate ids for it. -->
-      <datalist id="task-label-suggestions">
-        <template x-for="l of labelSuggestions()" :key="l">
-          <option :value="l"></option>
-        </template>
-      </datalist>
-
-      <div class="task-panes" x-show="!taskErrorMessage() && currentTask()">
-        <template x-for="pane of taskPanes()" :key="pane.key">
-          <article class="task-detail" :class="{ 'task-detail--disk': pane.disk }"
-                   x-data="{ get editable() { return !pane.disk && taskWritable(); } }">
-
-            <div class="task-pane-head" x-show="pane.disk">
-              <h2>On disk</h2>
-              <span class="task-pane-when" x-text="taskConflictAgo()"></span>
-              <button type="button" class="task-pane-dismiss" @click="dismissTaskConflict()">Dismiss</button>
-            </div>
-
-            <div class="fm-card">
-              <div class="fm-head">
-                <!-- Title: click to edit in place; a plain input, since a
-                     title is one line and never markdown. -->
-                <template x-if="!taskEditing('title') || pane.disk">
-                  <h1 class="task-title" :class="{ 'task-title--editable': editable }"
-                      @click="editable && beginTaskEdit('title', pane.card.title)"
-                      x-text="pane.card.title"></h1>
-                </template>
-                <template x-if="taskEditing('title') && !pane.disk">
-                  <div class="task-field-edit">
-                    <input type="text" x-model="taskEdit.value"
-                           @keydown.enter="saveTaskEdit()" @keydown.escape="cancelTaskEdit()" />
-                    <div class="task-field-actions">
-                      <button type="button" class="editor-btn-save" :disabled="!!taskSavingField"
-                              @click="saveTaskEdit()">Save</button>
-                      <button type="button" @click="cancelTaskEdit()">Cancel</button>
-                    </div>
-                  </div>
-                </template>
-                <div class="task-pane-take" x-show="pane.disk">
-                  <button type="button" @click="copyText(pane.card.title)" title="Copy">&#9099;</button>
-                  <button type="button" @click="takeDiskText('title', pane.card.title)"
-                          title="Take the disk version">&larr;</button>
-                </div>
-              </div>
-              <dl>
-                <div class="fm-row" x-show="pane.card.status || editable">
-                  <dt>status</dt>
-                  <dd>
-                    <select x-show="editable" class="task-select"
-                            :value="pane.card.status" @change="setTaskStatus($event.target.value)">
-                      <template x-for="s of board.statuses" :key="s">
-                        <option :value="s" :selected="s === pane.card.status" x-text="s"></option>
-                      </template>
-                    </select>
-                    <span x-show="!editable" x-text="pane.card.status"></span>
-                  </dd>
-                </div>
-                <div class="fm-row" x-show="pane.card.priority || editable">
-                  <dt>priority</dt>
-                  <dd>
-                    <select x-show="editable" class="task-select"
-                            :value="pane.card.priority" @change="setTaskPriority($event.target.value)">
-                      <template x-for="p of ['high', 'medium', 'low']" :key="p">
-                        <option :value="p" :selected="p === pane.card.priority" x-text="p"></option>
-                      </template>
-                    </select>
-                    <span x-show="!editable" x-text="pane.card.priority"></span>
-                  </dd>
-                </div>
-                <!-- project is derived from the project: label, so it's set by
-                     editing labels below rather than by a field of its own. -->
-                <div class="fm-row" x-show="pane.card.project">
-                  <dt>project</dt><dd x-text="pane.card.project"></dd>
-                </div>
-                <div class="fm-row" x-show="pane.card.milestone || editable">
-                  <dt>milestone</dt>
-                  <dd>
-                    <select x-show="editable" class="task-select"
-                            :value="pane.card.milestone || ''" @change="setTaskMilestone($event.target.value)">
-                      <option value="">(none)</option>
-                      <template x-for="m of milestoneOptions()" :key="m">
-                        <option :value="m" :selected="m === pane.card.milestone" x-text="m"></option>
-                      </template>
-                    </select>
-                    <span x-show="!editable" x-text="pane.card.milestone"></span>
-                  </dd>
-                </div>
-                <div class="fm-row" x-show="pane.card.agent">
-                  <dt>agent</dt><dd x-text="pane.card.agent"></dd>
-                </div>
-                <div class="fm-row" x-show="pane.card.assignee.length || editable">
-                  <dt>assignee</dt>
-                  <dd>
-                    <!-- Set-and-replace, not chips: backlog.md has no flag
-                         that clears an assignee, so a remove affordance would
-                         promise something it can't deliver. -->
-                    <input x-show="editable" type="text" class="task-inline-input"
-                           :value="pane.card.assignee.join(', ')"
-                           @change="setTaskAssignee($event.target.value)"
-                           @keydown.enter="$event.target.blur()" />
-                    <span x-show="!editable" x-text="pane.card.assignee.join(', ')"></span>
-                  </dd>
-                </div>
-                <div class="fm-row" x-show="pane.card.labels.length || editable">
-                  <dt>labels</dt>
-                  <dd class="task-chips">
-                    <template x-for="label of pane.card.labels" :key="label">
-                      <span class="chip">
-                        <span x-text="label"></span>
-                        <button type="button" class="chip-remove" x-show="editable"
-                                @click="removeTaskLabel(label)" aria-label="Remove label">&times;</button>
-                      </span>
-                    </template>
-                    <input x-show="editable" type="text" class="task-inline-input task-label-add"
-                           list="task-label-suggestions" placeholder="+ label"
-                           x-model="taskLabelDraft"
-                           @change="addTaskLabel(taskLabelDraft)"
-                           @keydown.enter="addTaskLabel(taskLabelDraft)" />
-                  </dd>
-                </div>
-                <!-- Read-only by design: backlog.md owns the dates, drag owns
-                     the ordinal, and `references` is the link a plan is found
-                     by ([[task-editing]]). -->
-                <div class="fm-row" x-show="pane.card.created">
-                  <dt>created</dt><dd x-text="pane.card.created"></dd>
-                </div>
-                <div class="fm-row" x-show="pane.card.updated">
-                  <dt>updated</dt><dd x-text="pane.card.updated"></dd>
-                </div>
-              </dl>
-              <p class="task-wiki-link" x-show="!pane.disk && taskWikiPage(pane.card)">
-                <a :href="pageUrl(taskWikiPage(pane.card)?.slug)"
-                   @click.prevent="loadPage(taskWikiPage(pane.card).slug)">
-                  View wiki page: <span x-text="taskWikiPage(pane.card)?.title"></span>
-                </a>
-              </p>
-            </div>
-
-            <section class="task-block" x-show="pane.card.description || editable">
-              <h2>
-                Description
-                <span class="task-block-actions">
-                  <button type="button" x-show="editable && !taskEditing('description')"
-                          @click="beginTaskEdit('description', pane.card.description)"
-                          title="Edit">&#9998;</button>
-                  <template x-if="pane.disk">
-                    <span>
-                      <button type="button" @click="copyText(pane.card.description)" title="Copy">&#9099;</button>
-                      <button type="button" @click="takeDiskText('description', pane.card.description)"
-                              title="Take the disk version">&larr;</button>
-                    </span>
-                  </template>
-                </span>
-              </h2>
-              <template x-if="taskEditing('description') && !pane.disk">
-                <div class="task-field-edit">
-                  <textarea rows="5" x-model="taskEdit.value" @keydown.escape="cancelTaskEdit()"></textarea>
-                  <div class="task-field-actions">
-                    <button type="button" class="editor-btn-save" :disabled="!!taskSavingField"
-                            @click="saveTaskEdit()">Save</button>
-                    <button type="button" @click="cancelTaskEdit()">Cancel</button>
-                  </div>
-                </div>
-              </template>
-              <div class="markdown task-description" x-show="!taskEditing('description') || pane.disk"
-                   x-html="renderTaskMarkdown(pane.card.description)" @click="onContentClick($event)"></div>
-            </section>
-
-            <section class="task-acs" x-show="pane.card.acceptanceCriteria.length || editable">
-              <h2>
-                Acceptance Criteria
-                <span class="task-block-actions" x-show="pane.disk">
-                  <button type="button" title="Copy"
-                          @click="copyText(pane.card.acceptanceCriteria
-                            .map((a, i) => `- [${a.checked ? 'x' : ' '}] #${i + 1} ${a.text}`).join('\n'))">&#9099;</button>
-                </span>
-              </h2>
-              <ul>
-                <template x-for="(ac, i) of pane.card.acceptanceCriteria" :key="i">
-                  <li class="task-ac" :class="{ 'task-ac--checked': ac.checked }">
-                    <input type="checkbox" :disabled="!editable" :checked="ac.checked"
-                           @change="toggleAc(i)" />
-                    <template x-if="taskEditing('ac', i) && !pane.disk">
-                      <div class="task-field-edit">
-                        <input type="text" x-model="taskEdit.value"
-                               @keydown.enter="saveTaskEdit()" @keydown.escape="cancelTaskEdit()" />
-                        <div class="task-field-actions">
-                          <button type="button" class="editor-btn-save" :disabled="!!taskSavingField"
-                                  @click="saveTaskEdit()">Save</button>
-                          <button type="button" @click="cancelTaskEdit()">Cancel</button>
-                        </div>
-                      </div>
-                    </template>
-                    <template x-if="!taskEditing('ac', i) || pane.disk">
-                      <span class="task-ac-text" x-text="ac.text"></span>
-                    </template>
-                    <span class="task-ac-actions" x-show="editable && !taskEditing('ac', i)">
-                      <button type="button" @click="beginTaskEdit('ac', ac.text, i)" title="Edit">&#9998;</button>
-                      <button type="button" @click="removeAc(i)" title="Remove">&times;</button>
-                    </span>
-                  </li>
-                </template>
-              </ul>
-              <input x-show="editable" type="text" class="task-inline-input task-ac-add"
-                     placeholder="+ add criterion" x-model="taskAcDraft"
-                     @keydown.enter="addAc(taskAcDraft)" />
-            </section>
-
-            <section class="task-deps" x-show="!pane.disk && pane.card.dependencies.length">
-              <h2>Dependencies</h2>
-              <ul>
-                <template x-for="depId of pane.card.dependencies" :key="depId">
-                  <li>
-                    <a :class="{ 'task-dep--offboard': !dependencyCard(depId) }"
-                       :href="dependencyCard(depId) ? taskUrl(depId) : null"
-                       @click.prevent="dependencyCard(depId) && openTask(depId)"
-                       x-text="dependencyCard(depId)
-                         ? dependencyCard(depId).rawId + ' — ' + dependencyCard(depId).title
-                         : depId.toUpperCase() + ' (not on this board)'"></a>
-                  </li>
-                </template>
-              </ul>
-            </section>
-
-            <section class="task-chain" x-show="!pane.disk && currentTaskChain()">
-              <h2>
-                Dependency chain
-                <a class="chain-context-link" href="/chains" @click.prevent="showChains()">View full chains &rarr;</a>
-              </h2>
-              <div class="chain-rows chain-rows--mini">
-                <template x-for="row of (currentTaskChain() ? currentTaskChain().rows : [])" :key="row.key">
-                  <div class="chain-row"
-                       :class="{ 'chain-row--backref': row.backref, 'chain-row--offboard': row.offboard,
-                                 'chain-row--current': row.id === currentTaskId }"
-                       @click="!row.offboard && row.id !== currentTaskId && openTask(row.id)">
-                    <span class="chain-prefix" x-text="row.prefix"></span>
-                    <span class="chain-backref-mark" x-show="row.backref" title="Shown in full above">&uarr;</span>
-                    <span class="chain-id" x-text="row.rawId"></span>
-                    <span class="chain-row-title" x-text="row.offboard ? '(not on this board)' : row.title"></span>
-                  </div>
-                </template>
-              </div>
-            </section>
-
-            <section class="task-block task-notes" x-show="pane.card.notes || editable">
-              <h2>
-                Implementation Notes
-                <span class="task-block-actions">
-                  <button type="button" x-show="editable && !taskEditing('notes')"
-                          @click="beginTaskEdit('notes', pane.card.notes)" title="Edit">&#9998;</button>
-                  <template x-if="pane.disk">
-                    <span>
-                      <button type="button" @click="copyText(pane.card.notes)" title="Copy">&#9099;</button>
-                      <button type="button" @click="takeDiskText('notes', pane.card.notes)"
-                              title="Take the disk version">&larr;</button>
-                    </span>
-                  </template>
-                </span>
-              </h2>
-              <template x-if="taskEditing('notes') && !pane.disk">
-                <div class="task-field-edit">
-                  <textarea rows="8" x-model="taskEdit.value" @keydown.escape="cancelTaskEdit()"></textarea>
-                  <div class="task-field-actions">
-                    <button type="button" class="editor-btn-save" :disabled="!!taskSavingField"
-                            @click="saveTaskEdit()">Save</button>
-                    <button type="button" @click="cancelTaskEdit()">Cancel</button>
-                  </div>
-                </div>
-              </template>
-              <div class="markdown" x-show="!taskEditing('notes') || pane.disk"
-                   x-html="renderTaskMarkdown(pane.card.notes)" @click="onContentClick($event)"></div>
-            </section>
-          </article>
-        </template>
-      </div>
-    </aside>
     </div>
   </body>
 </html>
