@@ -13,14 +13,16 @@
   </head>
   <body x-data="tomeApp" x-cloak>
     <header class="topbar">
-      <a class="brand" href="?view=home" @click.prevent="showHome()">tome</a>
+      <a class="brand" href="/" @click.prevent="showHome()">tome</a>
+      <!-- Four pinned destinations, each at its own path ([[page-routes]]).
+           Chains is deliberately not pinned: it's a lens reached from the
+           board and from a task's dependency list, not a place you navigate
+           to cold. -->
       <nav class="views">
-        <a :class="{ active: view === 'home' }" href="?view=home" @click.prevent="showHome()">Home</a>
+        <a :class="{ active: view === 'home' }" href="/" @click.prevent="showHome()">Home</a>
         <a :class="{ active: view === 'page' }" :href="pageHref()" @click.prevent="showPage()">Page</a>
-        <a :class="{ active: view === 'board' }" href="?view=board" @click.prevent="showBoard()">Board</a>
-        <a :class="{ active: view === 'backlog' }" href="?view=backlog" @click.prevent="showBacklog()">Backlog</a>
-        <a :class="{ active: view === 'chains' }" href="?view=chains" @click.prevent="showChains()">Chains</a>
-        <a :class="{ active: view === 'log' }" href="?view=log" @click.prevent="showLog()">Log</a>
+        <a :class="{ active: view === 'board' }" href="/tasks" @click.prevent="showBoard()">Tasks</a>
+        <a :class="{ active: view === 'log' }" href="/log" @click.prevent="showLog()">Log</a>
       </nav>
 
       <!-- Search ([[browse-ui-polish]], AC1) — a live filter over pages/tasks
@@ -88,7 +90,7 @@
                         <li>
                           <a class="tree-link"
                              :class="{ current: pg.slug === currentSlug, cursor: pg.slug === sidebarCursor }"
-                             :href="'?page=' + encodeURIComponent(pg.slug)"
+                             :href="pageUrl(pg.slug)"
                              :title="pg.title"
                              @click.prevent="loadPage(pg.slug)"
                              x-text="pg.title"></a>
@@ -117,7 +119,7 @@
               <p class="home-empty" x-show="!missingPageSuggestions().length">No close matches found.</p>
               <ul class="backlinks-list" x-show="missingPageSuggestions().length">
                 <template x-for="p of missingPageSuggestions()" :key="p.slug">
-                  <li><a class="backlinks-link" :href="'?page=' + encodeURIComponent(p.slug)"
+                  <li><a class="backlinks-link" :href="pageUrl(p.slug)"
                          @click.prevent="loadPage(p.slug)" x-text="p.title || p.slug"></a></li>
                 </template>
               </ul>
@@ -125,7 +127,7 @@
 
             <p class="missing-page-back" x-show="missingPageSource()">
               &larr; Back to
-              <a class="backlinks-link" :href="'?page=' + encodeURIComponent(missingPageFrom)"
+              <a class="backlinks-link" :href="pageUrl(missingPageFrom)"
                  @click.prevent="loadPage(missingPageFrom)"
                  x-text="missingPageSource() ? (missingPageSource().title || missingPageFrom) : ''"></a>
             </p>
@@ -253,7 +255,7 @@
                 <ul class="linked-tasks-list">
                   <template x-for="t of linkedTasks()" :key="t.id">
                     <li>
-                      <a class="linked-task-link" :href="'?view=board&amp;task=' + encodeURIComponent(t.id)"
+                      <a class="linked-task-link" :href="taskUrl(t.id)"
                          @click.prevent="openTaskFromAnywhere(t.id)">
                         <span class="card-id" x-text="t.rawId"></span>
                         <span x-text="t.title"></span>
@@ -270,7 +272,7 @@
                 <h2 class="backlinks-title">Linked from</h2>
                 <ul class="backlinks-list">
                   <template x-for="b of backlinks()" :key="b.slug">
-                    <li><a class="backlinks-link" :href="'?page=' + encodeURIComponent(b.slug)"
+                    <li><a class="backlinks-link" :href="pageUrl(b.slug)"
                            @click.prevent="loadPage(b.slug)" x-text="b.title || b.slug"></a></li>
                   </template>
                 </ul>
@@ -312,7 +314,7 @@
         <ul class="home-list">
           <template x-for="p of homeRecentPages()" :key="p.slug">
             <li class="home-list-item">
-              <a :href="'?page=' + encodeURIComponent(p.slug)" @click.prevent="loadPage(p.slug)" x-text="p.title"></a>
+              <a :href="pageUrl(p.slug)" @click.prevent="loadPage(p.slug)" x-text="p.title"></a>
               <span class="home-list-meta" x-text="p.project"></span>
               <span class="home-list-meta" x-text="p.updated"></span>
             </li>
@@ -325,7 +327,7 @@
         <ul class="home-list">
           <template x-for="p of homeProjects()" :key="p.slug">
             <li class="home-list-item">
-              <a :href="'?page=' + encodeURIComponent(p.slug)" @click.prevent="loadPage(p.slug)" x-text="p.title"></a>
+              <a :href="pageUrl(p.slug)" @click.prevent="loadPage(p.slug)" x-text="p.title"></a>
               <span class="home-list-meta" x-text="p.count + (p.count === 1 ? ' page' : ' pages')"></span>
             </li>
           </template>
@@ -338,7 +340,7 @@
         <ul class="home-list">
           <template x-for="p of homeInFlightPlans()" :key="p.slug">
             <li class="home-list-item">
-              <a :href="'?page=' + encodeURIComponent(p.slug)" @click.prevent="loadPage(p.slug)" x-text="p.title"></a>
+              <a :href="pageUrl(p.slug)" @click.prevent="loadPage(p.slug)" x-text="p.title"></a>
               <span class="chip" x-text="p.status"></span>
               <span class="chip" x-show="p.task" x-text="p.task && p.task.status"></span>
             </li>
@@ -676,13 +678,14 @@
       </div>
     </div>
 
-    <!-- Board/backlog/chains share one layout: main content plus, when a task
+    <!-- Board and chains share one layout: main content plus, when a task
          panel is open ([[task-detail-panel]]), a fixed-width side track. The
-         three x-show'd <main>s below are the layout's first flex child; the
+         two x-show'd <main>s below are the layout's first flex child; the
          panel and its narrow-viewport scrim are the second. -->
-    <div class="board-layout" x-show="view === 'board' || view === 'backlog' || view === 'chains'">
+    <div class="board-layout" x-show="view === 'board' || view === 'chains'">
     <div class="board-layout-main">
-    <!-- Board view (full-width) -->
+    <!-- Tasks view (full-width): the board's columns, with the backlog list
+         folded in beneath them ([[page-routes]]). -->
     <main class="board-wrap board-view" x-show="view === 'board'">
       <div class="board-toolbar">
         <label>
@@ -803,58 +806,61 @@
           </template>
         </div>
       </template>
-    </main>
 
-    <!-- Backlog view (full-width, single sortable list) — [[deferred-backlog]] -->
-    <main class="board-wrap" x-show="view === 'backlog'">
-      <div class="board-toolbar">
-        <label>
-          Sort
-          <select x-model="sortMode">
-            <option value="manual">Manual</option>
-            <option value="priority">Priority</option>
-            <option value="title">Title</option>
-          </select>
-        </label>
-        <span class="total" x-text="pluralise(cardsFor(board.backlogStatus).length, 'task')"></span>
-        <span class="chip chip--readonly" x-show="!board.writable">read-only</span>
-        <button type="button" class="new-page-btn" x-show="board.writable"
-                @click="openNewTaskModal({ fromBacklog: true })">+ New item</button>
-      </div>
-      <p class="board-error" x-show="boardError" x-text="boardError"></p>
-      <div class="backlog-list col-body"
-           @dragover.prevent="onDragOver($event, board.backlogStatus)"
-           @dragleave="onDragLeave($event)"
-           @drop.prevent="onDrop($event, board.backlogStatus)">
-        <div class="drop-line" x-show="cardsFor(board.backlogStatus).length === 0
-               && dropTarget && dropTarget.status === board.backlogStatus"></div>
-        <template x-for="(card, idx) of cardsFor(board.backlogStatus)" :key="card.id">
-          <div>
-            <div class="drop-line" x-show="dropIndicator(board.backlogStatus, card, idx) === 'above'"></div>
-            <article class="card"
-                     :data-card-id="card.id"
-                     :draggable="board.writable && sortMode === 'manual'"
-                     :class="{ dragging: draggingId === card.id, moving: movingCardId === card.id,
-                               selected: card.id === currentTaskId }"
-                     @dragstart="onDragStart($event, card)"
-                     @dragend="onDragEnd"
-                     @click="openTask(card.id)">
-              <div class="card-meta">
-                <span class="card-id" x-text="card.rawId"></span>
-                <span class="card-prio" :data-prio="card.priority" x-show="showPrio(card.priority)" x-text="card.priority"></span>
-              </div>
-              <div class="card-title" x-text="card.title"></div>
-              <div class="card-chips">
-                <span class="chip" x-show="card.project" x-text="card.project"></span>
-                <span class="chip chip--milestone" x-show="card.milestone" x-text="card.milestone"></span>
-              </div>
-              <button type="button" class="card-action" x-show="board.writable"
-                      @click.stop="promoteCard(card)">Promote →</button>
-            </article>
-            <div class="drop-line" x-show="dropIndicator(board.backlogStatus, card, idx) === 'below'"></div>
-          </div>
-        </template>
-      </div>
+      <!-- The backlog ([[deferred-backlog]]), folded in beneath the columns
+           ([[page-routes]]): the same cards, drag handlers and drop
+           indicators the columns use, so dragging between a column and this
+           list is now one drag within one page rather than a status change
+           you had to navigate to make. The board's project filter reaches it
+           too, via cardsFor() -> visibleCards(). Collapsed by default so the
+           columns keep the height; the disclosure persists in localStorage
+           like the sort and group lenses. -->
+      <section class="backlog-section">
+        <div class="backlog-head">
+          <button type="button" class="backlog-toggle" @click="backlogOpen = !backlogOpen"
+                  :aria-expanded="backlogOpen ? 'true' : 'false'">
+            <span class="twisty" x-text="backlogOpen ? '▾' : '▸'"></span>
+            <h2>Backlog</h2>
+            <span class="count" x-text="cardsFor(board.backlogStatus).length"></span>
+          </button>
+          <button type="button" class="new-page-btn" x-show="board.writable && backlogOpen"
+                  @click="openNewTaskModal({ fromBacklog: true })">+ New item</button>
+        </div>
+        <div class="backlog-list col-body" x-show="backlogOpen"
+             @dragover.prevent="onDragOver($event, board.backlogStatus)"
+             @dragleave="onDragLeave($event)"
+             @drop.prevent="onDrop($event, board.backlogStatus)">
+          <p class="col-empty" x-show="cardsFor(board.backlogStatus).length === 0">Nothing deferred</p>
+          <div class="drop-line" x-show="cardsFor(board.backlogStatus).length === 0
+                 && dropTarget && dropTarget.status === board.backlogStatus"></div>
+          <template x-for="(card, idx) of cardsFor(board.backlogStatus)" :key="card.id">
+            <div>
+              <div class="drop-line" x-show="dropIndicator(board.backlogStatus, card, idx) === 'above'"></div>
+              <article class="card"
+                       :data-card-id="card.id"
+                       :draggable="board.writable && sortMode === 'manual'"
+                       :class="{ dragging: draggingId === card.id, moving: movingCardId === card.id,
+                                 selected: card.id === currentTaskId }"
+                       @dragstart="onDragStart($event, card)"
+                       @dragend="onDragEnd"
+                       @click="openTask(card.id)">
+                <div class="card-meta">
+                  <span class="card-id" x-text="card.rawId"></span>
+                  <span class="card-prio" :data-prio="card.priority" x-show="showPrio(card.priority)" x-text="card.priority"></span>
+                </div>
+                <div class="card-title" x-text="card.title"></div>
+                <div class="card-chips">
+                  <span class="chip" x-show="card.project" x-text="card.project"></span>
+                  <span class="chip chip--milestone" x-show="card.milestone" x-text="card.milestone"></span>
+                </div>
+                <button type="button" class="card-action" x-show="board.writable"
+                        @click.stop="promoteCard(card)">Promote →</button>
+              </article>
+              <div class="drop-line" x-show="dropIndicator(board.backlogStatus, card, idx) === 'below'"></div>
+            </div>
+          </template>
+        </div>
+      </section>
     </main>
 
     <!-- Dependency chains view ([[dependency-chains]]) — read-only, computed
@@ -923,7 +929,7 @@
     </div>
 
     <!-- Task-detail panel ([[task-detail-panel]]) — a layer over whichever
-         base view (board/backlog/chains) is active above, rendered entirely
+         base view (board/chains) is active above, rendered entirely
          from the clicked card's board.json entry; no fetch on open, identical
          on a frozen static export. The scrim is only visible (via CSS) below
          the narrow-viewport breakpoint, where the panel becomes a full-width
@@ -1086,7 +1092,7 @@
                 </div>
               </dl>
               <p class="task-wiki-link" x-show="!pane.disk && taskWikiPage(pane.card)">
-                <a :href="'?page=' + encodeURIComponent(taskWikiPage(pane.card)?.slug)"
+                <a :href="pageUrl(taskWikiPage(pane.card)?.slug)"
                    @click.prevent="loadPage(taskWikiPage(pane.card).slug)">
                   View wiki page: <span x-text="taskWikiPage(pane.card)?.title"></span>
                 </a>
@@ -1169,7 +1175,7 @@
                 <template x-for="depId of pane.card.dependencies" :key="depId">
                   <li>
                     <a :class="{ 'task-dep--offboard': !dependencyCard(depId) }"
-                       :href="dependencyCard(depId) ? ('?view=' + view + '&task=' + encodeURIComponent(depId)) : null"
+                       :href="dependencyCard(depId) ? taskUrl(depId) : null"
                        @click.prevent="dependencyCard(depId) && openTask(depId)"
                        x-text="dependencyCard(depId)
                          ? dependencyCard(depId).rawId + ' — ' + dependencyCard(depId).title
@@ -1182,7 +1188,7 @@
             <section class="task-chain" x-show="!pane.disk && currentTaskChain()">
               <h2>
                 Dependency chain
-                <a class="chain-context-link" href="?view=chains" @click.prevent="showChains()">View full chains &rarr;</a>
+                <a class="chain-context-link" href="/chains" @click.prevent="showChains()">View full chains &rarr;</a>
               </h2>
               <div class="chain-rows chain-rows--mini">
                 <template x-for="row of (currentTaskChain() ? currentTaskChain().rows : [])" :key="row.key">

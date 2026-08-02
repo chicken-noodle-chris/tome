@@ -985,7 +985,7 @@ def rename_page(vault_root, conventions, rel, new_slug, base_hash):
 
     slug = target.stem  # the file's stem is its slug (find_page keys on it)
     if new_slug == slug:
-        return 200, {"slug": slug, "url": f"?page={slug}", "hash": current_hash}
+        return 200, {"slug": slug, "url": f"/page/{slug}", "hash": current_hash}
 
     def _err_sig(findings):
         return {(f.code, f.path, f.message) for f in findings
@@ -1021,7 +1021,7 @@ def rename_page(vault_root, conventions, rel, new_slug, base_hash):
     if push_conflict is not None:
         return push_conflict
 
-    return 200, {"slug": new_slug, "url": f"?page={new_slug}",
+    return 200, {"slug": new_slug, "url": f"/page/{new_slug}",
                  "hash": hashlib.sha256(result.new_path.read_bytes()).hexdigest()}
 
 
@@ -1137,7 +1137,7 @@ def create_page(vault_root, conventions, type_, project, slug, title, desc, link
     if push_conflict is not None:
         return push_conflict
 
-    return 200, {"slug": result.slug, "url": f"?page={result.slug}"}
+    return 200, {"slug": result.slug, "url": f"/page/{result.slug}"}
 
 
 # --------------------------------------------------------------------------- #
@@ -1284,7 +1284,17 @@ class TomeHandler(BaseHTTPRequestHandler):
                 return self._send_raw(path[len("/raw/"):])
             if path.startswith("/app/"):
                 return self._send_frontend(path[len("/app/"):])
-            self._send_error(404, "not found")
+            if path.startswith("/api/"):
+                # An unknown /api/ route is a bug, not a deep link — it must
+                # not fall through to the SPA below and answer JSON with HTML.
+                return self._send_error(404, "not found")
+            # Anything else is an app route ([[page-routes]]): /tasks, /log,
+            # /chains, /page/<slug>. The client router derives the view from
+            # the path, so a deep link typed into the address bar or reloaded
+            # mid-session boots the app rather than erroring. The prefix list
+            # above stays the guard — a genuinely missing asset under /app/ or
+            # /raw/ still 404s, and can't be swallowed by this fallback.
+            self._send_frontend("index.html")
         except BrokenPipeError:
             pass  # client navigated away mid-response — nothing to report
 
@@ -1558,7 +1568,28 @@ def export_static(vault_root, conventions, out_dir):
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(src.read_bytes())
 
+    _write_route_snapshots(out_dir, [page["slug"] for page in index["pages"]])
     return out_dir
+
+
+def _write_route_snapshots(out_dir, slugs):
+    """`tome serve`'s index.html fallback has no equivalent on a static host,
+    so every app route ([[page-routes]]) gets a real file: a static host
+    resolves `/tasks` to `tasks/index.html`, and `/page/<slug>` to
+    `page/<slug>/index.html`.
+
+    They're byte-identical copies of one small file. The alternative — a
+    host-specific `404.html` rewrite — buys nothing and only works on some
+    hosts. `/` is already written by the caller."""
+    index_html = (FRONTEND_DIR / "index.html").read_bytes()
+    # A slug is one kebab-case segment by construction; anything else can't be
+    # a route, and must not become a directory traversal here.
+    safe_slugs = [s for s in slugs if s and "/" not in s and "\\" not in s and s not in (".", "..")]
+    routes = ["tasks", "log", "chains"] + [f"page/{slug}" for slug in safe_slugs]
+    for route in routes:
+        route_dir = out_dir / Path(route)
+        route_dir.mkdir(parents=True, exist_ok=True)
+        (route_dir / "index.html").write_bytes(index_html)
 
 
 def _idle_watchdog(httpd, timeout_seconds, watcher):

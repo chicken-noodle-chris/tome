@@ -831,7 +831,38 @@ body {
 .task-ac:hover .task-ac-actions, .task-ac:focus-within .task-ac-actions { visibility: visible; }
 
 /* -- backlog view ([[deferred-backlog]]) -- */
-.backlog-list { max-width: 32rem; min-height: 1.5rem; } /* keeps an empty list a valid drop target */
+/* Backlog section ([[page-routes]]) — [[deferred-backlog]]'s list, folded in
+   beneath the board's columns instead of sitting at its own route. flex:none
+   inside .board-view's fixed-height flex column, so the columns keep the
+   remaining height and a long backlog scrolls within its own cap rather than
+   pushing the board's scroll around. */
+.backlog-section {
+  flex: none;
+  margin-top: 0.75rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--border);
+}
+.backlog-head { display: flex; align-items: center; gap: 0.75rem; }
+.backlog-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.15rem 0;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.backlog-toggle h2 { margin: 0; font-size: 0.95rem; }
+.backlog-toggle .count { color: var(--muted); font-size: 0.8rem; }
+.backlog-head .new-page-btn { margin-left: auto; }
+.backlog-list {
+  max-width: 32rem;
+  min-height: 1.5rem; /* keeps an empty list a valid drop target */
+  max-height: 32vh;
+  margin-top: 0.5rem;
+}
 .chip {
   font-size: 0.7rem;
   padding: 0.08rem 0.45rem;

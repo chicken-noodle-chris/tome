@@ -6,6 +6,7 @@
 // closes over the current index.json lookup — never leaks across calls.
 
 import { Marked } from "./vendor/marked.esm.js";
+import { hrefFor } from "./routes.js";
 
 /** Split a raw page into its frontmatter object and markdown body. Mirrors the
  *  lenient key/value + block-list subset the tome CLI writes (no nested YAML). */
@@ -84,7 +85,7 @@ function wikilinkExtension(resolveWikilink) {
         // Still a real link — following it lands on the missing-page
         // recovery view ([[missing-page-recovery]]) rather than doing
         // nothing, which is what an href-less anchor used to mean here.
-        const href = `?page=${encodeURIComponent(token.slug)}`;
+        const href = hrefFor({ view: "page", slug: token.slug });
         return `<a class="wikilink wikilink--broken" href="${href}" title="no page: ${escapeHtml(token.slug)}">${escapeHtml(token.label)}</a>`;
       }
       // A piped link's label was the author's choice — never overridden by the

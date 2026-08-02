@@ -808,9 +808,9 @@ describe("slug rename state machine", () => {
     app.enterRename();
     app.renameSlug = "new-slug";
     const { assigned } = stubWindow();
-    stubFetchQueue([jsonResponse(200, { url: "?page=new-slug", slug: "new-slug" })]);
+    stubFetchQueue([jsonResponse(200, { url: "/page/new-slug", slug: "new-slug" })]);
     await app.saveRename();
-    assert.deepEqual(assigned, ["?page=new-slug"]);
+    assert.deepEqual(assigned, ["/page/new-slug"]);
   });
 
   test("renaming to the same slug (or blank) cancels without a request", async () => {

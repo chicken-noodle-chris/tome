@@ -1,10 +1,12 @@
 // tome browse frontend.
 //
-// One Alpine component drives four base views: a page view — a sidebar
+// One Alpine component drives four base views, each at its own path
+// ([[page-routes]], route table in routes.js): a page view — a sidebar
 // navigating the whole vault (grouped like the wiki tree) beside a content
 // area that renders the selected page, with client-side wikilink navigation —
-// a full-width board, a single-list backlog ([[deferred-backlog]]), and a
-// dependency-chains tree (`?view=chains`, [[dependency-chains]]) rendered from
+// a full-width board carrying the backlog list beneath its columns
+// ([[deferred-backlog]]), and a dependency-chains tree (`/chains`,
+// [[dependency-chains]]) rendered from
 // the same board.json cards, pure client-side via chains.js. Data comes from
 // the two generated contracts the server emits, `/index.json` and
 // `/board.json`; raw markdown comes from `/raw/…`. The board has a sort-mode
@@ -13,10 +15,11 @@
 // drag-to-move-and-reorder, POSTing `{status, afterId}` to
 // `/api/task/<id>/move`.
 //
-// A task-detail panel ([[task-detail-panel]]) layers over whichever
-// of board/backlog/chains is the active base view — `currentTaskId` is an
-// axis orthogonal to `view`, not a fifth view value, so `?view=<base>&task=<id>`
-// (and a bare `?task=<id>`, defaulting to board) fully describes the state and
+// A task-detail panel ([[task-detail-panel]]) layers over whichever of
+// board/chains is the active base view — `currentTaskId` is an axis
+// orthogonal to `view`, not a view value of its own, so `<base path>?task=<id>`
+// (and a bare `?task=<id>` on a base that can't host the panel, which resolves
+// to /tasks) fully describes the state and
 // back/forward simply re-derives both from the URL on `popstate`. The panel
 // renders straight from the matching board.json card already in memory: no
 // fetch on open, and identical on a frozen static export, where every
@@ -55,10 +58,11 @@ import { recentPages, projectRoster, inFlightPlans } from "./home.js";
 import { searchVault } from "./search.js";
 import { linkifyLog } from "./log.js";
 import { nearestPages } from "./missing.js";
+import { hrefFor, routeFromPath, slugFromHref, taskFromHref } from "./routes.js";
 
-// Document titles for the five base views that don't carry their own.
+// Document titles for the base views that don't carry their own.
 const VIEW_TITLES = {
-  home: "Home · tome", board: "Board · tome", backlog: "Backlog · tome",
+  home: "Home · tome", board: "Tasks · tome",
   chains: "Chains · tome", log: "Log · tome",
 };
 const DEFAULT_TITLE = "tome";
@@ -133,6 +137,12 @@ const SORT_MODE_KEY = "tome.board.sort";
 // Milestone swimlane grouping ([[browse-ui-polish]]) — localStorage-only,
 // same treatment as sortMode: a read lens over board.json, never written.
 const GROUP_MODE_KEY = "tome.board.group";
+// Backlog section disclosure ([[page-routes]]) — the backlog list now lives
+// beneath the board's columns rather than at its own route, so whether it's
+// open is a per-user preference in the same localStorage-only family as the
+// sort/group lenses. Collapsed by default: the columns are what /tasks is
+// for, and the heading still carries the count.
+const BACKLOG_OPEN_KEY = "tome.board.backlogOpen";
 // Per-folder sidebar collapse state ([[sidebar-orientation]]) — prefixed with
 // a vault key (vaultKey()) so two vaults served from the same origin don't
 // share collapse state.
@@ -178,7 +188,7 @@ export function tomeApp() {
     missingPageFrom: null,
 
     // task-detail panel ([[task-detail-panel]]) — a layer over the current
-    // `view` (board/backlog/chains), not a view of its own. No fetch; renders
+    // `view` (board/chains), not a view of its own. No fetch; renders
     // straight from the matching board.json card, found by id on demand.
     // The not-found state is derived live from that lookup (taskErrorMessage()
     // below) rather than latched at open time, so a card that vanishes out
@@ -245,7 +255,7 @@ export function tomeApp() {
     newTaskBanner: "",
     newTaskBannerKind: "", // "error"
     newTaskForm: { title: "", status: "", project: "", priority: "medium", description: "" },
-    // true when opened from the backlog view's "New item" ([[backlog-creation]]):
+    // true when opened from the backlog section's "New item" ([[backlog-creation]]):
     // status defaults to backlogStatus and the select offers every status
     // (including Backlog) rather than the board's own columns.
     newTaskFromBacklog: false,
@@ -285,6 +295,7 @@ export function tomeApp() {
     projectFilter: "__all__",
     sortMode: "manual", // "manual" | "priority" | "title" — localStorage-only, never touches board.json
     groupMode: "none", // "none" | "milestone" — swimlane grouping ([[browse-ui-polish]], AC4), localStorage-only
+    backlogOpen: false, // the backlog section beneath the columns ([[page-routes]]), localStorage-only
     draggingId: null, // card.id currently being dragged
     dropTarget: null, // { status, afterId } — the insertion point tracked during a Manual-mode drag
     movingCardId: null, // card.id awaiting its POST response
@@ -343,6 +354,9 @@ export function tomeApp() {
       const savedGroup = localStorage.getItem(GROUP_MODE_KEY);
       if (savedGroup === "none" || savedGroup === "milestone") this.groupMode = savedGroup;
       this.$watch("groupMode", (mode) => localStorage.setItem(GROUP_MODE_KEY, mode));
+
+      this.backlogOpen = localStorage.getItem(BACKLOG_OPEN_KEY) === "1";
+      this.$watch("backlogOpen", (open) => localStorage.setItem(BACKLOG_OPEN_KEY, open ? "1" : "0"));
 
       // React to back/forward navigation.
       window.addEventListener("popstate", () => this.syncFromUrl());
@@ -518,94 +532,95 @@ export function tomeApp() {
       document.title = VIEW_TITLES[this.view] || DEFAULT_TITLE;
     },
 
+    // The base a task panel can actually render over ([[page-routes]]): its
+    // markup layers on board/chains only, so any other base resolves to the
+    // board. One rule, read by the router below, by the link writers, and by
+    // openTaskFromAnywhere — which is what keeps exactly one deterministic
+    // base per URL.
+    panelBase(view) {
+      return view === "board" || view === "chains" ? view : "board";
+    },
+
+    // Route writers for the templates ([[page-routes]]) — the same hrefFor()
+    // the router uses, so the markup can't drift from the route table.
+    pageUrl(slug) {
+      return hrefFor({ view: "page", slug });
+    },
+
+    // A panel link keeps whichever base can host it: from the board it stays
+    // on the board, from chains on chains, from anywhere else it lands on
+    // /tasks — exactly what syncFromUrl() would resolve the URL to anyway.
+    taskUrl(id) {
+      return hrefFor({ view: this.panelBase(this.view), task: id });
+    },
+
+    // The router ([[page-routes]]): one path segment decides the base view
+    // (routes.js owns that table), the `task` parameter decides the overlay.
+    // popstate wires straight here, so back/forward re-derives both.
     async syncFromUrl() {
       const params = new URLSearchParams(location.search);
-      // The panel's axis is read first and unconditionally, so popstate always
-      // re-derives it from the URL — same for both directions of history.
-      this.currentTaskId = params.get("task") || null;
+      const task = params.get("task") || null;
+      const route = routeFromPath(location.pathname);
 
-      const viewParam = params.get("view");
-      if (viewParam === "board" || viewParam === "backlog" || viewParam === "chains") {
-        this.view = viewParam;
+      const view = task ? this.panelBase(route.view) : route.view;
+
+      if (view !== "page") {
+        // Set unconditionally (not only when truthy) so popstate clears the
+        // panel going back, the same way it opens it going forward.
+        this.currentTaskId = task;
+        this.view = view;
         this.applyTitle();
+        if (view === "log") await this.loadLog();
         return;
       }
-      if (viewParam === "log") {
-        this.view = "log";
-        this.applyTitle();
-        await this.loadLog();
-        return;
-      }
-      if (this.currentTaskId) {
-        // A bare ?task=<id> (no view param) resolves to the board as its
-        // base — when task is present, page is ignored, so there is exactly
-        // one deterministic base for every URL.
-        this.view = "board";
-        this.applyTitle();
-        return;
-      }
-      const slug = params.get("page");
-      if (!slug) {
-        // No page named and no other base view matched: the hub, same as an
-        // explicit ?view=home or an unrecognized ?view value.
-        this.view = "home";
-        this.applyTitle();
-        return;
-      }
+
+      // loadPage() clears currentTaskId itself — the page view is a different
+      // base — so the panel axis is settled by the call, not before it.
       const justCreated = params.get("new") === "1"; // set by saveNewPage()'s redirect
-      await this.loadPage(slug, { push: false });
+      await this.loadPage(route.slug, { push: false });
       if (justCreated) {
-        history.replaceState({ slug }, "", `?page=${encodeURIComponent(slug)}`); // drop the one-shot marker
+        // Drop the one-shot marker.
+        history.replaceState({ slug: route.slug }, "", hrefFor({ view: "page", slug: route.slug }));
         if (this.board.writable && !this.editing) await this.enterEdit();
       }
     },
 
-    // The hub route ([[wiki-hub-home]]) — a sibling of ?view=board in the
-    // same router, and the topbar brand's link target.
+    // The hub route ([[wiki-hub-home]]) — `/`, and the topbar brand's link
+    // target.
     showHome({ push = true } = {}) {
       this.view = "home";
       this.currentTaskId = null;
       this.applyTitle();
-      if (push) history.pushState({ view: "home" }, "", "?view=home");
+      if (push) history.pushState({ view: "home" }, "", hrefFor({ view: "home" }));
     },
 
-    // Enters the board as a real URL state (?view=board), a sibling of
-    // `?page=<slug>` in the same router — see [[board-route]]. A topbar nav
-    // click is one of the ways back to a *plain* base view, so it closes any
-    // open task panel rather than carrying it over silently.
+    // The board's route, `/tasks` — titled Tasks, and carrying the backlog
+    // list beneath its columns ([[deferred-backlog]]). A topbar nav click is
+    // one of the ways back to a *plain* base view, so it closes any open task
+    // panel rather than carrying it over silently.
     showBoard({ push = true } = {}) {
       this.view = "board";
       this.currentTaskId = null;
       this.applyTitle();
-      if (push) history.pushState({ view: "board" }, "", "?view=board");
+      if (push) history.pushState({ view: "board" }, "", hrefFor({ view: "board" }));
     },
 
-    // The backlog list's route — [[deferred-backlog]]'s sibling to
-    // ?view=board, same router, same history-push pattern.
-    showBacklog({ push = true } = {}) {
-      this.view = "backlog";
-      this.currentTaskId = null;
-      this.applyTitle();
-      if (push) history.pushState({ view: "backlog" }, "", "?view=backlog");
-    },
-
-    // The dependency-chains route ([[dependency-chains]]) — another sibling
-    // in the same router.
+    // The dependency-chains route ([[dependency-chains]]) — a real path so
+    // its links deep-link, though not a pinned nav entry.
     showChains({ push = true } = {}) {
       this.view = "chains";
       this.currentTaskId = null;
       this.applyTitle();
-      if (push) history.pushState({ view: "chains" }, "", "?view=chains");
+      if (push) history.pushState({ view: "chains" }, "", hrefFor({ view: "chains" }));
     },
 
-    // The log route ([[browse-ui-polish]], AC3) — another sibling in the same
-    // router, fetching /raw/log.md fresh on every entry (no live-reload;
-    // read-only history).
+    // The log route ([[browse-ui-polish]], AC3), fetching /raw/log.md fresh on
+    // every entry (no live-reload; read-only history).
     async showLog({ push = true } = {}) {
       this.view = "log";
       this.currentTaskId = null;
       this.applyTitle();
-      if (push) history.pushState({ view: "log" }, "", "?view=log");
+      if (push) history.pushState({ view: "log" }, "", hrefFor({ view: "log" }));
       await this.loadLog();
     },
 
@@ -622,7 +637,7 @@ export function tomeApp() {
         const linkified = linkifyLog(
           raw,
           (slug) => this.resolveWikilink(slug),
-          (id) => ({ href: `?view=board&task=${encodeURIComponent(id)}` }),
+          (id) => ({ href: hrefFor({ view: "board", task: id }) }),
         );
         this.logHtml = renderMarkdown(linkified, (s) => this.resolveWikilink(s));
       } catch (e) {
@@ -640,7 +655,10 @@ export function tomeApp() {
       if (this.currentSlug) {
         this.view = "page";
         this.applyTitle();
-        if (push) history.pushState({ slug: this.currentSlug }, "", `?page=${encodeURIComponent(this.currentSlug)}`);
+        if (push) {
+          history.pushState({ slug: this.currentSlug }, "",
+            hrefFor({ view: "page", slug: this.currentSlug }));
+        }
         return;
       }
       this.showHome({ push });
@@ -663,7 +681,7 @@ export function tomeApp() {
         this.pageHtml = "";
         this.pageError = `No page with slug "${slug}".`;
         this.missingPageFrom = from; // recovery view's "way back" ([[missing-page-recovery]])
-        if (push) history.pushState({ slug }, "", `?page=${encodeURIComponent(slug)}`);
+        if (push) history.pushState({ slug }, "", hrefFor({ view: "page", slug }));
         return;
       }
       this.missingPageFrom = null;
@@ -682,16 +700,15 @@ export function tomeApp() {
         this.pageHtml = "";
         this.pageError = `Failed to load ${page.url}: ${e.message}`;
       }
-      if (push) {
-        const url = `?page=${encodeURIComponent(slug)}`;
-        history.pushState({ slug }, "", url);
-      }
+      if (push) history.pushState({ slug }, "", hrefFor({ view: "page", slug }));
     },
 
     // The topbar's "Page" link target: the current page, or the hub if none
     // has loaded yet — mirrors showPage()'s own fallback.
     pageHref() {
-      return this.currentSlug ? `?page=${encodeURIComponent(this.currentSlug)}` : "?view=home";
+      return this.currentSlug
+        ? hrefFor({ view: "page", slug: this.currentSlug })
+        : hrefFor({ view: "home" });
     },
 
     // -- missing-page recovery ([[missing-page-recovery]]) ---------------- //
@@ -739,17 +756,18 @@ export function tomeApp() {
     // text — [[wikilink-titles]]); unknown -> null (broken wikilink).
     resolveWikilink(slug) {
       const page = this.bySlug.get(slug);
-      return page ? { href: `?page=${encodeURIComponent(slug)}`, title: page.title } : null;
+      return page ? { href: hrefFor({ view: "page", slug }), title: page.title } : null;
     },
 
     // Intercept clicks on rendered wikilinks and log-view task links so
     // navigation stays client-side. The latter are plain markdown links
     // (log.js's linkifyLog output), not the wikilink extension's `a.wikilink`,
-    // so they're matched by their `?...task=` query shape instead.
+    // so they're matched by their root-absolute href and read for a `task`
+    // parameter instead — a link without one is left to the browser.
     onContentClick(event) {
       const wikilink = event.target.closest("a.wikilink");
       if (wikilink) {
-        const slug = new URLSearchParams(wikilink.getAttribute("href").replace(/^\?/, "")).get("page");
+        const slug = slugFromHref(wikilink.getAttribute("href"));
         if (slug) {
           event.preventDefault();
           // A broken wikilink now carries the page it was followed from, so
@@ -758,9 +776,9 @@ export function tomeApp() {
         }
         return;
       }
-      const link = event.target.closest("a[href^='?']");
+      const link = event.target.closest("a[href^='/']");
       if (!link) return;
-      const taskId = new URLSearchParams(link.getAttribute("href").replace(/^\?/, "")).get("task");
+      const taskId = taskFromHref(link.getAttribute("href"));
       if (taskId) {
         event.preventDefault();
         this.openTaskFromAnywhere(taskId);
@@ -828,17 +846,18 @@ export function tomeApp() {
     },
 
     // -- task-detail panel ([[task-detail-panel]]) ------------------------- //
-    // A read-only layer over the current board/backlog/chains view, rendered
+    // A read-only layer over the current board/chains view, rendered
     // entirely from the matching board.json card already in memory — no
     // fetch, no new server route, identical on a frozen static export.
 
     // Opens the panel over whichever base view is currently active — a card
-    // click, a dependency link, or a chain row all funnel through here.
+    // click, a dependency link, or a chain row all funnel through here. The
+    // base keeps its own path; only the `task` parameter is added.
     openTask(id, { push = true } = {}) {
       if (id !== this.currentTaskId) this.resetTaskEditing();
       this.currentTaskId = id;
       this.applyTitle();
-      if (push) history.pushState({ view: this.view, task: id }, "", `?view=${this.view}&task=${encodeURIComponent(id)}`);
+      if (push) history.pushState({ view: this.view, task: id }, "", this.taskUrl(id));
     },
 
     // The panel's close affordances (✕, Escape, the narrow-viewport scrim)
@@ -848,7 +867,10 @@ export function tomeApp() {
       this.resetTaskEditing();
       this.currentTaskId = null;
       this.applyTitle();
-      if (push) history.pushState({ view: this.view }, "", `?view=${this.view}`);
+      if (push) {
+        history.pushState({ view: this.view }, "",
+          hrefFor({ view: this.view, slug: this.currentSlug }));
+      }
     },
 
     currentTask() {
@@ -905,11 +927,11 @@ export function tomeApp() {
     },
 
     // Opens the task panel from anywhere ([[browse-ui-polish]]) — the panel
-    // only ever renders layered over board/backlog/chains, so from page/home/
-    // log this first switches to the board, exactly like a bare `?task=<id>`
-    // URL already resolves to board as its base (see syncFromUrl).
+    // only ever renders layered over board/chains, so from page/home/log this
+    // first switches to the board, exactly as a `?task=<id>` on a base that
+    // can't host the panel resolves to /tasks (see syncFromUrl).
     openTaskFromAnywhere(id) {
-      if (this.view !== "board" && this.view !== "backlog" && this.view !== "chains") this.view = "board";
+      this.view = this.panelBase(this.view);
       this.openTask(id);
     },
 
@@ -1420,7 +1442,7 @@ export function tomeApp() {
         if (res.status === 200) {
           // The page's identity changed underneath us — hard-navigate so the
           // whole app (index.json included) reloads against the new slug.
-          window.location.assign(data.url || `?page=${encodeURIComponent(data.slug)}`);
+          window.location.assign(data.url || hrefFor({ view: "page", slug: data.slug }));
         } else if (this.openConflict(data, "rename", () => this.saveRename())) {
           // Only a git fork reaches here; a stale-hash rename stays
           // refuse-and-reload below.
@@ -1533,7 +1555,7 @@ export function tomeApp() {
         });
         const data = await res.json();
         if (res.status === 200) {
-          const url = data.url || `?page=${encodeURIComponent(data.slug)}`;
+          const url = data.url || hrefFor({ view: "page", slug: data.slug });
           window.location.assign(url + (url.includes("?") ? "&" : "?") + "new=1");
         } else if (this.openConflict(data, "new", () => this.saveNewPage())) {
           // The form stays as it is behind the resolver; resolving the fork
@@ -2093,7 +2115,7 @@ export function tomeApp() {
 
     // Completed cards live in board.cards (so lookups, dependency links, and
     // chain rows resolve them) but never in a column or the backlog list —
-    // this is the one predicate both cardsFor() and the backlog view read,
+    // this is the one predicate both cardsFor() and the backlog list read,
     // so neither grows a row ([[completed-tasks-viewable]]).
     visibleCards() {
       const cards = this.board.cards.filter((c) => !c.completed);

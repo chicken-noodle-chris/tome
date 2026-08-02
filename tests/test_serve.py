@@ -1035,7 +1035,7 @@ def test_rename_page_happy_path_moves_and_rewrites_links(tmp_path, run_tome):
 
     assert status == 200
     assert result["slug"] == "gamma"
-    assert result["url"] == "?page=gamma"
+    assert result["url"] == "/page/gamma"
     gamma = vault / "wiki" / "tome" / "ideas" / "gamma.md"
     assert gamma.is_file()
     assert not alpha.exists()
@@ -1224,7 +1224,7 @@ def test_create_page_happy_path_commits_and_pushes(tmp_path, run_tome):
 
     assert status == 200
     assert result["slug"] == "my-idea"
-    assert result["url"] == "?page=my-idea"
+    assert result["url"] == "/page/my-idea"
     created = vault / "wiki" / "tome" / "ideas" / "my-idea.md"
     assert created.is_file()
     assert "[[my-idea]]" in (vault / "wiki" / "index.md").read_text(encoding="utf-8")
@@ -1421,6 +1421,64 @@ def test_export_static_board_json_includes_completed_cards(tmp_path, make_vault,
     board = json.loads((out_dir / "board.json").read_text(encoding="utf-8"))
     cards = {c["id"]: c for c in board["cards"]}
     assert cards["task-1"]["completed"] is True
+
+
+def test_export_static_writes_an_index_at_every_route(tmp_path, make_vault, make_page):
+    """`tome serve`'s index.html fallback has no equivalent on a static host,
+    so every app route ([[page-routes]]) gets a real file — a static host
+    resolves /tasks to tasks/index.html and /page/<slug> to
+    page/<slug>/index.html."""
+    vault = make_vault()
+    make_page(vault, "tome/ideas/alpha.md", title="Alpha")
+    out_dir = tmp_path / "export"
+    serve.export_static(vault, _conv(vault), out_dir)
+
+    root = (out_dir / "index.html").read_bytes()
+    for route in ["tasks", "log", "chains", "page/alpha"]:
+        copy = out_dir / Path(route) / "index.html"
+        assert copy.is_file(), f"no index.html at /{route}"
+        assert copy.read_bytes() == root, f"/{route} is not the app's index.html"
+
+
+def test_export_static_route_snapshots_load_over_a_static_host(tmp_path, make_vault, make_page):
+    """AC3's real claim: every route loads on a static host, not just that the
+    files exist. SimpleHTTPRequestHandler redirects /tasks to /tasks/ and
+    serves that directory's index.html — the same trailing-slash form the
+    client router tolerates."""
+    vault = make_vault()
+    make_page(vault, "tome/ideas/alpha.md", title="Alpha")
+    out_dir = tmp_path / "export"
+    serve.export_static(vault, _conv(vault), out_dir)
+
+    handler = functools.partial(SimpleHTTPRequestHandler, directory=str(out_dir))
+    httpd = HTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{httpd.server_port}"
+        for path in ["/", "/tasks", "/log", "/chains", "/page/alpha", "/tasks/"]:
+            conn = http.client.HTTPConnection("127.0.0.1", httpd.server_port)
+            try:
+                conn.request("GET", path)
+                res = conn.getresponse()
+                status, body = res.status, res.read()
+                if status in (301, 302):  # the host's own trailing-slash redirect
+                    location = res.getheader("Location")
+                    conn2 = http.client.HTTPConnection("127.0.0.1", httpd.server_port)
+                    try:
+                        conn2.request("GET", location.replace(base, ""))
+                        res2 = conn2.getresponse()
+                        status, body = res2.status, res2.read()
+                    finally:
+                        conn2.close()
+            finally:
+                conn.close()
+            assert status == 200, f"{path} -> {status}"
+            assert b"<html" in body.lower(), f"{path} did not serve the app"
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
 
 
 # --------------------------------------------------------------------------- #
@@ -1708,11 +1766,45 @@ def test_get_root_serves_frontend_index(start_server, make_vault):
     assert b"<html" in body.lower()
 
 
-def test_get_unknown_path_is_404(start_server, make_vault):
+@pytest.mark.parametrize("path", ["/tasks", "/log", "/chains", "/page/alpha", "/tasks/"])
+def test_get_app_route_serves_frontend_index(start_server, make_vault, path):
+    """Every app route ([[page-routes]]) boots the app: the client router
+    derives the view from the path, so a deep link typed into the address bar
+    or reloaded mid-session lands on the right view instead of erroring."""
     vault = make_vault()
     base = start_server(vault)
 
-    status, _body, _headers = _get(base, "/nope")
+    status, body, headers = _get(base, path)
+
+    assert status == 200
+    assert headers["Content-Type"] == "text/html; charset=utf-8"
+    assert b"<html" in body.lower()
+
+
+def test_get_unknown_path_falls_back_to_the_app(start_server, make_vault):
+    """An unrecognized path is indistinguishable from a stale deep link, so it
+    boots the app too — the client router sends it to the hub."""
+    vault = make_vault()
+    base = start_server(vault)
+
+    status, body, _headers = _get(base, "/nope")
+
+    assert status == 200
+    assert b"<html" in body.lower()
+
+
+@pytest.mark.parametrize("path", [
+    "/raw/tome/ideas/no-such.md",  # a missing page under a guarded prefix
+    "/app/no-such.js",             # a missing asset under a guarded prefix
+    "/api/no-such",                # an unknown API route must not answer HTML
+])
+def test_guarded_prefixes_still_404_under_the_fallback(start_server, make_vault, path):
+    """The prefix list stays the guard: the SPA fallback must never swallow a
+    genuinely missing asset, or answer a JSON route with a page of HTML."""
+    vault = make_vault()
+    base = start_server(vault)
+
+    status, _body, _headers = _get(base, path)
 
     assert status == 404
 
@@ -1938,7 +2030,7 @@ def test_post_rename_success(start_server, tmp_path, run_tome):
     assert status == 200
     data = json.loads(body)
     assert data["slug"] == "gamma"
-    assert data["url"] == "?page=gamma"
+    assert data["url"] == "/page/gamma"
 
 
 @pytestmark_git

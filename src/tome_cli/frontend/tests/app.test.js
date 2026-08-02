@@ -10,16 +10,31 @@ const { tomeApp } = await import("../app.js");
 
 // -- location/history stub ------------------------------------------------ //
 // Mimics just enough of the browser API for syncFromUrl()'s pure state
-// transitions: pushState/replaceState update location.search the way a real
-// browser would, so a simulated back/forward is just "set location.search,
-// then call syncFromUrl()" — exactly what the real popstate handler does.
+// transitions. The router reads location.pathname for the base view and
+// location.search for the task overlay ([[page-routes]]), so pushState /
+// replaceState split the pushed href across both the way a real browser
+// would — a simulated back/forward is then just "stubUrl(href), then call
+// syncFromUrl()", exactly what the real popstate handler does.
 
-function stubLocationAndHistory(initialSearch = "") {
-  globalThis.location = { search: initialSearch };
+function splitHref(href) {
+  const q = href.indexOf("?");
+  return q === -1
+    ? { pathname: href || "/", search: "" }
+    : { pathname: href.slice(0, q) || "/", search: href.slice(q) };
+}
+
+/** Point the stubbed location at one href — the test-side spelling of a
+ *  browser restoring a history entry. */
+function stubUrl(href) {
+  Object.assign(globalThis.location, splitHref(href));
+}
+
+function stubLocationAndHistory(initialHref = "/") {
+  globalThis.location = splitHref(initialHref);
   const calls = [];
   const apply = (kind, url) => {
     calls.push([kind, url]);
-    if (url) globalThis.location.search = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+    if (url) stubUrl(url);
   };
   globalThis.history = {
     pushState(state, title, url) {
@@ -32,31 +47,30 @@ function stubLocationAndHistory(initialSearch = "") {
   return calls;
 }
 
+/** The full href the stub currently sits on — what assertions compare, since
+ *  a route now spans pathname *and* search. */
+function currentHref() {
+  return globalThis.location.pathname + globalThis.location.search;
+}
+
 function makeApp(overrides = {}) {
   // $nextTick is an Alpine magic these tests don't have; loadPage() uses it
   // to schedule the sidebar scroll ([[sidebar-orientation]]) after render.
   return Object.assign(tomeApp(), { $nextTick: async () => {} }, overrides);
 }
 
-describe("syncFromUrl — every URL shape", () => {
-  beforeEach(() => stubLocationAndHistory(""));
+describe("syncFromUrl — every URL shape ([[page-routes]])", () => {
+  beforeEach(() => stubLocationAndHistory("/"));
 
-  test("no params lands on the hub", async () => {
+  test("/ lands on the hub", async () => {
     const app = makeApp();
     await app.syncFromUrl();
     assert.equal(app.view, "home");
     assert.equal(app.currentSlug, null);
   });
 
-  test("?view=home lands on the hub explicitly", async () => {
-    globalThis.location.search = "?view=home";
-    const app = makeApp();
-    await app.syncFromUrl();
-    assert.equal(app.view, "home");
-  });
-
-  test("?page=<slug> loads that page (not-found path needs no fetch)", async () => {
-    globalThis.location.search = "?page=some-page";
+  test("/page/<slug> loads that page (not-found path needs no fetch)", async () => {
+    stubUrl("/page/some-page");
     const app = makeApp();
     await app.syncFromUrl();
     assert.equal(app.view, "page");
@@ -64,8 +78,8 @@ describe("syncFromUrl — every URL shape", () => {
     assert.equal(app.pageError, 'No page with slug "some-page".');
   });
 
-  test("?page=<slug> for a known page loads content via fetch", async () => {
-    globalThis.location.search = "?page=known";
+  test("/page/<slug> for a known page loads content via fetch", async () => {
+    stubUrl("/page/known");
     const app = makeApp({ pages: [{ slug: "known", title: "Known Page", url: "/raw/known.md" }] });
     app.bySlug = new Map(app.pages.map((p) => [p.slug, p]));
     const originalFetch = globalThis.fetch;
@@ -88,8 +102,8 @@ describe("syncFromUrl — every URL shape", () => {
     assert.ok(app.pageHtml.includes("Hello body"));
   });
 
-  test("?view=board sets the board view without touching currentSlug", async () => {
-    globalThis.location.search = "?view=board";
+  test("/tasks sets the board view without touching currentSlug", async () => {
+    stubUrl("/tasks");
     const app = makeApp({ currentSlug: "untouched" });
     await app.syncFromUrl();
     assert.equal(app.view, "board");
@@ -97,49 +111,106 @@ describe("syncFromUrl — every URL shape", () => {
     assert.equal(app.currentTaskId, null);
   });
 
-  test("?view=backlog sets the backlog view", async () => {
-    globalThis.location.search = "?view=backlog";
-    const app = makeApp();
-    await app.syncFromUrl();
-    assert.equal(app.view, "backlog");
-  });
-
-  test("?view=chains sets the chains view", async () => {
-    globalThis.location.search = "?view=chains";
+  test("/chains sets the chains view", async () => {
+    stubUrl("/chains");
     const app = makeApp();
     await app.syncFromUrl();
     assert.equal(app.view, "chains");
   });
 
-  test("an unrecognized ?view value falls through to the hub (no page param)", async () => {
-    globalThis.location.search = "?view=bogus";
+  test("/log sets the log view", async () => {
+    stubUrl("/log");
+    const app = makeApp();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({ ok: true, text: async () => "## [2026-01-01] note\n" });
+    try {
+      await app.syncFromUrl();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    assert.equal(app.view, "log");
+  });
+
+  // A static host resolves /tasks to tasks/index.html and leaves the browser
+  // on /tasks/ — the same route, spelled the way that host spells it.
+  test("a trailing slash is the same route (static hosts add one)", async () => {
+    for (const [href, view] of [["/tasks/", "board"], ["/log/", "log"], ["/chains/", "chains"]]) {
+      stubUrl(href);
+      const app = makeApp();
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = async () => ({ ok: true, text: async () => "" });
+      try {
+        await app.syncFromUrl();
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+      assert.equal(app.view, view, `${href} -> ${view}`);
+    }
+  });
+
+  test("/page/<slug>/ tolerates the trailing slash too", async () => {
+    stubUrl("/page/some-page/");
+    const app = makeApp();
+    await app.syncFromUrl();
+    assert.equal(app.view, "page");
+    assert.equal(app.currentSlug, "some-page");
+  });
+
+  test("an unrecognized path falls through to the hub", async () => {
+    stubUrl("/bogus");
     const app = makeApp();
     await app.syncFromUrl();
     assert.equal(app.view, "home");
   });
 
-  test("a bare ?task=<id> (no view) defaults its base view to board", async () => {
-    globalThis.location.search = "?task=task-1";
+  test("/page with no slug falls through to the hub", async () => {
+    stubUrl("/page/");
+    const app = makeApp();
+    await app.syncFromUrl();
+    assert.equal(app.view, "home");
+    assert.equal(app.currentSlug, null);
+  });
+
+  test("a bare ?task=<id> on the hub resolves its base to the board", async () => {
+    stubUrl("/?task=task-1");
     const app = makeApp();
     await app.syncFromUrl();
     assert.equal(app.view, "board");
     assert.equal(app.currentTaskId, "task-1");
   });
 
-  test("?view=board&task=<id> combines a base view with the panel", async () => {
-    globalThis.location.search = "?view=board&task=task-2";
+  test("/tasks?task=<id> combines a base view with the panel", async () => {
+    stubUrl("/tasks?task=task-2");
     const app = makeApp();
     await app.syncFromUrl();
     assert.equal(app.view, "board");
     assert.equal(app.currentTaskId, "task-2");
   });
 
-  test("?page=<slug>&new=1 drops the one-shot marker via replaceState", async () => {
-    const calls = stubLocationAndHistory("?page=fresh-page&new=1");
+  test("/chains?task=<id> keeps chains as the panel's base", async () => {
+    stubUrl("/chains?task=task-3");
+    const app = makeApp();
+    await app.syncFromUrl();
+    assert.equal(app.view, "chains");
+    assert.equal(app.currentTaskId, "task-3");
+  });
+
+  // The panel markup only renders over board/chains, so a hand-typed task
+  // parameter on a page URL resolves to the one base that can host it.
+  test("a task parameter on a base that can't host the panel resolves to /tasks", async () => {
+    stubUrl("/page/known?task=task-4");
+    const app = makeApp();
+    await app.syncFromUrl();
+    assert.equal(app.view, "board");
+    assert.equal(app.currentTaskId, "task-4");
+  });
+
+  test("/page/<slug>?new=1 drops the one-shot marker via replaceState", async () => {
+    const calls = stubLocationAndHistory("/page/fresh-page?new=1");
     const app = makeApp(); // board.writable defaults false, so enterEdit() is never reached
     await app.syncFromUrl();
     assert.equal(app.currentSlug, "fresh-page");
-    assert.deepEqual(calls, [["replace", "?page=fresh-page"]]);
+    assert.deepEqual(calls, [["replace", "/page/fresh-page"]]);
   });
 });
 
@@ -163,7 +234,7 @@ describe("missing-page recovery ([[missing-page-recovery]])", () => {
     app.onContentClick({
       target: {
         closest: (sel) => (sel === "a.wikilink"
-          ? { getAttribute: () => "?page=does-not-exist", classList: { contains: () => true } }
+          ? { getAttribute: () => "/page/does-not-exist", classList: { contains: () => true } }
           : null),
       },
       preventDefault() {},
@@ -216,16 +287,23 @@ describe("missing-page recovery ([[missing-page-recovery]])", () => {
 });
 
 describe("task panel reconciliation + popstate back/forward", () => {
-  beforeEach(() => stubLocationAndHistory("?view=board"));
+  beforeEach(() => stubLocationAndHistory("/tasks"));
 
   test("openTask pushes a task url; closeTaskPanel returns to the base view", () => {
     const app = makeApp({ view: "board" });
     app.openTask("task-9");
     assert.equal(app.currentTaskId, "task-9");
-    assert.equal(globalThis.location.search, "?view=board&task=task-9");
+    assert.equal(currentHref(), "/tasks?task=task-9");
     app.closeTaskPanel();
     assert.equal(app.currentTaskId, null);
-    assert.equal(globalThis.location.search, "?view=board");
+    assert.equal(currentHref(), "/tasks");
+  });
+
+  test("the panel stays on chains when that's the base it was opened over", () => {
+    stubUrl("/chains");
+    const app = makeApp({ view: "chains" });
+    app.openTask("task-9");
+    assert.equal(currentHref(), "/chains?task=task-9");
   });
 
   test("opening a different task id resets in-flight task editing state", () => {
@@ -248,7 +326,7 @@ describe("task panel reconciliation + popstate back/forward", () => {
   });
 
   test("closeTaskPanel on an already-closed panel is a no-op (no history push)", () => {
-    const calls = stubLocationAndHistory("?view=board");
+    const calls = stubLocationAndHistory("/tasks");
     const app = makeApp({ view: "board" });
     app.closeTaskPanel();
     assert.deepEqual(calls, []);
@@ -256,89 +334,94 @@ describe("task panel reconciliation + popstate back/forward", () => {
 
   test("back/forward re-derives view and task from the URL, mirroring the popstate handler", async () => {
     const app = makeApp();
-    await app.syncFromUrl(); // lands on ?view=board from beforeEach's stub
+    await app.syncFromUrl(); // lands on /tasks from beforeEach's stub
     assert.equal(app.view, "board");
     assert.equal(app.currentTaskId, null);
 
-    app.openTask("task-5"); // pushState -> ?view=board&task=task-5
+    app.openTask("task-5"); // pushState -> /tasks?task=task-5
     assert.equal(app.currentTaskId, "task-5");
 
     // Back: the browser restores the previous URL, then fires popstate —
     // which init() wires straight to syncFromUrl().
-    globalThis.location.search = "?view=board";
+    stubUrl("/tasks");
     await app.syncFromUrl();
     assert.equal(app.view, "board");
     assert.equal(app.currentTaskId, null);
 
     // Forward again:
-    globalThis.location.search = "?view=board&task=task-5";
+    stubUrl("/tasks?task=task-5");
     await app.syncFromUrl();
     assert.equal(app.currentTaskId, "task-5");
   });
 });
 
-describe("base-view navigation", () => {
-  beforeEach(() => stubLocationAndHistory(""));
+describe("base-view navigation ([[page-routes]])", () => {
+  beforeEach(() => stubLocationAndHistory("/"));
 
-  test("showHome/showBoard/showBacklog/showChains push their route and close any open task panel", () => {
+  test("showHome/showBoard/showChains push their path and close any open task panel", () => {
     const app = makeApp({ currentTaskId: "task-1" });
 
     app.showHome();
     assert.equal(app.view, "home");
     assert.equal(app.currentTaskId, null);
-    assert.equal(globalThis.location.search, "?view=home");
+    assert.equal(currentHref(), "/");
 
     app.currentTaskId = "task-1";
     app.showBoard();
     assert.equal(app.view, "board");
     assert.equal(app.currentTaskId, null);
-    assert.equal(globalThis.location.search, "?view=board");
-
-    app.currentTaskId = "task-1";
-    app.showBacklog();
-    assert.equal(app.view, "backlog");
-    assert.equal(app.currentTaskId, null);
-    assert.equal(globalThis.location.search, "?view=backlog");
+    assert.equal(currentHref(), "/tasks");
 
     app.currentTaskId = "task-1";
     app.showChains();
     assert.equal(app.view, "chains");
     assert.equal(app.currentTaskId, null);
-    assert.equal(globalThis.location.search, "?view=chains");
+    assert.equal(currentHref(), "/chains");
+  });
+
+  test("showLog pushes /log", async () => {
+    const app = makeApp();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({ ok: true, text: async () => "" });
+    try {
+      await app.showLog();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    assert.equal(app.view, "log");
+    assert.equal(currentHref(), "/log");
   });
 
   test("showPage with no page ever loaded falls back to the hub", async () => {
     const app = makeApp();
     await app.showPage();
     assert.equal(app.view, "home");
-    assert.equal(globalThis.location.search, "?view=home");
+    assert.equal(currentHref(), "/");
   });
 
   test("push: false does not touch the URL", () => {
     const app = makeApp();
     app.showBoard({ push: false });
-    assert.equal(globalThis.location.search, "");
+    assert.equal(currentHref(), "/");
   });
 
   test("showPage returns to an already-loaded page without refetching", async () => {
     const app = makeApp({ currentSlug: "already-loaded", view: "board" });
     await app.showPage();
     assert.equal(app.view, "page");
-    assert.equal(globalThis.location.search, "?page=already-loaded");
+    assert.equal(currentHref(), "/page/already-loaded");
   });
 });
 
 describe("document.title ([[browse-ui-polish]], AC2)", () => {
-  beforeEach(() => stubLocationAndHistory(""));
+  beforeEach(() => stubLocationAndHistory("/"));
 
   test("each base view sets its own suffixed title", () => {
     const app = makeApp();
     app.showHome();
     assert.equal(document.title, "Home · tome");
     app.showBoard();
-    assert.equal(document.title, "Board · tome");
-    app.showBacklog();
-    assert.equal(document.title, "Backlog · tome");
+    assert.equal(document.title, "Tasks · tome");
     app.showChains();
     assert.equal(document.title, "Chains · tome");
   });
@@ -369,7 +452,7 @@ describe("document.title ([[browse-ui-polish]], AC2)", () => {
     app.openTask("task-9");
     assert.equal(document.title, "TASK-9 — Ship it · tome");
     app.closeTaskPanel();
-    assert.equal(document.title, "Board · tome");
+    assert.equal(document.title, "Tasks · tome");
   });
 
   test("opening a task id with no matching card falls back to the bare app name", () => {
@@ -389,7 +472,7 @@ describe("lenses", () => {
   test("resolveWikilink resolves known slugs to {href, title}, and returns null for unknown ones", () => {
     const app = tomeApp();
     app.bySlug = new Map([["known", { title: "Known Page" }]]);
-    assert.deepEqual(app.resolveWikilink("known"), { href: "?page=known", title: "Known Page" });
+    assert.deepEqual(app.resolveWikilink("known"), { href: "/page/known", title: "Known Page" });
     assert.equal(app.resolveWikilink("missing"), null);
   });
 
