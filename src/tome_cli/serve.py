@@ -1639,7 +1639,8 @@ def cmd_serve(vault_root, conventions, args):
     httpd = ThreadingHTTPServer((args.host, args.port), TomeHandler)
     url = f"http://{args.host}:{args.port}/"
     print(f"tome serve: {url} (vault: {vault_root})")
-    print("  serving  /  /index.json  /board.json  /raw/<page>.md  /app/<file>")
+    print("  app routes  /  /page/<slug>  /tasks  /log  /chains  (+ ?task=<id> panel)")
+    print("  serving  /index.json  /board.json  /raw/<page>.md  /app/<file>")
     print("  GET  /events                (SSE live-reload: push on wiki/backlog changes)")
     print("  POST /api/task/<id>/move    (status + reorder, shelled to backlog.md)")
     print("  POST /api/task/<id>/edit    (one field patch -> one backlog task edit)")
