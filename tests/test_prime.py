@@ -29,6 +29,25 @@ def test_prime_terse_states_the_memory_framing_and_both_imperatives(make_vault):
     assert "durable, non-obvious, and not trivially derivable" in text
 
 
+def test_prime_terse_names_normal_file_tools_by_default(make_vault, monkeypatch):
+    monkeypatch.delenv("TOME_OPS_PROFILE", raising=False)
+
+    text = tome.prime_terse_text(make_vault())
+
+    assert "page bodies with normal file tools" in text
+    assert "tome read" not in text
+
+
+def test_prime_terse_names_tome_verbs_under_authoring_profile(make_vault, monkeypatch):
+    vault = make_vault()
+    monkeypatch.setenv("TOME_OPS_PROFILE", "authoring")
+
+    text = tome.prime_terse_text(vault)
+
+    assert "page bodies with `tome read`/`write`/`append`" in text
+    assert "normal file tools" not in text
+
+
 def test_prime_terse_matches_module_function(make_vault, run_tome, capsys):
     vault = make_vault()
     capsys.readouterr()

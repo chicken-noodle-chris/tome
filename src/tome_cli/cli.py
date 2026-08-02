@@ -508,7 +508,17 @@ def prime_terse_text(vault_root):
     that contest to the framing and the imperatives — a location plus a command
     surface reads as a library card, not a memory. The worth-saving bar is
     stated here in the words every other surface reuses verbatim: durable,
-    non-obvious, not trivially derivable."""
+    non-obvious, not trivially derivable.
+
+    Page-body mechanics are profile-aware: under TOME_OPS_PROFILE=authoring
+    there are no native file tools to reach for ([[remote-authoring]]), so the
+    sentence names the verbs that exist instead — telling a remote agent to
+    use a capability it doesn't have is broken orientation, not a simplification."""
+    body_mechanics = (
+        "page bodies with `tome read`/`write`/`append`"
+        if os.environ.get("TOME_OPS_PROFILE") == "authoring"
+        else "page bodies with normal file tools"
+    )
     return (
         f"Knowledge vault at {vault_root} — your memory of this user: their "
         "repo, holding what you know about them, their projects, and their "
@@ -517,8 +527,8 @@ def prime_terse_text(vault_root):
         "saving without being asked — the bar is durable, non-obvious, and "
         "not trivially derivable. Reading: start at wiki/index.md, follow "
         "[[wikilinks]]; `tome search` as fallback. Writing: the tome CLI "
-        "(`tome help`) owns it (`tome task` for backlog items); page bodies "
-        "with normal file tools; conventions in wiki/SCHEMA.md. Start and end "
+        "(`tome help`) owns it (`tome task` for backlog items); "
+        f"{body_mechanics}; conventions in wiki/SCHEMA.md. Start and end "
         "vault work with `tome sync`."
     )
 
