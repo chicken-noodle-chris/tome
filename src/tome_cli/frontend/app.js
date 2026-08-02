@@ -46,7 +46,7 @@
 // component on the `alpine:init` event, which Alpine dispatches when it starts —
 // the module is loaded before alpine.min.js, so the listener is always in place.
 
-import { parseFrontmatter, renderMarkdown } from "./render.js";
+import { parseFrontmatter, renderMarkdown, stripLeadingH1 } from "./render.js";
 import {
   assemble, assembleFields, displayRows, fieldHunks, textHunks, undecidedCount,
 } from "./merge.js";
@@ -500,6 +500,24 @@ export function tomeApp() {
 
     // -- page view ------------------------------------------------------- //
 
+    // The single place that resolves the tab title from current state
+    // ([[browse-ui-polish]], AC2) — called wherever the router settles
+    // (view switches, page loads, task-panel open/close) rather than
+    // assigning document.title inline at each call site. A task panel
+    // takes priority over whatever base view it's open on top of.
+    applyTitle() {
+      if (this.currentTaskId) {
+        const task = this.currentTask();
+        document.title = task ? `${task.rawId} — ${task.title} · tome` : DEFAULT_TITLE;
+        return;
+      }
+      if (this.view === "page") {
+        document.title = this.currentPage ? `${this.currentPage.title || this.currentSlug} · tome` : DEFAULT_TITLE;
+        return;
+      }
+      document.title = VIEW_TITLES[this.view] || DEFAULT_TITLE;
+    },
+
     async syncFromUrl() {
       const params = new URLSearchParams(location.search);
       // The panel's axis is read first and unconditionally, so popstate always
@@ -509,12 +527,12 @@ export function tomeApp() {
       const viewParam = params.get("view");
       if (viewParam === "board" || viewParam === "backlog" || viewParam === "chains") {
         this.view = viewParam;
-        document.title = VIEW_TITLES[viewParam];
+        this.applyTitle();
         return;
       }
       if (viewParam === "log") {
         this.view = "log";
-        document.title = VIEW_TITLES.log;
+        this.applyTitle();
         await this.loadLog();
         return;
       }
@@ -523,7 +541,7 @@ export function tomeApp() {
         // base — when task is present, page is ignored, so there is exactly
         // one deterministic base for every URL.
         this.view = "board";
-        document.title = VIEW_TITLES.board;
+        this.applyTitle();
         return;
       }
       const slug = params.get("page");
@@ -531,7 +549,7 @@ export function tomeApp() {
         // No page named and no other base view matched: the hub, same as an
         // explicit ?view=home or an unrecognized ?view value.
         this.view = "home";
-        document.title = VIEW_TITLES.home;
+        this.applyTitle();
         return;
       }
       const justCreated = params.get("new") === "1"; // set by saveNewPage()'s redirect
@@ -547,7 +565,7 @@ export function tomeApp() {
     showHome({ push = true } = {}) {
       this.view = "home";
       this.currentTaskId = null;
-      document.title = VIEW_TITLES.home;
+      this.applyTitle();
       if (push) history.pushState({ view: "home" }, "", "?view=home");
     },
 
@@ -558,7 +576,7 @@ export function tomeApp() {
     showBoard({ push = true } = {}) {
       this.view = "board";
       this.currentTaskId = null;
-      document.title = VIEW_TITLES.board;
+      this.applyTitle();
       if (push) history.pushState({ view: "board" }, "", "?view=board");
     },
 
@@ -567,7 +585,7 @@ export function tomeApp() {
     showBacklog({ push = true } = {}) {
       this.view = "backlog";
       this.currentTaskId = null;
-      document.title = VIEW_TITLES.backlog;
+      this.applyTitle();
       if (push) history.pushState({ view: "backlog" }, "", "?view=backlog");
     },
 
@@ -576,7 +594,7 @@ export function tomeApp() {
     showChains({ push = true } = {}) {
       this.view = "chains";
       this.currentTaskId = null;
-      document.title = VIEW_TITLES.chains;
+      this.applyTitle();
       if (push) history.pushState({ view: "chains" }, "", "?view=chains");
     },
 
@@ -586,7 +604,7 @@ export function tomeApp() {
     async showLog({ push = true } = {}) {
       this.view = "log";
       this.currentTaskId = null;
-      document.title = VIEW_TITLES.log;
+      this.applyTitle();
       if (push) history.pushState({ view: "log" }, "", "?view=log");
       await this.loadLog();
     },
@@ -621,7 +639,7 @@ export function tomeApp() {
       this.currentTaskId = null;
       if (this.currentSlug) {
         this.view = "page";
-        document.title = DEFAULT_TITLE;
+        this.applyTitle();
         if (push) history.pushState({ slug: this.currentSlug }, "", `?page=${encodeURIComponent(this.currentSlug)}`);
         return;
       }
@@ -634,9 +652,9 @@ export function tomeApp() {
       this.currentTaskId = null; // the page view is a different base — the panel goes with it
       const page = this.bySlug.get(slug);
       this.view = "page";
-      document.title = DEFAULT_TITLE; // per-page titles are [[browse-ui-polish]]'s
       this.currentSlug = slug;
       this.currentPage = page || null;
+      this.applyTitle();
       // Runs after Alpine's next DOM flush, once the AC5 folder-expand
       // override and the .current highlight have both re-rendered.
       this.$nextTick(() => this.scrollSidebarToCurrent());
@@ -657,7 +675,7 @@ export function tomeApp() {
         const { frontmatter, body } = parseFrontmatter(raw);
         this.pageMeta = { ...frontmatter, title: frontmatter.title || page.title };
         this.pageBodyRaw = body;
-        this.pageHtml = renderMarkdown(body, (s) => this.resolveWikilink(s));
+        this.pageHtml = renderMarkdown(stripLeadingH1(body, this.pageMeta.title), (s) => this.resolveWikilink(s));
         this.pageError = "";
       } catch (e) {
         this.pageMeta = null;
@@ -819,6 +837,7 @@ export function tomeApp() {
     openTask(id, { push = true } = {}) {
       if (id !== this.currentTaskId) this.resetTaskEditing();
       this.currentTaskId = id;
+      this.applyTitle();
       if (push) history.pushState({ view: this.view, task: id }, "", `?view=${this.view}&task=${encodeURIComponent(id)}`);
     },
 
@@ -828,6 +847,7 @@ export function tomeApp() {
       if (!this.currentTaskId) return;
       this.resetTaskEditing();
       this.currentTaskId = null;
+      this.applyTitle();
       if (push) history.pushState({ view: this.view }, "", `?view=${this.view}`);
     },
 
@@ -2115,6 +2135,11 @@ export function tomeApp() {
     // the priorities that actually stand out ([[board-column-scroll]]).
     showPrio(priority) {
       return Boolean(priority) && priority !== DEFAULT_PRIORITY;
+    },
+
+    // "1 task", "2 tasks" — the board and backlog totals ([[browse-ui-polish]]).
+    pluralise(n, noun) {
+      return `${n} ${noun}${n === 1 ? "" : "s"}`;
     },
 
     // -- dependency chains view ([[dependency-chains]]) ------------------ //

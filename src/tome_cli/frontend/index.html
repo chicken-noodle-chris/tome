@@ -286,7 +286,7 @@
                     <li x-text="f.path + ' — ' + f.code + ': ' + f.message"></li>
                   </template>
                 </ul>
-                <div x-ref="editorMount"></div>
+                <div class="editor-mount" x-ref="editorMount"></div>
                 <div class="editor-actions">
                   <button class="editor-btn-reload" x-show="editorBannerKind === 'conflict'"
                           @click="reloadAfterConflict()">Reload</button>
@@ -709,10 +709,10 @@
             <option value="milestone">Milestone</option>
           </select>
         </label>
+        <span class="total" x-text="pluralise(visibleCards().length, 'task')"></span>
+        <span class="chip chip--readonly" x-show="!board.writable">read-only</span>
         <button type="button" class="new-page-btn" x-show="board.writable"
                 @click="openNewTaskModal()">+ New task</button>
-        <span class="chip chip--readonly" x-show="!board.writable">read-only</span>
-        <span class="total" x-text="visibleCards().length + ' tasks'"></span>
       </div>
       <p class="board-error" x-show="boardError" x-text="boardError"></p>
       <template x-if="groupMode === 'none'">
@@ -816,10 +816,10 @@
             <option value="title">Title</option>
           </select>
         </label>
+        <span class="total" x-text="pluralise(cardsFor(board.backlogStatus).length, 'task')"></span>
+        <span class="chip chip--readonly" x-show="!board.writable">read-only</span>
         <button type="button" class="new-page-btn" x-show="board.writable"
                 @click="openNewTaskModal({ fromBacklog: true })">+ New item</button>
-        <span class="chip chip--readonly" x-show="!board.writable">read-only</span>
-        <span class="total" x-text="cardsFor(board.backlogStatus).length + ' tasks'"></span>
       </div>
       <p class="board-error" x-show="boardError" x-text="boardError"></p>
       <div class="backlog-list col-body"

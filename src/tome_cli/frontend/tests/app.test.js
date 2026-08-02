@@ -328,6 +328,57 @@ describe("base-view navigation", () => {
   });
 });
 
+describe("document.title ([[browse-ui-polish]], AC2)", () => {
+  beforeEach(() => stubLocationAndHistory(""));
+
+  test("each base view sets its own suffixed title", () => {
+    const app = makeApp();
+    app.showHome();
+    assert.equal(document.title, "Home · tome");
+    app.showBoard();
+    assert.equal(document.title, "Board · tome");
+    app.showBacklog();
+    assert.equal(document.title, "Backlog · tome");
+    app.showChains();
+    assert.equal(document.title, "Chains · tome");
+  });
+
+  test("a loaded page's title wins over the default", async () => {
+    const app = makeApp({ pages: [{ slug: "known", title: "Known Page", url: "/raw/known.md" }] });
+    app.bySlug = new Map(app.pages.map((p) => [p.slug, p]));
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({
+      ok: true, headers: { get: () => '"h"' }, text: async () => "Body",
+    });
+    try {
+      await app.loadPage("known", { push: false });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    assert.equal(document.title, "Known Page · tome");
+  });
+
+  test("an unknown slug falls back to the bare app name", async () => {
+    const app = makeApp();
+    await app.loadPage("does-not-exist", { push: false });
+    assert.equal(document.title, "tome");
+  });
+
+  test("opening a task panel shows its id and title, overriding whatever base view is open", () => {
+    const app = makeApp({ view: "board", board: { cards: [{ id: "task-9", rawId: "TASK-9", title: "Ship it" }] } });
+    app.openTask("task-9");
+    assert.equal(document.title, "TASK-9 — Ship it · tome");
+    app.closeTaskPanel();
+    assert.equal(document.title, "Board · tome");
+  });
+
+  test("opening a task id with no matching card falls back to the bare app name", () => {
+    const app = makeApp({ view: "board" });
+    app.openTask("task-missing");
+    assert.equal(document.title, "tome");
+  });
+});
+
 describe("lenses", () => {
   test("fmRows hides the title key and empty/blank values", () => {
     const app = tomeApp();
@@ -493,6 +544,17 @@ describe("showPrio — priority chip visibility ([[board-column-scroll]])", () =
   test("no priority renders no chip", () => {
     assert.equal(tomeApp().showPrio(null), false);
     assert.equal(tomeApp().showPrio(undefined), false);
+  });
+});
+
+describe("pluralise — board/backlog totals ([[browse-ui-polish]], AC4)", () => {
+  test("singular for exactly one", () => {
+    assert.equal(tomeApp().pluralise(1, "task"), "1 task");
+  });
+
+  test("plural for zero and for more than one", () => {
+    assert.equal(tomeApp().pluralise(0, "task"), "0 tasks");
+    assert.equal(tomeApp().pluralise(2, "task"), "2 tasks");
   });
 });
 

@@ -1,6 +1,6 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { parseFrontmatter, renderMarkdown } from "../render.js";
+import { parseFrontmatter, renderMarkdown, stripLeadingH1 } from "../render.js";
 
 describe("parseFrontmatter", () => {
   test("no frontmatter delimiters returns the whole input as body", () => {
@@ -93,5 +93,44 @@ describe("renderMarkdown", () => {
     const html = renderMarkdown("`[[not-a-link]]`");
     assert.equal(html, "<p><code>[[not-a-link]]</code></p>\n");
     assert.ok(!html.includes("wikilink"));
+  });
+});
+
+describe("stripLeadingH1 ([[browse-ui-polish]], AC3 — no duplicate <h1>)", () => {
+  test("drops a leading H1 matching the title, and the blank line after it", () => {
+    assert.equal(stripLeadingH1("# My Page\n\nBody text", "My Page"), "Body text");
+  });
+
+  test("compares trimmed and case-insensitive", () => {
+    assert.equal(stripLeadingH1("#   My Page  \n\nBody", "  my page  "), "Body");
+  });
+
+  test("leaves the body alone when the leading H1 says something else", () => {
+    const body = "# A Different Heading\n\nBody";
+    assert.equal(stripLeadingH1(body, "My Page"), body);
+  });
+
+  test("leaves the body alone when there is no leading H1 at all", () => {
+    const body = "Just a paragraph, no heading.";
+    assert.equal(stripLeadingH1(body, "My Page"), body);
+  });
+
+  test("tolerates CRLF line endings", () => {
+    assert.equal(stripLeadingH1("# My Page\r\n\r\nBody\r\n", "My Page"), "Body\r\n");
+  });
+
+  test("tolerates leading blank lines before the heading", () => {
+    assert.equal(stripLeadingH1("\n\n# My Page\n\nBody", "My Page"), "Body");
+  });
+
+  test("a heading with no title given is left alone", () => {
+    const body = "# My Page\n\nBody";
+    assert.equal(stripLeadingH1(body, ""), body);
+    assert.equal(stripLeadingH1(body, undefined), body);
+  });
+
+  test("an H2 (or deeper) is never treated as the duplicate — only a leading H1", () => {
+    const body = "## My Page\n\nBody";
+    assert.equal(stripLeadingH1(body, "My Page"), body);
   });
 });
