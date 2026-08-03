@@ -150,6 +150,19 @@
         </nav>
       </aside>
 
+      <!-- Sidebar resize handle ([[resizable-panes]]) — a sibling of the pane
+           rather than a child of it: the sidebar is its own scroll container,
+           so a strip inside it would scroll away from the edge it drags. CSS
+           withdraws it when the sidebar is a rail or a stacked strip; the
+           stored width survives, it just isn't applied there. -->
+      <div class="pane-handle pane-handle--sidebar" role="separator"
+           aria-orientation="vertical" aria-label="Resize sidebar" tabindex="0"
+           :aria-valuenow="paneWidths.sidebar"
+           title="Drag to resize · double-click to reset"
+           @pointerdown="startPaneResize('sidebar', $event)"
+           @dblclick="resetPaneWidth('sidebar')"
+           @keydown="nudgePane('sidebar', $event)"></div>
+
     <div class="shell-main">
 
       <main class="page" x-show="view === 'page'">
@@ -670,6 +683,15 @@
          card the server refused the write over, so "what you'd overwrite"
          costs one extra data source instead of a second read-only view. -->
     <div class="task-panel-scrim" x-show="currentTaskId" @click="closeTaskPanel()"></div>
+    <!-- The panel's half of the same handle ([[resizable-panes]]), sharing its
+         x-show so it appears and leaves with the pane it sizes. -->
+    <div class="pane-handle pane-handle--panel" role="separator"
+         aria-orientation="vertical" aria-label="Resize task panel" tabindex="0"
+         x-show="currentTaskId" :aria-valuenow="paneWidths.panel"
+         title="Drag to resize · double-click to reset"
+         @pointerdown="startPaneResize('panel', $event)"
+         @dblclick="resetPaneWidth('panel')"
+         @keydown="nudgePane('panel', $event)"></div>
     <aside class="task-panel" :class="{ 'task-panel--conflict': taskConflict }"
            x-show="currentTaskId">
       <div class="task-panel-head">

@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 // stub never invokes the callback, so `window.Alpine` is never touched.
 globalThis.document = { addEventListener() {} };
 
-const { tomeApp } = await import("../app.js");
+const { tomeApp, clampPaneWidth } = await import("../app.js");
 
 // -- location/history stub ------------------------------------------------ //
 // Mimics just enough of the browser API for syncFromUrl()'s pure state
@@ -814,5 +814,215 @@ describe("sidebar collapse ([[persistent-sidebar]])", () => {
     app.sidebarCollapsed = true;
     key("j");
     assert.deepEqual(moved, [1, -1]); // unchanged — no tree to walk
+  });
+});
+
+describe("resizable panes ([[resizable-panes]])", () => {
+  // A 16px root font and a 1400px window put the sidebar's clamps at
+  // 192–512px (12–32rem) and the panel's at 352–770px (22rem–55vw).
+  const VIEWPORT = 1400;
+  let saved, cssProps, bodyClasses;
+
+  function stubDom({ paneWidth = 272 } = {}) {
+    saved = {};
+    cssProps = {};
+    bodyClasses = new Set();
+    globalThis.localStorage = {
+      setItem: (k, v) => { saved[k] = v; },
+      getItem: (k) => saved[k] ?? null,
+      removeItem: (k) => { delete saved[k]; },
+    };
+    globalThis.document = {
+      addEventListener() {},
+      documentElement: {
+        style: {
+          setProperty: (k, v) => { cssProps[k] = v; },
+          removeProperty: (k) => { delete cssProps[k]; },
+        },
+      },
+      body: {
+        classList: { add: (c) => bodyClasses.add(c), remove: (c) => bodyClasses.delete(c) },
+      },
+      // Both panes answer the same stub: the sidebar reads .left, the panel
+      // .right, and neither cares what the other's edge is.
+      querySelector: () => ({
+        getBoundingClientRect: () => ({ left: 0, right: VIEWPORT, width: paneWidth }),
+      }),
+    };
+    globalThis.getComputedStyle = () => ({ fontSize: "16px" });
+    globalThis.window = { innerWidth: VIEWPORT };
+  }
+
+  beforeEach(() => stubDom());
+
+  test("clampPaneWidth holds the bounds, and min wins a degenerate range", () => {
+    assert.equal(clampPaneWidth(300, 192, 512), 300);
+    assert.equal(clampPaneWidth(100, 192, 512), 192);
+    assert.equal(clampPaneWidth(900, 192, 512), 512);
+    assert.equal(clampPaneWidth(100, 352, 200), 352); // 55vw under 22rem
+    assert.equal(clampPaneWidth(NaN, 192, 512), null);
+  });
+
+  test("paneBounds resolves rem against the root font and vw against the window", () => {
+    const app = makeApp();
+    assert.deepEqual(app.paneBounds("sidebar"), { min: 192, max: 512 });
+    assert.deepEqual(app.paneBounds("panel"), { min: 352, max: 770 });
+  });
+
+  test("applyPaneWidth clamps on write and sets the pane's custom property", () => {
+    const app = makeApp();
+    app.applyPaneWidth("sidebar", 300);
+    assert.equal(app.paneWidths.sidebar, 300);
+    assert.equal(cssProps["--sidebar-w"], "300px");
+
+    app.applyPaneWidth("sidebar", 9000); // past the maximum, stops at it
+    assert.equal(app.paneWidths.sidebar, 512);
+    assert.equal(cssProps["--sidebar-w"], "512px");
+
+    assert.equal(saved["tome.pane.width:sidebar"], undefined); // not yet committed
+  });
+
+  test("commitPaneWidth persists the rounded width per pane", () => {
+    const app = makeApp();
+    app.applyPaneWidth("panel", 500.4);
+    app.commitPaneWidth("panel");
+    assert.equal(saved["tome.pane.width:panel"], "500");
+    assert.equal(saved["tome.pane.width:sidebar"], undefined);
+  });
+
+  test("resetPaneWidth drops the override, the property and the stored value", () => {
+    const app = makeApp();
+    app.applyPaneWidth("sidebar", 300);
+    app.commitPaneWidth("sidebar");
+    app.resetPaneWidth("sidebar");
+    assert.equal(app.paneWidths.sidebar, null);
+    assert.equal(cssProps["--sidebar-w"], undefined);
+    assert.equal(saved["tome.pane.width:sidebar"], undefined);
+  });
+
+  test("restorePaneWidths re-applies stored widths, re-clamped against today's bounds", () => {
+    const app = makeApp();
+    saved["tome.pane.width:sidebar"] = "300";
+    saved["tome.pane.width:panel"] = "9000"; // saved on a far wider window
+    app.restorePaneWidths();
+    assert.equal(app.paneWidths.sidebar, 300);
+    assert.equal(app.paneWidths.panel, 770);
+    assert.equal(cssProps["--panel-w"], "770px");
+  });
+
+  test("restorePaneWidths leaves a pane with nothing stored at its CSS default", () => {
+    const app = makeApp();
+    app.restorePaneWidths();
+    assert.deepEqual(app.paneWidths, { sidebar: null, panel: null });
+    assert.deepEqual(cssProps, {});
+  });
+
+  test("arrows move the separator, so the same key widens one pane and narrows the other", () => {
+    const app = makeApp();
+    const press = (pane, key) => {
+      let prevented = false;
+      app.nudgePane(pane, { key, preventDefault() { prevented = true; } });
+      return prevented;
+    };
+
+    // Nothing dragged yet: the nudge starts from the rendered width (272).
+    assert.equal(press("sidebar", "ArrowRight"), true);
+    assert.equal(app.paneWidths.sidebar, 288);
+    press("sidebar", "ArrowLeft");
+    assert.equal(app.paneWidths.sidebar, 272);
+    assert.equal(saved["tome.pane.width:sidebar"], "272"); // committed per press
+
+    press("panel", "ArrowRight");
+    assert.equal(app.paneWidths.panel, 352); // 272 - 16 clamps up to the 22rem floor
+    press("panel", "ArrowLeft");
+    assert.equal(app.paneWidths.panel, 368);
+  });
+
+  test("a key that isn't an arrow is left alone", () => {
+    const app = makeApp();
+    let prevented = false;
+    app.nudgePane("sidebar", { key: "Enter", preventDefault() { prevented = true; } });
+    assert.equal(prevented, false);
+    assert.equal(app.paneWidths.sidebar, null);
+  });
+
+  function fakeHandle() {
+    const listeners = {};
+    return {
+      captured: null,
+      focused: false,
+      listeners,
+      focus() { this.focused = true; },
+      setPointerCapture(id) { this.captured = id; },
+      addEventListener: (type, fn) => { (listeners[type] ||= []).push(fn); },
+      removeEventListener: (type, fn) => {
+        listeners[type] = (listeners[type] || []).filter((f) => f !== fn);
+      },
+      emit(type, event) { for (const fn of listeners[type] || []) fn(event); },
+    };
+  }
+
+  test("a sidebar drag tracks the pointer, suppresses selection, and commits on release", () => {
+    const app = makeApp();
+    const handle = fakeHandle();
+    let prevented = false;
+    app.startPaneResize("sidebar", {
+      button: 0, pointerId: 7, clientX: 272, currentTarget: handle,
+      preventDefault() { prevented = true; },
+    });
+    assert.equal(prevented, true);
+    assert.equal(handle.captured, 7);
+    // preventDefault kills the mousedown that would have focused the strip,
+    // so the drag has to hand focus back itself or the arrows need Tab.
+    assert.equal(handle.focused, true);
+    assert.ok(bodyClasses.has("resizing-pane"));
+
+    handle.emit("pointermove", { clientX: 300 }); // anchored on the pane's left edge (0)
+    assert.equal(cssProps["--sidebar-w"], "300px");
+    assert.equal(saved["tome.pane.width:sidebar"], undefined); // nothing written mid-drag
+
+    handle.emit("pointerup", {});
+    assert.equal(saved["tome.pane.width:sidebar"], "300");
+    assert.ok(!bodyClasses.has("resizing-pane"));
+
+    handle.emit("pointermove", { clientX: 400 }); // listeners are gone
+    assert.equal(cssProps["--sidebar-w"], "300px");
+  });
+
+  test("a panel drag runs the other way, anchored on its right edge", () => {
+    const app = makeApp();
+    const handle = fakeHandle();
+    app.startPaneResize("panel", {
+      button: 0, pointerId: 1, clientX: 1100, currentTarget: handle, preventDefault() {},
+    });
+    handle.emit("pointermove", { clientX: 900 }); // 1400 - 900
+    assert.equal(cssProps["--panel-w"], "500px");
+    handle.emit("pointercancel", {});
+    assert.equal(saved["tome.pane.width:panel"], "500");
+    assert.ok(!bodyClasses.has("resizing-pane"));
+  });
+
+  test("a click that never moves stores nothing, so the CSS default stays the default", () => {
+    const app = makeApp();
+    const handle = fakeHandle();
+    app.startPaneResize("sidebar", {
+      button: 0, pointerId: 3, clientX: 272, currentTarget: handle, preventDefault() {},
+    });
+    // A plain click still emits one pointermove at the press coordinate.
+    handle.emit("pointermove", { clientX: 272 });
+    handle.emit("pointerup", {});
+    assert.deepEqual(cssProps, {});
+    assert.equal(saved["tome.pane.width:sidebar"], undefined);
+    assert.equal(app.paneWidths.sidebar, null);
+  });
+
+  test("a non-primary button doesn't start a drag", () => {
+    const app = makeApp();
+    const handle = fakeHandle();
+    app.startPaneResize("sidebar", {
+      button: 2, pointerId: 1, clientX: 272, currentTarget: handle, preventDefault() {},
+    });
+    assert.equal(handle.captured, null);
+    assert.equal(bodyClasses.size, 0);
   });
 });

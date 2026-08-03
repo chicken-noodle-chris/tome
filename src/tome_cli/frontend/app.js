@@ -155,6 +155,23 @@ const SIDEBAR_FOLDERS_KEY_PREFIX = "tome.sidebar.folders:";
 // vault's content, whereas whether the tree is showing at all is a chrome
 // preference, in the same family as the board's sort/group lenses.
 const SIDEBAR_COLLAPSED_KEY = "tome.sidebar.collapsed";
+
+// Pane resizing ([[resizable-panes]]) — the two side panes differ only in
+// which edge they own and which way the drag runs, so this is one behaviour
+// parameterised twice, not two implementations. `prop` is the CSS custom
+// property the drag writes: writing that rather than an inline width keeps
+// every existing rule reading it working untouched, down to the panel's
+// sticky max-height arithmetic. `grow` is the sign the width moves in as the
+// pointer travels right (+1 for the sidebar's right edge, -1 for the panel's
+// left). Widths are a chrome preference like SIDEBAR_COLLAPSED_KEY above, so
+// deliberately not vault-scoped the way the folder state is.
+const PANE_WIDTH_KEY_PREFIX = "tome.pane.width:";
+const PANE_NUDGE_PX = 16; // one arrow press ≈ 1rem
+const PANES = {
+  sidebar: { selector: ".sidebar", prop: "--sidebar-w", grow: 1, minRem: 12, maxRem: 32 },
+  panel: { selector: ".task-panel", prop: "--panel-w", grow: -1, minRem: 22, maxVw: 55 },
+};
+
 const PRIORITY_RANK = { high: 0, medium: 1, low: 2 };
 const DEFAULT_PRIORITY = "medium";
 
@@ -165,6 +182,15 @@ const AUTO_SCROLL_SPEED_PX = 16;
 
 function ordinalTieBreak(a, b) {
   return (a.ordinal ?? Infinity) - (b.ordinal ?? Infinity) || a.id.localeCompare(b.id);
+}
+
+// Clamped on write, not on release ([[resizable-panes]]): a drag past the
+// limit stops at the limit instead of tracking the pointer and snapping back
+// after. `min` wins a degenerate range — a 55vw maximum can fall under a 22rem
+// minimum on a viewport narrow enough, and unreadable beats invisible.
+export function clampPaneWidth(px, min, max) {
+  if (!Number.isFinite(px)) return null;
+  return Math.min(Math.max(px, min), Math.max(min, max));
 }
 
 const SORT_COMPARATORS = {
@@ -285,6 +311,11 @@ export function tomeApp() {
     // init() and written by toggleSidebar().
     sidebarCollapsed: false,
     sidebarStorageKey: null, // set once pages load (vault-scoped, see vaultKey())
+    // Dragged pane widths in px ([[resizable-panes]]), null while a pane is at
+    // its CSS default. The width itself lives in a CSS custom property and in
+    // localStorage — this mirror exists only so the handles can report
+    // aria-valuenow and so a keyboard nudge has somewhere to nudge from.
+    paneWidths: { sidebar: null, panel: null },
     // Keyboard cursor over the sidebar tree ([[browse-ui-polish]], AC5) —
     // j/k move it, Enter opens it; independent of currentSlug so arrowing
     // around doesn't navigate until you commit.
@@ -368,6 +399,7 @@ export function tomeApp() {
       this.$watch("groupMode", (mode) => localStorage.setItem(GROUP_MODE_KEY, mode));
 
       this.sidebarCollapsed = localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
+      this.restorePaneWidths();
 
       this.backlogOpen = localStorage.getItem(BACKLOG_OPEN_KEY) === "1";
       this.$watch("backlogOpen", (open) => localStorage.setItem(BACKLOG_OPEN_KEY, open ? "1" : "0"));
@@ -2088,6 +2120,131 @@ export function tomeApp() {
       const target = linkRect.top - sidebarRect.top + sidebar.scrollTop
         - sidebar.clientHeight / 2 + linkRect.height / 2;
       sidebar.scrollTop = Math.max(0, target);
+    },
+
+    // -- resizable panes ([[resizable-panes]]) ----------------------------- //
+    // A grab strip on each pane's inner edge: pointerdown captures the
+    // pointer, pointermove writes the pane's CSS custom property, pointerup
+    // persists. Nothing here defends against live reload ([[live-reload]])
+    // landing mid-drag — the width lives in CSS and localStorage, not in the
+    // fetched contracts, so a re-render can't disturb it.
+
+    // Bounds are resolved per call rather than at module load: a maximum
+    // expressed in vw moves with the window, and rem tracks a root font size
+    // the browser's zoom can change underneath us.
+    paneBounds(name) {
+      const spec = PANES[name];
+      const root = document.documentElement;
+      const rem = parseFloat(getComputedStyle(root).fontSize) || 16;
+      return {
+        min: spec.minRem * rem,
+        // Multiply before dividing: (55 / 100) * 1400 lands a float epsilon
+        // off 770, and a bound that isn't the round number it reads as makes
+        // every assertion about it a lie.
+        max: spec.maxVw ? (spec.maxVw * window.innerWidth) / 100 : spec.maxRem * rem,
+      };
+    },
+
+    // Clamps and applies, without persisting — the drag calls this on every
+    // frame and commits once, at the end.
+    applyPaneWidth(name, px) {
+      const { min, max } = this.paneBounds(name);
+      const width = clampPaneWidth(px, min, max);
+      if (width === null) return null;
+      this.paneWidths[name] = width;
+      document.documentElement.style.setProperty(PANES[name].prop, width + "px");
+      return width;
+    },
+
+    commitPaneWidth(name) {
+      const width = this.paneWidths[name];
+      if (width === null) return;
+      localStorage.setItem(PANE_WIDTH_KEY_PREFIX + name, String(Math.round(width)));
+    },
+
+    // Double-click's way out of a width you dragged wrong, which is why there
+    // is no reset control: drop the override entirely and let the stylesheet's
+    // own default take back over.
+    resetPaneWidth(name) {
+      this.paneWidths[name] = null;
+      document.documentElement.style.removeProperty(PANES[name].prop);
+      localStorage.removeItem(PANE_WIDTH_KEY_PREFIX + name);
+    },
+
+    // A stored width is re-clamped on the way in, not trusted: it may have
+    // been saved on a wider window, or against bounds a later release moved.
+    restorePaneWidths() {
+      for (const name of Object.keys(PANES)) {
+        const saved = Number(localStorage.getItem(PANE_WIDTH_KEY_PREFIX + name));
+        if (saved > 0) this.applyPaneWidth(name, saved);
+      }
+    },
+
+    // The rendered width of a pane sitting at its CSS default — the starting
+    // point a keyboard nudge needs when nothing has been dragged yet.
+    measurePane(name) {
+      const el = document.querySelector(PANES[name].selector);
+      return el ? el.getBoundingClientRect().width : null;
+    },
+
+    startPaneResize(name, event) {
+      if (event.button) return; // primary button only
+      const spec = PANES[name];
+      const pane = document.querySelector(spec.selector);
+      const handle = event.currentTarget;
+      if (!pane || !handle) return;
+      const rect = pane.getBoundingClientRect();
+      // The pane's *outer* edge is pinned by the layout while its inner edge
+      // is what's being dragged, so one reading at pointerdown is the whole
+      // reference frame — no rect reads per frame.
+      const anchor = spec.grow === 1 ? rect.left : rect.right;
+
+      // A plain click still emits a pointermove at the press coordinate, and
+      // acting on it would pin the pane at whatever width the stylesheet
+      // currently gives it — turning "I clicked the divider" into a stored
+      // override that a later change to the default can never reach.
+      const startX = event.clientX;
+      let moved = false;
+      const move = (e) => {
+        moved = moved || e.clientX !== startX;
+        if (moved) this.applyPaneWidth(name, spec.grow * (e.clientX - anchor));
+      };
+      const stop = () => {
+        handle.removeEventListener("pointermove", move);
+        handle.removeEventListener("pointerup", stop);
+        handle.removeEventListener("pointercancel", stop);
+        document.body.classList.remove("resizing-pane");
+        if (moved) this.commitPaneWidth(name);
+      };
+      // Without this, dragging across the board selects card text.
+      document.body.classList.add("resizing-pane");
+      handle.addEventListener("pointermove", move);
+      handle.addEventListener("pointerup", stop);
+      handle.addEventListener("pointercancel", stop);
+      // preventDefault stops the browser starting a text selection under the
+      // drag — but it also suppresses the mousedown that would have focused
+      // the strip, so clicking it would otherwise leave the arrows reachable
+      // by Tab alone. Focus it back by hand.
+      event.preventDefault();
+      handle.focus();
+      // Capture retargets the whole gesture to the handle, so a drag that
+      // outruns the 9px strip keeps tracking. Last, and deliberately: it
+      // throws on a pointer id the browser doesn't consider active, and
+      // everything above is what the drag actually needs to work.
+      handle.setPointerCapture(event.pointerId);
+    },
+
+    // Arrows move the separator, not the pane: left is always leftwards on
+    // screen, which widens the panel and narrows the sidebar.
+    nudgePane(name, event) {
+      const step = event.key === "ArrowLeft" ? -PANE_NUDGE_PX
+        : event.key === "ArrowRight" ? PANE_NUDGE_PX : 0;
+      if (!step) return;
+      const from = this.paneWidths[name] ?? this.measurePane(name);
+      if (from === null) return;
+      event.preventDefault();
+      this.applyPaneWidth(name, from + PANES[name].grow * step);
+      this.commitPaneWidth(name);
     },
 
     // -- sidebar keyboard cursor ([[browse-ui-polish]], AC5) --------------- //

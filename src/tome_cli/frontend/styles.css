@@ -74,7 +74,42 @@ body {
    <main>, and — when `?task=` is set — the task panel. A hidden panel (x-show
    sets display:none) simply isn't a flex item, so the main column gets the
    full row back with no reserved gap. */
-.shell { display: flex; align-items: flex-start; }
+.shell { display: flex; align-items: flex-start; position: relative; }
+
+/* -- pane resize handles ([[resizable-panes]]) --
+   One strip, used twice, absolutely positioned over the pane's inner edge
+   rather than placed in the flex row: out of flow it contributes no width to
+   correct for and no height to a short page, and top/bottom: 0 spans whatever
+   the shell turns out to be. Each tracks its pane by reading the very custom
+   property the drag writes, so the handle and the edge can't drift apart. */
+.pane-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 9px;
+  z-index: 5;
+  cursor: col-resize;
+  /* The gesture is pointer events, not a scroll — without this a touch drag
+     is stolen by the page's own panning. */
+  touch-action: none;
+}
+.pane-handle--sidebar { left: calc(var(--sidebar-w) - 4px); }
+.pane-handle--panel { right: calc(var(--panel-w) - 4px); }
+/* The strip is a wide grab target; the line inside it is what you see. */
+.pane-handle::before {
+  content: "";
+  position: absolute;
+  inset: 0 3px;
+  border-radius: 2px;
+  background: transparent;
+}
+.pane-handle:hover::before, .pane-handle:focus-visible::before { background: var(--accent); }
+/* Selecting card text across the board is the default outcome of dragging
+   over it, and it survives the pointer capture — so suppress it wholesale for
+   the duration, and keep the resize cursor even where the pointer strays. */
+body.resizing-pane { user-select: none; cursor: col-resize; }
+body.resizing-pane .pane-handle::before { background: var(--accent); }
+
 /* min-width: 0 is load-bearing, not hygiene: without it the board's
    horizontally-scrolling column grid would push the whole document sideways
    instead of scrolling within itself once the sidebar and panel are both up. */
@@ -144,6 +179,10 @@ body {
   .sidebar--collapsed .sidebar-head { justify-content: center; margin-left: 0; margin-right: 0; }
   .sidebar--collapsed .sidebar-nav-item { justify-content: center; padding-left: 0.25rem; padding-right: 0.25rem; }
 }
+/* A rail has one width, and it isn't yours to pick ([[resizable-panes]]) —
+   the handle goes with the tree it was sizing, and the stored width waits for
+   the sidebar to come back. */
+.sidebar--collapsed ~ .pane-handle--sidebar { display: none; }
 
 .tree-project { margin-bottom: 0.35rem; }
 .tree-project-head {
@@ -231,6 +270,10 @@ body {
     border-right: none;
     border-bottom: 1px solid var(--border);
   }
+  /* Stacked full-width, the sidebar has no inner edge to drag and no width
+     worth storing ([[resizable-panes]], AC3). The stored value survives —
+     .sidebar's width: 100% here simply outranks the custom property. */
+  .pane-handle--sidebar { display: none; }
 }
 
 .fm-card {
@@ -738,6 +781,9 @@ body {
     background: rgba(0, 0, 0, 0.4);
     z-index: 89;
   }
+  /* A full-viewport overlay has no inner edge either ([[resizable-panes]],
+     AC3); x-show and this agree on display: none, so neither has to win. */
+  .pane-handle--panel { display: none; }
 }
 .task-wiki-link { margin: 0.6rem 0 0; font-size: 0.85rem; }
 .task-description { margin: 1.25rem 0; }
