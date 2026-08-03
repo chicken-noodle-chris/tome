@@ -544,61 +544,65 @@
         </div>
       </template>
 
-      <!-- The backlog ([[deferred-backlog]]), folded in beneath the columns
-           ([[page-routes]]): the same cards, drag handlers and drop
-           indicators the columns use, so dragging between a column and this
-           list is now one drag within one page rather than a status change
-           you had to navigate to make. The board's project filter reaches it
-           too, via cardsFor() -> visibleCards(). Collapsed by default so the
-           columns keep the height; the disclosure persists in localStorage
-           like the sort and group lenses. -->
-      <section class="backlog-section">
-        <div class="backlog-head">
-          <button type="button" class="backlog-toggle" @click="backlogOpen = !backlogOpen"
-                  :aria-expanded="backlogOpen ? 'true' : 'false'">
-            <span class="twisty" x-text="backlogOpen ? '▾' : '▸'"></span>
-            <h2>Backlog</h2>
-            <span class="count" x-text="cardsFor(board.backlogStatus).length"></span>
-          </button>
-          <button type="button" class="new-page-btn" x-show="board.writable && backlogOpen"
-                  @click="openNewTaskModal({ fromBacklog: true })">+ New item</button>
-        </div>
-        <div class="backlog-list col-body" x-show="backlogOpen"
-             @dragover.prevent="onDragOver($event, board.backlogStatus)"
-             @dragleave="onDragLeave($event)"
-             @drop.prevent="onDrop($event, board.backlogStatus)">
-          <p class="col-empty" x-show="cardsFor(board.backlogStatus).length === 0">Nothing deferred</p>
-          <div class="drop-line" x-show="cardsFor(board.backlogStatus).length === 0
-                 && dropTarget && dropTarget.status === board.backlogStatus"></div>
-          <template x-for="(card, idx) of cardsFor(board.backlogStatus)" :key="card.id">
-            <div>
-              <div class="drop-line" x-show="dropIndicator(board.backlogStatus, card, idx) === 'above'"></div>
-              <article class="card"
-                       :data-card-id="card.id"
-                       :draggable="board.writable && sortMode === 'manual'"
-                       :class="{ dragging: draggingId === card.id, moving: movingCardId === card.id,
-                                 selected: card.id === currentTaskId }"
-                       @dragstart="onDragStart($event, card)"
-                       @dragend="onDragEnd"
-                       @click="openTask(card.id)">
-                <div class="card-meta">
-                  <span class="card-id" x-text="card.rawId"></span>
-                  <span class="card-prio" :data-prio="card.priority" x-show="showPrio(card.priority)" x-text="card.priority"></span>
-                </div>
-                <div class="card-title" x-text="card.title"></div>
-                <div class="card-chips">
-                  <span class="chip" x-show="card.project" x-text="card.project"></span>
-                  <span class="chip chip--milestone" x-show="card.milestone" x-text="card.milestone"></span>
-                </div>
-                <button type="button" class="card-action" x-show="board.writable"
-                        @click.stop="promoteCard(card)">Promote →</button>
-              </article>
-              <div class="drop-line" x-show="dropIndicator(board.backlogStatus, card, idx) === 'below'"></div>
-            </div>
-          </template>
-        </div>
-      </section>
     </main>
+
+    <!-- The backlog ([[deferred-backlog]]), folded in beneath the columns
+         ([[page-routes]]): the same cards, drag handlers and drop
+         indicators the columns use, so dragging between a column and this
+         list is now one drag within one page rather than a status change
+         you had to navigate to make. The board's project filter reaches it
+         too, via cardsFor() -> visibleCards(). A sibling of the board's
+         fixed-viewport <main> rather than a flex child inside it: expanded
+         by default, it grows with its content and lets the page itself
+         scroll to show it, instead of taking height from the board or
+         scrolling in its own capped box. The disclosure persists in
+         localStorage like the sort and group lenses. -->
+    <section class="backlog-section" x-show="view === 'board'">
+      <div class="backlog-head">
+        <button type="button" class="backlog-toggle" @click="backlogOpen = !backlogOpen"
+                :aria-expanded="backlogOpen ? 'true' : 'false'">
+          <span class="twisty" x-text="backlogOpen ? '▾' : '▸'"></span>
+          <h2>Backlog</h2>
+          <span class="count" x-text="cardsFor(board.backlogStatus).length"></span>
+        </button>
+        <button type="button" class="new-page-btn" x-show="board.writable && backlogOpen"
+                @click="openNewTaskModal({ fromBacklog: true })">+ New item</button>
+      </div>
+      <div class="backlog-list col-body" x-show="backlogOpen"
+           @dragover.prevent="onDragOver($event, board.backlogStatus)"
+           @dragleave="onDragLeave($event)"
+           @drop.prevent="onDrop($event, board.backlogStatus)">
+        <p class="col-empty" x-show="cardsFor(board.backlogStatus).length === 0">Nothing deferred</p>
+        <div class="drop-line" x-show="cardsFor(board.backlogStatus).length === 0
+               && dropTarget && dropTarget.status === board.backlogStatus"></div>
+        <template x-for="(card, idx) of cardsFor(board.backlogStatus)" :key="card.id">
+          <div>
+            <div class="drop-line" x-show="dropIndicator(board.backlogStatus, card, idx) === 'above'"></div>
+            <article class="card"
+                     :data-card-id="card.id"
+                     :draggable="board.writable && sortMode === 'manual'"
+                     :class="{ dragging: draggingId === card.id, moving: movingCardId === card.id,
+                               selected: card.id === currentTaskId }"
+                     @dragstart="onDragStart($event, card)"
+                     @dragend="onDragEnd"
+                     @click="openTask(card.id)">
+              <div class="card-meta">
+                <span class="card-id" x-text="card.rawId"></span>
+                <span class="card-prio" :data-prio="card.priority" x-show="showPrio(card.priority)" x-text="card.priority"></span>
+              </div>
+              <div class="card-title" x-text="card.title"></div>
+              <div class="card-chips">
+                <span class="chip" x-show="card.project" x-text="card.project"></span>
+                <span class="chip chip--milestone" x-show="card.milestone" x-text="card.milestone"></span>
+              </div>
+              <button type="button" class="card-action" x-show="board.writable"
+                      @click.stop="promoteCard(card)">Promote →</button>
+            </article>
+            <div class="drop-line" x-show="dropIndicator(board.backlogStatus, card, idx) === 'below'"></div>
+          </div>
+        </template>
+      </div>
+    </section>
 
     <!-- Dependency chains view ([[dependency-chains]]) — read-only, computed
          client-side from the same board.json cards by chains.js; no fetch,

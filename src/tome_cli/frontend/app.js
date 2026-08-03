@@ -338,7 +338,7 @@ export function tomeApp() {
     projectFilter: "__all__",
     sortMode: "manual", // "manual" | "priority" | "title" — localStorage-only, never touches board.json
     groupMode: "none", // "none" | "milestone" — swimlane grouping ([[browse-ui-polish]], AC4), localStorage-only
-    backlogOpen: false, // the backlog section beneath the columns ([[page-routes]]), localStorage-only
+    backlogOpen: true, // the backlog section beneath the columns ([[page-routes]]), expanded by default, localStorage-only
     draggingId: null, // card.id currently being dragged
     dropTarget: null, // { status, afterId } — the insertion point tracked during a Manual-mode drag
     movingCardId: null, // card.id awaiting its POST response
@@ -401,7 +401,8 @@ export function tomeApp() {
       this.sidebarCollapsed = localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
       this.restorePaneWidths();
 
-      this.backlogOpen = localStorage.getItem(BACKLOG_OPEN_KEY) === "1";
+      // Expanded by default; only an explicit past collapse ("0") sticks.
+      this.backlogOpen = localStorage.getItem(BACKLOG_OPEN_KEY) !== "0";
       this.$watch("backlogOpen", (open) => localStorage.setItem(BACKLOG_OPEN_KEY, open ? "1" : "0"));
 
       // React to back/forward navigation.

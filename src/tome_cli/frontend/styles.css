@@ -13,7 +13,12 @@
   --chip: #eef2ff;
   --code-bg: #f3f4f6;
   --col-gap: 1rem;
-  --topbar-h: 2.75rem;
+  /* Must cover the topbar's actual rendered height (padding + the
+     search input's line box), not just its content font-size — a
+     smaller value here leaves every calc(100vh - var(--topbar-h))
+     consumer taller than the real remaining viewport, so the whole
+     page grows a few px past 100vh and scrolls. */
+  --topbar-h: 3.35rem;
   --sidebar-w: 17rem;
   /* Collapsed, the sidebar becomes a rail rather than nothing
      ([[persistent-sidebar]]): wide enough for the four pinned icons and the
@@ -664,7 +669,12 @@ body.resizing-pane .pane-handle::before { background: var(--accent); }
 .col-head { flex: none; display: flex; align-items: center; justify-content: space-between; padding: 0.2rem 0.35rem 0.6rem; }
 .col-head h2 { margin: 0; font-size: 0.95rem; }
 .col-head .count { color: var(--muted); font-size: 0.8rem; }
-.col-body { display: grid; gap: 0.5rem; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+/* align-content: start keeps every row at its own content height — without
+   it, a column with a single short card (e.g. one lonely "Done" task) has
+   its lone auto row track stretched to fill the column's full height
+   ([[browse-ui-polish]] follow-up: cards must stay a fixed height, not
+   grow to fill the column). */
+.col-body { display: grid; gap: 0.5rem; align-content: start; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
 .col-empty { color: var(--muted); font-size: 0.82rem; text-align: center; padding: 1rem 0.25rem; }
 
 .card {
@@ -932,14 +942,16 @@ body.resizing-pane .pane-handle::before { background: var(--accent); }
 
 /* -- backlog view ([[deferred-backlog]]) -- */
 /* Backlog section ([[page-routes]]) — [[deferred-backlog]]'s list, folded in
-   beneath the board's columns instead of sitting at its own route. flex:none
-   inside .board-view's fixed-height flex column, so the columns keep the
-   remaining height and a long backlog scrolls within its own cap rather than
-   pushing the board's scroll around. */
+   beneath the board's columns instead of sitting at its own route. A sibling
+   of .board-view (not a flex child inside it), so it grows with its own
+   content rather than taking height from the fixed-viewport columns above —
+   a long backlog makes the whole page scroll instead of scrolling in its
+   own capped box. Horizontal margin (not padding) so its border-top still
+   spans just the content width, inset like .board-wrap's, since it now
+   sits outside that box. */
 .backlog-section {
-  flex: none;
-  margin-top: 0.75rem;
-  padding-top: 0.6rem;
+  margin: 0.75rem 1.25rem 0;
+  padding: 0.6rem 0 3rem;
   border-top: 1px solid var(--border);
 }
 .backlog-head { display: flex; align-items: center; gap: 0.75rem; }
@@ -957,10 +969,13 @@ body.resizing-pane .pane-handle::before { background: var(--accent); }
 .backlog-toggle h2 { margin: 0; font-size: 0.95rem; }
 .backlog-toggle .count { color: var(--muted); font-size: 0.8rem; }
 .backlog-head .new-page-btn { margin-left: auto; }
+/* Overrides .col-body's cap-and-scroll: the backlog grows with its content
+   (the page scrolls to it) instead of scrolling in its own capped box. */
 .backlog-list {
   max-width: 32rem;
   min-height: 1.5rem; /* keeps an empty list a valid drop target */
-  max-height: 32vh;
+  max-height: none;
+  overflow-y: visible;
   margin-top: 0.5rem;
 }
 .chip {
